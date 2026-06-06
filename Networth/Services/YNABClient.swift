@@ -89,7 +89,10 @@ public actor LiveYNABClient: YNABClient {
 
     private func get<T: Decodable & Sendable>(_ path: String) async throws -> T {
         guard let token, !token.isEmpty else { throw YNABClientError.missingToken }
-        guard let url = URL(string: path, relativeTo: baseURL) else {
+        // Concatenate explicitly: URL(string:relativeTo:) drops baseURL's path
+        // segment when the relative ref starts with "/", which routes calls to
+        // api.ynab.com/budgets instead of api.ynab.com/v1/budgets.
+        guard let url = URL(string: baseURL.absoluteString + path) else {
             throw YNABClientError.invalidResponse(statusCode: 0, body: "bad URL: \(path)")
         }
         var req = URLRequest(url: url)
