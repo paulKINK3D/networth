@@ -1,12 +1,18 @@
 # WORKING
 
-## Current State (2026-06-05)
+## Current State (2026-06-06)
 All seven phases (0-6) of `docs/PLAN.md` are implemented and validated.
 
 - `Networth.xcodeproj` generated from `project.yml` via xcodegen.
 - App target builds clean on the iPhone 17 / iOS 26.5 simulator with zero warnings.
 - NetworthCore SPM package: 5 sub-modules plus an umbrella target — 17 Swift Testing tests pass under `swift test`.
 - App-target unit tests: 4 Swift Testing tests pass under `xcodebuild test`.
+
+## 2026-06-06 — Durable schema fix
+- First on-device launch crashed in `NetworthApp.init` with `SwiftDataError.loadIssueModelContainer`. Underlying CloudKit error: "CloudKit integration does not support unique constraints" on `DurableCardSettings.accountId`.
+- Stripped `@Attribute(.unique)` from all five durable models (`DurableManualAsset`, `DurableManualAssetValue`, `DurableNetWorthSnapshot`, `DurableCardSettings`, `DurableUserSettings`). The cache models keep `.unique` — they're in the local-only configuration.
+- The two call sites that depended on dedupe (`DurableUserSettings` singleton in `AppContainerController.bootstrap`, `DurableCardSettings` per accountId in `CardSettingsForm.save`) already do fetch-or-create, so behavior is unchanged.
+- **Lesson for any new durable model:** CloudKit-backed configurations forbid `@Attribute(.unique)`. Enforce uniqueness at the application layer via fetch-or-create instead.
 
 ## What ships
 - Single ModelContainer with two ModelConfigurations:

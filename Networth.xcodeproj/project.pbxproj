@@ -62,7 +62,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		00DEA1EA6C6514069921CC1B /* Networth.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Networth.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		00DEA1EA6C6514069921CC1B /* Networth.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Networth.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0264F0F507183402E3765272 /* NwStatusBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwStatusBadge.swift; sourceTree = "<group>"; };
 		03E7D5F7CA93A092A1D1FCFA /* DurableModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DurableModels.swift; sourceTree = "<group>"; };
 		06108EDF4711FC37956304D8 /* NetWorthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetWorthView.swift; sourceTree = "<group>"; };
@@ -99,8 +99,8 @@
 		B8C1A997FB5850B75A958DC6 /* NwOpacity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwOpacity.swift; sourceTree = "<group>"; };
 		C67F5A89172289A05D285547 /* NwAppColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwAppColors.swift; sourceTree = "<group>"; };
 		CAB7BC72F75C67ADCB78C364 /* PATEntrySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PATEntrySheet.swift; sourceTree = "<group>"; };
-		D1A571E8C878EA8FCA3E996F /* NetworthTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NetworthTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		D465BCA012B5B83B7BEE1727 /* NetworthCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = NetworthCore; path = NetworthCore; sourceTree = SOURCE_ROOT; };
+		D1A571E8C878EA8FCA3E996F /* NetworthTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NetworthTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D465BCA012B5B83B7BEE1727 /* NetworthCore */ = {isa = PBXFileReference; lastKnownFileType = folder; path = NetworthCore; sourceTree = SOURCE_ROOT; };
 		D5222B9938406EB9BCDD6306 /* NwEmptyState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwEmptyState.swift; sourceTree = "<group>"; };
 		D75EBC64A5ACE3D8F8759B9D /* NwSectionHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwSectionHeader.swift; sourceTree = "<group>"; };
 		DD4A35FDB76A0D7945A3AD61 /* ModelContainerFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelContainerFactory.swift; sourceTree = "<group>"; };
@@ -337,7 +337,6 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					571E1DB55BF82A9F7D81F4EC = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -446,6 +445,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = VRPA6X5SB2;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -468,7 +468,7 @@
 				CODE_SIGN_ENTITLEMENTS = Networth/Resources/Networth.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = VRPA6X5SB2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Networth/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -492,6 +492,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = VRPA6X5SB2;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -514,7 +515,7 @@
 				CODE_SIGN_ENTITLEMENTS = Networth/Resources/Networth.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = VRPA6X5SB2;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Networth/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;

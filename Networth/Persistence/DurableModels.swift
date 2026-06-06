@@ -11,7 +11,7 @@ import NetworthCore
 
 @Model
 public final class DurableManualAsset {
-    @Attribute(.unique) public var id: UUID = UUID()
+    public var id: UUID = UUID()
     public var name: String = ""
     public var kindRaw: String = ManualAssetKind.other.rawValue
     public var lastUpdatedAt: Date = Date.now
@@ -65,7 +65,7 @@ public final class DurableManualAsset {
 
 @Model
 public final class DurableManualAssetValue {
-    @Attribute(.unique) public var id: UUID = UUID()
+    public var id: UUID = UUID()
     public var recordedAt: Date = Date.now
     public var amountMilliunits: Int64 = 0
     public var note: String? = nil
@@ -88,7 +88,7 @@ public final class DurableManualAssetValue {
 
 @Model
 public final class DurableNetWorthSnapshot {
-    @Attribute(.unique) public var id: UUID = UUID()
+    public var id: UUID = UUID()
     public var date: Date = Date.now
     public var assetsMilliunits: Int64 = 0
     public var liabilitiesMilliunits: Int64 = 0
@@ -107,7 +107,7 @@ public final class DurableNetWorthSnapshot {
 
 @Model
 public final class DurableCardSettings {
-    @Attribute(.unique) public var accountId: String = ""
+    public var accountId: String = ""
     public var statementCycleDay: Int = 1
     public var minimumPaymentPercentNumerator: Int = 2
     public var minimumPaymentPercentDenominator: Int = 100
@@ -145,7 +145,7 @@ public final class DurableCardSettings {
 
 @Model
 public final class DurableUserSettings {
-    @Attribute(.unique) public var id: String = "singleton"
+    public var id: String = "singleton"
     public var faceIDEnabled: Bool = false
     public var selectedBudgetId: String? = nil
     public var lastSyncedAt: Date? = nil
