@@ -14,6 +14,7 @@ public enum ModelContainerFactory {
             CachedAccount.self,
             CachedTransaction.self,
             CachedScheduledTransaction.self,
+            CachedCategory.self,
             SyncCursor.self
         ])
         let durableSchema = Schema([
@@ -21,7 +22,8 @@ public enum ModelContainerFactory {
             DurableManualAssetValue.self,
             DurableNetWorthSnapshot.self,
             DurableCardSettings.self,
-            DurableUserSettings.self
+            DurableUserSettings.self,
+            DurableExcludedSpendCategory.self
         ])
 
         let cacheConfig = ModelConfiguration(
@@ -51,12 +53,14 @@ public enum ModelContainerFactory {
             CachedAccount.self,
             CachedTransaction.self,
             CachedScheduledTransaction.self,
+            CachedCategory.self,
             SyncCursor.self,
             DurableManualAsset.self,
             DurableManualAssetValue.self,
             DurableNetWorthSnapshot.self,
             DurableCardSettings.self,
-            DurableUserSettings.self
+            DurableUserSettings.self,
+            DurableExcludedSpendCategory.self
         ])
         return try ModelContainer(for: unified, configurations: [cacheConfig, durableConfig])
     }

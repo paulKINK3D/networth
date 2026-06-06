@@ -146,13 +146,36 @@ public final class DurableCardSettings {
 @Model
 public final class DurableUserSettings {
     public var id: String = "singleton"
-    public var faceIDEnabled: Bool = false
+    /// Defaults to true: new installs are locked behind biometrics on every
+    /// launch. Users can opt out in Settings → Authentication.
+    public var faceIDEnabled: Bool = true
     public var selectedBudgetId: String? = nil
     public var lastSyncedAt: Date? = nil
     public var dipThresholdMilliunits: Int64 = 500_000  // $500
     public var historyHorizonMonths: Int = 24
     public var projectionHorizonDays: Int = 90
     public var hasSeenTutorial: Bool = false
+    public var spendingLookbackDays: Int = 60
+    /// Bumped when a one-time migration changes existing settings defaults.
+    /// Version 2 = enable Face ID when biometric is available.
+    public var settingsSchemaVersion: Int = 0
 
     public init(id: String = "singleton") { self.id = id }
+}
+
+/// One row per YNAB category the user has opted out of the variable-spend
+/// projection. Stored in the CloudKit-backed store so the exclusion list
+/// follows the user across devices.
+@Model
+public final class DurableExcludedSpendCategory {
+    public var categoryId: String = ""
+    public var categoryName: String = ""
+    public var groupName: String = ""
+    public var createdAt: Date = Date.now
+
+    public init(categoryId: String = "", categoryName: String = "", groupName: String = "") {
+        self.categoryId = categoryId
+        self.categoryName = categoryName
+        self.groupName = groupName
+    }
 }

@@ -37,6 +37,14 @@ public enum AccountKind: String, Sendable, Hashable, Codable, CaseIterable {
     public var isCashLike: Bool {
         self == .checking || self == .savings || self == .cash
     }
+
+    /// On-budget account where spend happens (cash-like OR credit-card-like).
+    /// Transfers between two `isSpendAccount` accounts are internal — they
+    /// shouldn't be counted as spend. Transfers from a spend account to an
+    /// off-budget tracking account are real outflows.
+    public var isSpendAccount: Bool {
+        isCashLike || isCreditCardLike
+    }
 }
 
 /// A snapshot view of a single YNAB account — pure value type, suitable for

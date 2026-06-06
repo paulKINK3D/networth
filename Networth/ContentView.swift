@@ -10,7 +10,9 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if container.unlocked {
+            if !container.bootstrapped {
+                SplashView()
+            } else if container.unlocked {
                 tabs
             } else {
                 LockedView()
@@ -65,22 +67,63 @@ struct ContentView: View {
     }
 }
 
+/// Shown briefly while `AppContainerController.bootstrap()` is running. Prevents
+/// the lock screen from racing against bootstrap to start (and being cancelled
+/// by) the Face ID prompt.
+private struct SplashView: View {
+    var body: some View {
+        VStack(spacing: NwSpacing.lg) {
+            ZStack {
+                Circle()
+                    .fill(NwAppColors.primary.opacity(0.12))
+                    .frame(width: 120, height: 120)
+                NwIcon.netWorth.image
+                    .font(.system(size: 52, weight: .light))
+                    .foregroundStyle(NwAppColors.primary)
+            }
+            Text("BlueLava\nNetworth")
+                .font(NwTypography.title)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(NwAppColors.background.ignoresSafeArea())
+    }
+}
+
 private struct LockedView: View {
     @Environment(AppContainerController.self) private var container
 
     var body: some View {
         VStack(spacing: NwSpacing.xl) {
             Spacer()
-            NwIcon.lock.image
-                .font(.system(size: 56, weight: .light))
-                .foregroundStyle(NwAppColors.primary)
-            Text("BlueLava Networth")
-                .font(NwTypography.title)
-            Text("Unlock with \(container.biometricGate.displayName) to continue.")
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, NwSpacing.xl)
-            Button("Unlock") {
+            ZStack {
+                Circle()
+                    .fill(NwAppColors.primary.opacity(0.12))
+                    .frame(width: 120, height: 120)
+                NwIcon.lock.image
+                    .font(.system(size: 56, weight: .light))
+                    .foregroundStyle(NwAppColors.primary)
+            }
+            VStack(spacing: NwSpacing.sm) {
+                Text("BlueLava\nNetworth")
+                    .font(NwTypography.title)
+                    .multilineTextAlignment(.center)
+                Text("Your private financial dashboard")
+                    .font(NwTypography.callout)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(spacing: NwSpacing.md) {
+                Text("Authenticate with \(container.biometricGate.displayName) to view your net worth, projections, and accounts.")
+                    .font(NwTypography.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text("Your data is stored only on your devices and in your private iCloud — never shared.")
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, NwSpacing.xl)
+            Button("Unlock with \(container.biometricGate.displayName)") {
                 Task { await container.unlockWithBiometrics() }
             }
             .buttonStyle(NwPrimaryButtonStyle())

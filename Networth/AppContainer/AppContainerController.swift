@@ -17,6 +17,7 @@ public final class AppContainerController {
     public let syncCoordinator: SyncCoordinator
 
     public var unlocked: Bool = false
+    public var bootstrapped: Bool = false
     public var hasYNABToken: Bool = false
     public var selectedBudgetId: String?
     public var lastPersistenceError: PersistenceFailure?
@@ -42,7 +43,8 @@ public final class AppContainerController {
     }
 
     /// Bootstrap reads the token from Keychain and prefills the YNAB client.
-    /// Determines initial unlock state based on the user's Face ID setting.
+    /// Determines initial unlock state based on the user's Face ID setting and
+    /// flips `bootstrapped = true` so ContentView can render the right state.
     public func bootstrap() async {
         let token: String?
         do { token = try secretStore.load(.ynabPersonalAccessToken) }
@@ -63,11 +65,22 @@ public final class AppContainerController {
         }()
         selectedBudgetId = settings.selectedBudgetId
 
+        // One-time migration: pre-default-flip installs had faceIDEnabled=false.
+        // When biometric is available and we haven't migrated yet, enable it.
+        if settings.settingsSchemaVersion < 2 {
+            if biometricGate.isAvailable {
+                settings.faceIDEnabled = true
+            }
+            settings.settingsSchemaVersion = 2
+            ctx.safeSave(source: "bootstrap.migrate")
+        }
+
         if settings.faceIDEnabled && biometricGate.isAvailable {
             unlocked = false
         } else {
             unlocked = true
         }
+        bootstrapped = true
     }
 
     public func unlockWithBiometrics() async {
@@ -101,6 +114,18 @@ public final class AppContainerController {
         if let settings = try? modelContainer.mainContext.fetch(descriptor).first {
             selectedBudgetId = settings.selectedBudgetId
         }
+    }
+
+    /// Wipe all YNAB delta cursors, then run a full sync. Used when a schema
+    /// change requires a backfill (e.g. new fields on transactions).
+    public func forceFullResync() async {
+        let ctx = modelContainer.mainContext
+        let descriptor = FetchDescriptor<SyncCursor>()
+        if let cursors = try? ctx.fetch(descriptor) {
+            for cursor in cursors { ctx.delete(cursor) }
+            ctx.safeSave(source: "forceFullResync.clearCursors")
+        }
+        await syncNow()
     }
 
     // MARK: - Factories

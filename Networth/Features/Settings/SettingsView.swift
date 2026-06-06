@@ -8,11 +8,13 @@ struct SettingsView: View {
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \DurableCardSettings.accountId) private var cardSettings: [DurableCardSettings]
+    @Query private var exclusions: [DurableExcludedSpendCategory]
 
     @State private var showingTokenSheet = false
     @State private var showingAssetForm: DurableManualAsset? = nil
     @State private var showingNewAsset = false
     @State private var showingCardSheet: CachedAccount? = nil
+    @State private var showingExclusionsSheet = false
 
     private var settings: DurableUserSettings? { settingsList.first }
 
@@ -51,7 +53,7 @@ struct SettingsView: View {
                     Text("Token stored in iCloud-synced Keychain. Read-only access — Networth never writes to YNAB.")
                 }
 
-                Section("Sync") {
+                Section {
                     HStack {
                         Label {
                             Text("Last synced")
@@ -66,6 +68,15 @@ struct SettingsView: View {
                         Task { await container.syncNow() }
                     }
                     .disabled(!container.hasYNABToken)
+                    Button("Force Full Resync") {
+                        Task { await container.forceFullResync() }
+                    }
+                    .disabled(!container.hasYNABToken)
+                    .foregroundStyle(NwAppColors.liability)
+                } header: {
+                    Text("Sync")
+                } footer: {
+                    Text("Force Full Resync clears the YNAB delta cursors so the next sync re-fetches everything — use this if categories or balances look stale.")
                 }
 
                 Section {
@@ -79,6 +90,31 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                     HStack {
+                        Text("Variable-spend lookback")
+                        Spacer()
+                        Stepper("\(settings?.spendingLookbackDays ?? 60) days",
+                                value: lookbackBinding, in: 14...180, step: 7)
+                            .labelsHidden()
+                        Text("\(settings?.spendingLookbackDays ?? 60)d")
+                            .foregroundStyle(.secondary)
+                    }
+                    Button {
+                        showingExclusionsSheet = true
+                    } label: {
+                        HStack {
+                            Label {
+                                Text("Excluded Categories")
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                            } icon: {
+                                NwIcon.netWorth.image.foregroundStyle(NwAppColors.primary)
+                            }
+                            Spacer()
+                            Text("\(excludedCount)")
+                                .foregroundStyle(.secondary)
+                            NwIcon.chevron.image.foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack {
                         Text("Cash-dip threshold")
                         Spacer()
                         Text(CurrencyFormatter.compact(Money(milliunits: settings?.dipThresholdMilliunits ?? 500_000)))
@@ -87,7 +123,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Projections")
                 } footer: {
-                    Text("Heads-up alerts fire when your forecast cash position dips below the threshold.")
+                    Text("Variable-spend uses the last N days of cash-account debits (minus scheduled outflows and excluded categories) to project a daily drain across the horizon.")
                 }
 
                 Section("Manual Assets") {
@@ -183,6 +219,9 @@ struct SettingsView: View {
             .sheet(item: $showingCardSheet) { account in
                 CardSettingsForm(account: account).environment(container)
             }
+            .sheet(isPresented: $showingExclusionsSheet) {
+                ExcludedCategoriesSheet().environment(container)
+            }
         }
     }
 
@@ -203,6 +242,26 @@ struct SettingsView: View {
             }
         )
     }
+
+    private var lookbackBinding: Binding<Int> {
+        Binding(
+            get: { settings?.spendingLookbackDays ?? 60 },
+            set: { newValue in
+                let ctx = container.modelContainer.mainContext
+                let current: DurableUserSettings
+                if let existing = settings {
+                    current = existing
+                } else {
+                    current = DurableUserSettings()
+                    ctx.insert(current)
+                }
+                current.spendingLookbackDays = newValue
+                ctx.safeSave(source: "settings.lookback")
+            }
+        )
+    }
+
+    private var excludedCount: Int { exclusions.count }
 
     private var faceIDBinding: Binding<Bool> {
         Binding(

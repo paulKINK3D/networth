@@ -14,6 +14,11 @@ public struct StatementProjection: Sendable, Hashable, Codable, Identifiable {
     public let currentBalanceOwed: Money
     public let scheduledChargesBeforeClose: Money
     public let scheduledPaymentsBeforeClose: Money
+    /// Extrapolated charges between today and the next close, derived from
+    /// recent historical spend on this card. Zero when no history is provided.
+    public let projectedVariableCharges: Money
+    /// Average daily charge on this card over the lookback window.
+    public let dailyAverageCharge: Money
     public let projectedStatementBalance: Money
     public let minimumPayment: Money
 
@@ -26,6 +31,8 @@ public struct StatementProjection: Sendable, Hashable, Codable, Identifiable {
         currentBalanceOwed: Money,
         scheduledChargesBeforeClose: Money,
         scheduledPaymentsBeforeClose: Money,
+        projectedVariableCharges: Money = .zero,
+        dailyAverageCharge: Money = .zero,
         projectedStatementBalance: Money,
         minimumPayment: Money
     ) {
@@ -37,6 +44,8 @@ public struct StatementProjection: Sendable, Hashable, Codable, Identifiable {
         self.currentBalanceOwed = currentBalanceOwed
         self.scheduledChargesBeforeClose = scheduledChargesBeforeClose
         self.scheduledPaymentsBeforeClose = scheduledPaymentsBeforeClose
+        self.projectedVariableCharges = projectedVariableCharges
+        self.dailyAverageCharge = dailyAverageCharge
         self.projectedStatementBalance = projectedStatementBalance
         self.minimumPayment = minimumPayment
     }

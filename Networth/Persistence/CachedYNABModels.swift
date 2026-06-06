@@ -78,13 +78,20 @@ public final class CachedTransaction {
     public var cleared: Bool
     public var approved: Bool
     public var payeeName: String?
+    public var categoryId: String?
     public var categoryName: String?
+    public var transferAccountId: String?
     public var memo: String?
     public var deleted: Bool
+    /// JSON-encoded `[SubTransactionSummary]`. Nil/empty when not a split.
+    public var subtransactionsData: Data?
 
     public init(
         id: String, budgetId: String, accountId: String, date: Date, amountMilliunits: Int64,
-        cleared: Bool, approved: Bool, payeeName: String?, categoryName: String?, memo: String?, deleted: Bool
+        cleared: Bool, approved: Bool, payeeName: String?,
+        categoryId: String? = nil, categoryName: String?,
+        transferAccountId: String? = nil, memo: String?, deleted: Bool,
+        subtransactionsData: Data? = nil
     ) {
         self.id = id
         self.budgetId = budgetId
@@ -94,9 +101,17 @@ public final class CachedTransaction {
         self.cleared = cleared
         self.approved = approved
         self.payeeName = payeeName
+        self.categoryId = categoryId
         self.categoryName = categoryName
+        self.transferAccountId = transferAccountId
         self.memo = memo
         self.deleted = deleted
+        self.subtransactionsData = subtransactionsData
+    }
+
+    public var subtransactions: [SubTransactionSummary] {
+        guard let subtransactionsData, !subtransactionsData.isEmpty else { return [] }
+        return (try? JSONDecoder().decode([SubTransactionSummary].self, from: subtransactionsData)) ?? []
     }
 
     public func toSummary() -> TransactionSummary {
@@ -104,9 +119,40 @@ public final class CachedTransaction {
             id: id, accountId: accountId, date: date,
             amount: Money(milliunits: amountMilliunits),
             cleared: cleared, approved: approved,
-            payeeName: payeeName, categoryName: categoryName,
-            memo: memo, deleted: deleted
+            payeeName: payeeName,
+            categoryId: categoryId, categoryName: categoryName,
+            transferAccountId: transferAccountId,
+            memo: memo, deleted: deleted,
+            subtransactions: subtransactions
         )
+    }
+}
+
+@Model
+public final class CachedCategory {
+    @Attribute(.unique) public var id: String
+    public var budgetId: String
+    public var groupId: String
+    public var groupName: String
+    public var name: String
+    public var hidden: Bool
+    public var deleted: Bool
+
+    public init(
+        id: String, budgetId: String, groupId: String, groupName: String,
+        name: String, hidden: Bool = false, deleted: Bool = false
+    ) {
+        self.id = id
+        self.budgetId = budgetId
+        self.groupId = groupId
+        self.groupName = groupName
+        self.name = name
+        self.hidden = hidden
+        self.deleted = deleted
+    }
+
+    public func toSummary() -> CategorySummary {
+        CategorySummary(id: id, name: name, groupId: groupId, groupName: groupName, hidden: hidden, deleted: deleted)
     }
 }
 
@@ -119,13 +165,16 @@ public final class CachedScheduledTransaction {
     public var frequencyRaw: String
     public var amountMilliunits: Int64
     public var payeeName: String?
+    public var categoryId: String?
+    public var transferAccountId: String?
     public var memo: String?
     public var deleted: Bool
 
     public init(
         id: String, budgetId: String, accountId: String, nextDate: Date,
         frequencyRaw: String, amountMilliunits: Int64,
-        payeeName: String?, memo: String?, deleted: Bool
+        payeeName: String?, categoryId: String? = nil,
+        transferAccountId: String? = nil, memo: String?, deleted: Bool
     ) {
         self.id = id
         self.budgetId = budgetId
@@ -134,6 +183,8 @@ public final class CachedScheduledTransaction {
         self.frequencyRaw = frequencyRaw
         self.amountMilliunits = amountMilliunits
         self.payeeName = payeeName
+        self.categoryId = categoryId
+        self.transferAccountId = transferAccountId
         self.memo = memo
         self.deleted = deleted
     }
@@ -143,7 +194,10 @@ public final class CachedScheduledTransaction {
             id: id, accountId: accountId, nextDate: nextDate,
             frequency: ScheduleFrequency.fromYNAB(frequencyRaw),
             amount: Money(milliunits: amountMilliunits),
-            payeeName: payeeName, memo: memo, deleted: deleted
+            payeeName: payeeName,
+            categoryId: categoryId,
+            transferAccountId: transferAccountId,
+            memo: memo, deleted: deleted
         )
     }
 }

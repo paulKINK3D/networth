@@ -92,11 +92,12 @@ enum TutorialContent {
             title: "The Projections tab",
             lede: "What your money looks like over the next 90 days.",
             bullets: [
-                "Credit card payment forecast — projected statement balance per card with full / minimum / custom payoff scenarios.",
-                "Cash position chart — combined checking + savings, with alerts when it dips below your threshold.",
+                "Credit card statement forecast — projected balance per card based on scheduled charges and payments.",
+                "Cash position chart — solid line uses scheduled transactions; dashed line adds an estimated daily drain from recent variable spending.",
+                "Spending by Category — tap chips to focus on a subset like food or transport.",
                 "All forecasts are computed locally — Networth never writes anything back to YNAB."
             ],
-            footnote: nil
+            footnote: "Tune the lookback window and exclude categories (e.g. investments) from Settings → Projections."
         ),
 
         TutorialStep(

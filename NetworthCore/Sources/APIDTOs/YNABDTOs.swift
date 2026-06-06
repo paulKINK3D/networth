@@ -119,12 +119,16 @@ public struct YNABTransactionDTO: Decodable, Sendable, Identifiable, Hashable {
     public let approved: Bool
     public let account_id: String
     public let payee_name: String?
+    public let category_id: String?
     public let category_name: String?
+    public let transfer_account_id: String?
     public let memo: String?
     public let deleted: Bool
+    public let subtransactions: [YNABSubTransactionDTO]?
 
     public func toSummary() -> TransactionSummary? {
         guard let parsed = Self.dateParser.date(from: date) else { return nil }
+        let subs = (subtransactions ?? []).map { $0.toSummary() }
         return TransactionSummary(
             id: id,
             accountId: account_id,
@@ -133,9 +137,12 @@ public struct YNABTransactionDTO: Decodable, Sendable, Identifiable, Hashable {
             cleared: cleared == "cleared" || cleared == "reconciled",
             approved: approved,
             payeeName: payee_name,
+            categoryId: category_id,
             categoryName: category_name,
+            transferAccountId: transfer_account_id,
             memo: memo,
-            deleted: deleted
+            deleted: deleted,
+            subtransactions: subs
         )
     }
 
@@ -146,6 +153,58 @@ public struct YNABTransactionDTO: Decodable, Sendable, Identifiable, Hashable {
         f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
+}
+
+public struct YNABSubTransactionDTO: Decodable, Sendable, Identifiable, Hashable {
+    public let id: String
+    public let transaction_id: String
+    public let amount: Int64
+    public let category_id: String?
+    public let category_name: String?
+    public let transfer_account_id: String?
+    public let payee_name: String?
+    public let memo: String?
+    public let deleted: Bool
+
+    public func toSummary() -> SubTransactionSummary {
+        SubTransactionSummary(
+            id: id,
+            amount: Money(milliunits: amount),
+            categoryId: category_id,
+            categoryName: category_name,
+            transferAccountId: transfer_account_id,
+            payeeName: payee_name,
+            memo: memo,
+            deleted: deleted
+        )
+    }
+}
+
+// MARK: - Categories
+
+public struct YNABCategoriesResponse: Decodable, Sendable {
+    public let category_groups: [YNABCategoryGroupDTO]
+    public let server_knowledge: Int64?
+    public init(category_groups: [YNABCategoryGroupDTO] = [], server_knowledge: Int64? = nil) {
+        self.category_groups = category_groups
+        self.server_knowledge = server_knowledge
+    }
+}
+
+public struct YNABCategoryGroupDTO: Decodable, Sendable, Identifiable, Hashable {
+    public let id: String
+    public let name: String
+    public let hidden: Bool
+    public let deleted: Bool
+    public let categories: [YNABCategoryDTO]
+}
+
+public struct YNABCategoryDTO: Decodable, Sendable, Identifiable, Hashable {
+    public let id: String
+    public let category_group_id: String
+    public let name: String
+    public let hidden: Bool
+    public let deleted: Bool
 }
 
 // MARK: - Scheduled transactions
@@ -167,6 +226,8 @@ public struct YNABScheduledTransactionDTO: Decodable, Sendable, Identifiable, Ha
     public let amount: Int64
     public let account_id: String
     public let payee_name: String?
+    public let category_id: String?
+    public let transfer_account_id: String?
     public let memo: String?
     public let deleted: Bool
 
@@ -179,6 +240,8 @@ public struct YNABScheduledTransactionDTO: Decodable, Sendable, Identifiable, Ha
             frequency: ScheduleFrequency.fromYNAB(frequency),
             amount: Money(milliunits: amount),
             payeeName: payee_name,
+            categoryId: category_id,
+            transferAccountId: transfer_account_id,
             memo: memo,
             deleted: deleted
         )

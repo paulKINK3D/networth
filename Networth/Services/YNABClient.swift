@@ -24,6 +24,7 @@ public protocol YNABClient: Actor {
     func setToken(_ token: String?)
     func budgets() async throws -> [YNABBudgetSummary]
     func accounts(budgetId: String, lastKnowledge: Int64?) async throws -> YNABAccountsResponse
+    func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse
     func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse
     func scheduledTransactions(budgetId: String, lastKnowledge: Int64?) async throws -> YNABScheduledTransactionsResponse
     func rateLimit() -> YNABRateLimitInfo?
@@ -54,6 +55,13 @@ public actor LiveYNABClient: YNABClient {
         var path = "/budgets/\(budgetId)/accounts"
         if let k = lastKnowledge { path += "?last_knowledge_of_server=\(k)" }
         let env: YNABEnvelope<YNABAccountsResponse> = try await get(path)
+        return env.data
+    }
+
+    public func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse {
+        var path = "/budgets/\(budgetId)/categories"
+        if let k = lastKnowledge { path += "?last_knowledge_of_server=\(k)" }
+        let env: YNABEnvelope<YNABCategoriesResponse> = try await get(path)
         return env.data
     }
 
@@ -137,6 +145,7 @@ public actor LiveYNABClient: YNABClient {
 public actor RecordedYNABClient: YNABClient {
     public var budgetsResult: [YNABBudgetSummary]
     public var accountsResult: YNABAccountsResponse
+    public var categoriesResult: YNABCategoriesResponse
     public var transactionsResult: YNABTransactionsResponse
     public var scheduledResult: YNABScheduledTransactionsResponse
     private var token: String?
@@ -144,11 +153,13 @@ public actor RecordedYNABClient: YNABClient {
     public init(
         budgets: [YNABBudgetSummary] = [],
         accounts: YNABAccountsResponse = .init(accounts: [], server_knowledge: 0),
+        categories: YNABCategoriesResponse = .init(category_groups: [], server_knowledge: 0),
         transactions: YNABTransactionsResponse = .init(transactions: [], server_knowledge: 0),
         scheduled: YNABScheduledTransactionsResponse = .init(scheduled_transactions: [], server_knowledge: 0)
     ) {
         self.budgetsResult = budgets
         self.accountsResult = accounts
+        self.categoriesResult = categories
         self.transactionsResult = transactions
         self.scheduledResult = scheduled
     }
@@ -157,6 +168,7 @@ public actor RecordedYNABClient: YNABClient {
     public func rateLimit() -> YNABRateLimitInfo? { YNABRateLimitInfo(used: 0, limit: 200) }
     public func budgets() async throws -> [YNABBudgetSummary] { budgetsResult }
     public func accounts(budgetId: String, lastKnowledge: Int64?) async throws -> YNABAccountsResponse { accountsResult }
+    public func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse { categoriesResult }
     public func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse { transactionsResult }
     public func scheduledTransactions(budgetId: String, lastKnowledge: Int64?) async throws -> YNABScheduledTransactionsResponse { scheduledResult }
 }

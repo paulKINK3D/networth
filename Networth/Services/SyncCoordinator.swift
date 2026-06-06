@@ -49,6 +49,18 @@ public final class SyncCoordinator {
             upsertAccounts(accountsResp.accounts, budgetId: useBudget)
             saveCursor(key: "accounts:\(useBudget)", value: accountsResp.server_knowledge)
 
+            // One-time migration: caches that predate category sync need a full
+            // refetch of transactions + scheduled so category_id and
+            // transfer_account_id land on existing rows. Self-healing — runs
+            // once, then never again because the categories cursor exists.
+            resetCursorsIfPreCategoryCache(budgetId: useBudget)
+
+            phase = .syncing(label: "Categories")
+            let categoriesCursor = cursor(key: "categories:\(useBudget)")
+            let categoriesResp = try await client.categories(budgetId: useBudget, lastKnowledge: categoriesCursor)
+            upsertCategories(categoriesResp.category_groups, budgetId: useBudget)
+            saveCursor(key: "categories:\(useBudget)", value: categoriesResp.server_knowledge)
+
             phase = .syncing(label: "Scheduled")
             let schedCursor = cursor(key: "scheduled:\(useBudget)")
             let scheduledResp = try await client.scheduledTransactions(budgetId: useBudget, lastKnowledge: schedCursor)
@@ -133,8 +145,11 @@ public final class SyncCoordinator {
     }
 
     private func upsertTransactions(_ txns: [YNABTransactionDTO], budgetId: String) {
+        let encoder = JSONEncoder()
         for t in txns {
             guard let parsed = YNABTransactionDTO.dateParser.date(from: t.date) else { continue }
+            let subSummaries: [SubTransactionSummary] = (t.subtransactions ?? []).map { $0.toSummary() }
+            let subData: Data? = subSummaries.isEmpty ? nil : (try? encoder.encode(subSummaries))
             let targetId = t.id
             let existing = fetchOne(CachedTransaction.self, where: #Predicate { $0.id == targetId })
             if let existing {
@@ -142,19 +157,49 @@ public final class SyncCoordinator {
                 existing.cleared = t.cleared == "cleared" || t.cleared == "reconciled"
                 existing.approved = t.approved
                 existing.payeeName = t.payee_name
+                existing.categoryId = t.category_id
                 existing.categoryName = t.category_name
+                existing.transferAccountId = t.transfer_account_id
                 existing.memo = t.memo
                 existing.deleted = t.deleted
                 existing.date = parsed
+                existing.subtransactionsData = subData
             } else {
                 cacheContext.insert(CachedTransaction(
                     id: t.id, budgetId: budgetId, accountId: t.account_id, date: parsed,
                     amountMilliunits: t.amount,
                     cleared: t.cleared == "cleared" || t.cleared == "reconciled",
                     approved: t.approved,
-                    payeeName: t.payee_name, categoryName: t.category_name,
-                    memo: t.memo, deleted: t.deleted
+                    payeeName: t.payee_name,
+                    categoryId: t.category_id, categoryName: t.category_name,
+                    transferAccountId: t.transfer_account_id,
+                    memo: t.memo, deleted: t.deleted,
+                    subtransactionsData: subData
                 ))
+            }
+        }
+    }
+
+    private func upsertCategories(_ groups: [YNABCategoryGroupDTO], budgetId: String) {
+        for group in groups {
+            for cat in group.categories {
+                let targetId = cat.id
+                let existing = fetchOne(CachedCategory.self, where: #Predicate { $0.id == targetId })
+                if let existing {
+                    existing.groupId = group.id
+                    existing.groupName = group.name
+                    existing.name = cat.name
+                    existing.hidden = cat.hidden || group.hidden
+                    existing.deleted = cat.deleted || group.deleted
+                } else {
+                    cacheContext.insert(CachedCategory(
+                        id: cat.id, budgetId: budgetId,
+                        groupId: group.id, groupName: group.name,
+                        name: cat.name,
+                        hidden: cat.hidden || group.hidden,
+                        deleted: cat.deleted || group.deleted
+                    ))
+                }
             }
         }
     }
@@ -169,6 +214,8 @@ public final class SyncCoordinator {
                 existing.frequencyRaw = s.frequency
                 existing.amountMilliunits = s.amount
                 existing.payeeName = s.payee_name
+                existing.categoryId = s.category_id
+                existing.transferAccountId = s.transfer_account_id
                 existing.memo = s.memo
                 existing.deleted = s.deleted
             } else {
@@ -176,7 +223,10 @@ public final class SyncCoordinator {
                     id: s.id, budgetId: budgetId, accountId: s.account_id,
                     nextDate: parsed, frequencyRaw: s.frequency,
                     amountMilliunits: s.amount,
-                    payeeName: s.payee_name, memo: s.memo, deleted: s.deleted
+                    payeeName: s.payee_name,
+                    categoryId: s.category_id,
+                    transferAccountId: s.transfer_account_id,
+                    memo: s.memo, deleted: s.deleted
                 ))
             }
         }
@@ -201,6 +251,41 @@ public final class SyncCoordinator {
 
     private func cursor(key: String) -> Int64? {
         fetchOne(SyncCursor.self, where: #Predicate { $0.key == key })?.serverKnowledge
+    }
+
+    private func clearCursor(key: String) {
+        if let existing = fetchOne(SyncCursor.self, where: #Predicate { $0.key == key }) {
+            cacheContext.delete(existing)
+        }
+    }
+
+    /// Caches populated before category sync existed have transactions and
+    /// scheduled-transactions rows with nil `categoryId` / `transferAccountId`.
+    /// YNAB's delta sync won't replay them, so we need a full refetch.
+    ///
+    /// Trigger conditions (either):
+    ///   1. Cursor pre-state: transactions cursor exists but categories cursor doesn't.
+    ///   2. Data backfill: cached transactions exist but NONE have categoryId yet
+    ///      (handles the case where a prior sync ran partially and saved the
+    ///      categories cursor but never finished the transactions full-refetch).
+    private func resetCursorsIfPreCategoryCache(budgetId: String) {
+        let hasTxnCursor = cursor(key: "transactions:\(budgetId)") != nil
+        guard hasTxnCursor else { return }
+        let hasCategoriesCursor = cursor(key: "categories:\(budgetId)") != nil
+        let preCategorySync = !hasCategoriesCursor
+        let needsBackfill = !anyCachedTransactionHasCategoryId()
+        guard preCategorySync || needsBackfill else { return }
+        clearCursor(key: "transactions:\(budgetId)")
+        clearCursor(key: "scheduled:\(budgetId)")
+        logger.info("Resetting transactions+scheduled cursors (preCategorySync=\(preCategorySync), needsBackfill=\(needsBackfill)).")
+    }
+
+    private func anyCachedTransactionHasCategoryId() -> Bool {
+        var descriptor = FetchDescriptor<CachedTransaction>(
+            predicate: #Predicate { $0.categoryId != nil }
+        )
+        descriptor.fetchLimit = 1
+        return ((try? cacheContext.fetch(descriptor).count) ?? 0) > 0
     }
 
     private func saveCursor(key: String, value: Int64?) {
