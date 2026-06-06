@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var selection: Int = 0
     @State private var alertPayload: PersistenceFailure?
     @State private var showingTutorial = false
+    @State private var showingSettings = false
 
     var body: some View {
         Group {
@@ -20,6 +21,9 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectTab)) { note in
             if let tab = note.object as? Int { selection = tab }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
+            showingSettings = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .showTutorial)) { _ in
             showingTutorial = true
@@ -40,6 +44,17 @@ struct ContentView: View {
         .sheet(isPresented: $showingTutorial) {
             TutorialView().environment(container)
         }
+        .sheet(isPresented: $showingSettings) {
+            NavigationStack {
+                SettingsView()
+                    .environment(container)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showingSettings = false }
+                        }
+                    }
+            }
+        }
         .alert("Save failed",
                isPresented: Binding(get: { alertPayload != nil }, set: { if !$0 { alertPayload = nil } })) {
             Button("OK", role: .cancel) { alertPayload = nil }
@@ -59,8 +74,8 @@ struct ContentView: View {
             AccountsView()
                 .tabItem { Label("Accounts", systemImage: NwIcon.accounts.rawValue) }
                 .tag(2)
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: NwIcon.settings.rawValue) }
+            InvestmentsView()
+                .tabItem { Label("Investments", systemImage: NwIcon.investment.rawValue) }
                 .tag(3)
         }
         .tint(NwAppColors.primary)

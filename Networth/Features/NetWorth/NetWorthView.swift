@@ -37,7 +37,7 @@ struct NetWorthView: View {
                             message: "Add your YNAB token in Settings to start tracking.",
                             tone: .info,
                             actionTitle: "Open Settings",
-                            action: { NotificationCenter.default.post(name: .selectTab, object: 3) }
+                            action: { NotificationCenter.default.post(name: .openSettings, object: nil) }
                         )
                     } else if case .error(let msg) = container.syncCoordinator.phase {
                         NwBanner(
@@ -70,23 +70,31 @@ struct NetWorthView: View {
     private var syncToolbarItem: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             switch container.syncCoordinator.phase {
-            case .idle:
-                Button {
-                    Task { await container.syncNow() }
-                } label: {
-                    NwIcon.sync.image
-                }
-                .disabled(!container.hasYNABToken)
             case .syncing(let label):
                 HStack(spacing: NwSpacing.xs) {
                     ProgressView().controlSize(.small)
                     Text(label).font(NwTypography.caption).foregroundStyle(.secondary)
                 }
-            case .error:
-                Button {
-                    Task { await container.syncNow() }
+            default:
+                Menu {
+                    Button {
+                        Task { await container.syncNow() }
+                    } label: {
+                        Label("Refresh", systemImage: NwIcon.sync.rawValue)
+                    }
+                    .disabled(!container.hasYNABToken)
+
+                    Button {
+                        NotificationCenter.default.post(name: .openSettings, object: nil)
+                    } label: {
+                        Label("Settings", systemImage: NwIcon.settings.rawValue)
+                    }
                 } label: {
-                    NwIcon.warning.image.foregroundStyle(NwAppColors.caution)
+                    if case .error = container.syncCoordinator.phase {
+                        NwIcon.warning.image.foregroundStyle(NwAppColors.caution)
+                    } else {
+                        Image(systemName: "ellipsis.circle")
+                    }
                 }
             }
         }
@@ -248,4 +256,5 @@ struct NetWorthView: View {
 extension Notification.Name {
     public static let selectTab = Notification.Name("NetworthSelectTab")
     public static let showTutorial = Notification.Name("NetworthShowTutorial")
+    public static let openSettings = Notification.Name("NetworthOpenSettings")
 }
