@@ -108,7 +108,7 @@ enum TutorialContent {
             bullets: [
                 "Settings → Credit Card Statements → tap a card.",
                 "Set the statement close day (e.g. 17 for a card that closes on the 17th of each month).",
-                "Optional: adjust minimum-payment percent and floor; defaults are 2% / $25."
+                "That's it — the projection shows what'll be due on your next statement."
             ],
             footnote: "You only need to do this once per card unless your issuer changes the cycle."
         ),

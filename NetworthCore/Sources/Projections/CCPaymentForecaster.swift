@@ -95,35 +95,58 @@ public struct CCPaymentForecaster: Sendable {
 
     // MARK: - Cycle math
 
-    /// The next statement-close date at-or-after `today`.
+    /// The next statement-close date at-or-after `today`. Cycle days 29-31
+    /// fall back to the last day of months that are too short.
     public func nextCloseDate(asOf today: Date, cycleDay: Int) -> Date {
-        let day = max(1, min(28, cycleDay))
+        let requested = max(1, min(31, cycleDay))
         let startOfDay = calendar.startOfDay(for: today)
-        let comps = calendar.dateComponents([.year, .month, .day], from: startOfDay)
-        var thisMonth = DateComponents()
-        thisMonth.year = comps.year
-        thisMonth.month = comps.month
-        thisMonth.day = day
-        let candidate = calendar.date(from: thisMonth) ?? startOfDay
-        if candidate >= startOfDay {
-            return candidate
+        let comps = calendar.dateComponents([.year, .month], from: startOfDay)
+        let thisMonth = closeDate(year: comps.year ?? 1970,
+                                  month: comps.month ?? 1,
+                                  requestedDay: requested) ?? startOfDay
+        if thisMonth >= startOfDay {
+            return thisMonth
         }
-        return calendar.date(byAdding: .month, value: 1, to: candidate) ?? candidate
+        let nextRef = calendar.date(byAdding: .month, value: 1, to: thisMonth) ?? startOfDay
+        let nextComps = calendar.dateComponents([.year, .month], from: nextRef)
+        return closeDate(year: nextComps.year ?? 1970,
+                         month: nextComps.month ?? 1,
+                         requestedDay: requested) ?? nextRef
     }
 
-    /// The most-recent statement-close date strictly before `today`.
+    /// The most-recent statement-close date strictly before `today`. Cycle
+    /// days 29-31 fall back to the last day of months that are too short.
     public func previousCloseDate(asOf today: Date, cycleDay: Int) -> Date {
-        let day = max(1, min(28, cycleDay))
+        let requested = max(1, min(31, cycleDay))
         let startOfDay = calendar.startOfDay(for: today)
-        let comps = calendar.dateComponents([.year, .month, .day], from: startOfDay)
-        var thisMonth = DateComponents()
-        thisMonth.year = comps.year
-        thisMonth.month = comps.month
-        thisMonth.day = day
-        let candidate = calendar.date(from: thisMonth) ?? startOfDay
-        if candidate < startOfDay {
-            return candidate
+        let comps = calendar.dateComponents([.year, .month], from: startOfDay)
+        let thisMonth = closeDate(year: comps.year ?? 1970,
+                                  month: comps.month ?? 1,
+                                  requestedDay: requested) ?? startOfDay
+        if thisMonth < startOfDay {
+            return thisMonth
         }
-        return calendar.date(byAdding: .month, value: -1, to: candidate) ?? candidate
+        let prevRef = calendar.date(byAdding: .month, value: -1, to: thisMonth) ?? startOfDay
+        let prevComps = calendar.dateComponents([.year, .month], from: prevRef)
+        return closeDate(year: prevComps.year ?? 1970,
+                         month: prevComps.month ?? 1,
+                         requestedDay: requested) ?? prevRef
+    }
+
+    private func closeDate(year: Int, month: Int, requestedDay: Int) -> Date? {
+        var firstOfMonth = DateComponents()
+        firstOfMonth.year = year
+        firstOfMonth.month = month
+        firstOfMonth.day = 1
+        guard let firstDate = calendar.date(from: firstOfMonth),
+              let range = calendar.range(of: .day, in: .month, for: firstDate) else {
+            return nil
+        }
+        let actualDay = min(requestedDay, range.count)
+        var comps = DateComponents()
+        comps.year = year
+        comps.month = month
+        comps.day = actualDay
+        return calendar.date(from: comps)
     }
 }

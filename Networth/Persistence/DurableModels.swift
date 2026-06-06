@@ -121,7 +121,7 @@ public final class DurableCardSettings {
         minimumPaymentFloorMilliunits: Int64 = 25_000
     ) {
         self.accountId = accountId
-        self.statementCycleDay = max(1, min(28, statementCycleDay))
+        self.statementCycleDay = max(1, min(31, statementCycleDay))
         self.minimumPaymentPercentNumerator = minimumPaymentPercentNumerator
         self.minimumPaymentPercentDenominator = minimumPaymentPercentDenominator
         self.minimumPaymentFloorMilliunits = minimumPaymentFloorMilliunits

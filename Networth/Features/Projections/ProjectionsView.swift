@@ -144,7 +144,6 @@ struct ProjectionsView: View {
 
 private struct CCForecastCard: View {
     let projection: StatementProjection
-    @State private var mode: PayoffMode = .full
 
     var body: some View {
         NwCard(style: .primary) {
@@ -157,33 +156,15 @@ private struct CCForecastCard: View {
                                   style: .info, icon: nil)
                 }
 
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: NwSpacing.xs) {
-                        Text("Projected statement")
-                            .font(NwTypography.caption)
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-                        NwAmountText(projection.projectedStatementBalance, variant: .large)
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: NwSpacing.xs) {
-                        Text("Minimum")
-                            .font(NwTypography.caption)
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-                        NwAmountText(projection.minimumPayment, variant: .body, color: NwAppColors.caution)
-                    }
+                VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                    Text("Projected statement")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    NwAmountText(projection.projectedStatementBalance, variant: .large)
                 }
 
                 Divider()
-
-                HStack {
-                    payoffPill(.full, label: "Pay in full",
-                               amount: projection.projectedStatementBalance, carry: .zero)
-                    payoffPill(.minimum, label: "Minimum",
-                               amount: projection.minimumPayment,
-                               carry: projection.projectedStatementBalance - projection.minimumPayment)
-                }
 
                 HStack {
                     detail("Current owed", value: projection.currentBalanceOwed)
@@ -208,30 +189,5 @@ private struct CCForecastCard: View {
                 .font(NwTypography.footnoteEm)
                 .foregroundStyle(color)
         }
-    }
-
-    @ViewBuilder
-    private func payoffPill(_ payoff: PayoffMode, label: String, amount: Money, carry: Money) -> some View {
-        let isSelected = payoff == mode
-        Button {
-            mode = payoff
-        } label: {
-            VStack(alignment: .leading, spacing: NwSpacing.xs) {
-                Text(label).font(NwTypography.footnoteEm)
-                NwAmountText(amount, variant: .body)
-                Text("Carry: \(CurrencyFormatter.compact(carry < .zero ? .zero : carry))")
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(NwSpacing.md)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isSelected ? NwAppColors.primary.opacity(0.10) : NwAppColors.cardSurfaceAlt)
-            .overlay(
-                RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous)
-                    .stroke(isSelected ? NwAppColors.primary : NwAppColors.strokeSubtle, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
-        }
-        .buttonStyle(.plain)
     }
 }
