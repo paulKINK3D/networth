@@ -28,8 +28,6 @@ struct ProjectionsView: View {
     @Query private var userSettings: [DurableUserSettings]
     @Query private var exclusions: [DurableExcludedSpendCategory]
 
-    @State private var ccForecastExpanded: Bool = false
-
     init() {
         // Bound the historical-transactions query so we never pull years of
         // data into memory. 365 days comfortably covers the max 180-day
@@ -43,11 +41,17 @@ struct ProjectionsView: View {
     }
 
     var body: some View {
-        let projection = cashProjection
+        // Map CachedTransaction → TransactionSummary ONCE per render. Each
+        // toSummary() call decodes the JSON-encoded subtransactions; doing it
+        // three times (one per consumer) was the main source of the tab-switch
+        // lag.
+        let history = allTransactions.filter { !$0.deleted }.map { $0.toSummary() }
+        let projection = cashProjection(history: history)
+        let cards = cardProjections(history: history)
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                    if cardProjections.isEmpty && projection.pointsWithVariable.isEmpty {
+                    if cards.isEmpty && projection.pointsWithVariable.isEmpty {
                         NwEmptyState(
                             title: "Nothing to project yet",
                             message: "Add your YNAB token in Settings and set statement-close days on your credit cards.",
@@ -55,8 +59,8 @@ struct ProjectionsView: View {
                         )
                         .frame(minHeight: 320)
                     } else {
-                        if !cardProjections.isEmpty {
-                            ccForecastSection(projections: cardProjections)
+                        if !cards.isEmpty {
+                            CCForecastSection(projections: cards)
                         }
                         if !projection.pointsWithVariable.isEmpty {
                             cashCard(projection: projection)
@@ -64,8 +68,8 @@ struct ProjectionsView: View {
                         if !projection.alerts.isEmpty {
                             alertsCard(alerts: projection.alerts)
                         }
-                        if !allTransactions.isEmpty {
-                            CategorySpendingCard()
+                        if !history.isEmpty {
+                            CategorySpendingCard(history: history)
                                 .environment(container)
                         }
                     }
@@ -88,10 +92,15 @@ struct ProjectionsView: View {
         Money(milliunits: userSettings.first?.dipThresholdMilliunits ?? 500_000)
     }
 
-    private var cardProjections: [StatementProjection] {
+    private func cardProjections(history: [TransactionSummary]) -> [StatementProjection] {
         let forecaster = CCPaymentForecaster()
         let scheduledSummaries = scheduled.filter { !$0.deleted }.map { $0.toSummary() }
-        let history = allTransactions.map { $0.toSummary() }
+        // Pre-group already-summarized history by accountId so each per-card
+        // forecast walks just that card's slice.
+        var historyByAccount: [String: [TransactionSummary]] = [:]
+        for txn in history {
+            historyByAccount[txn.accountId, default: []].append(txn)
+        }
         let exclusions = excludedCategoryIds
         let outflowHidden = hiddenOutflowOnlyCategoryIds
         let spendIds = spendAccountIds
@@ -105,7 +114,7 @@ struct ProjectionsView: View {
                     card: card.toSnapshot(),
                     settings: setting.toCore(),
                     scheduled: scheduledSummaries,
-                    historicalTransactions: history,
+                    historicalTransactions: historyByAccount[card.id] ?? [],
                     excludedCategoryIds: exclusions,
                     outflowOnlyExcludedCategoryIds: outflowHidden,
                     spendAccountIds: spendIds,
@@ -156,13 +165,12 @@ struct ProjectionsView: View {
         Set(accounts.filter { !$0.deleted && $0.kind.isSpendAccount }.map { $0.id })
     }
 
-    private var cashProjection: CashPositionProjector.Result {
+    private func cashProjection(history: [TransactionSummary]) -> CashPositionProjector.Result {
         let projector = CashPositionProjector()
         let cashAccounts = accounts
             .filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
             .map { $0.toSnapshot() }
         let scheduledSummaries = scheduled.filter { !$0.deleted }.map { $0.toSummary() }
-        let history = allTransactions.filter { !$0.deleted }.map { $0.toSummary() }
         return projector.project(
             cashAccounts: cashAccounts,
             scheduled: scheduledSummaries,
@@ -175,42 +183,6 @@ struct ProjectionsView: View {
             horizonDays: horizon,
             dipThreshold: dipThreshold
         )
-    }
-
-    @ViewBuilder
-    private func ccForecastSection(projections: [StatementProjection]) -> some View {
-        let totalProjectedMU = projections.reduce(0) { $0 + $1.projectedStatementBalance.milliunits }
-        let totalProjected = Money(milliunits: totalProjectedMU)
-        VStack(alignment: .leading, spacing: NwSpacing.md) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { ccForecastExpanded.toggle() }
-            } label: {
-                HStack(spacing: NwSpacing.md) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Credit Card Forecast")
-                            .font(NwTypography.titleSmall)
-                            .foregroundStyle(NwAppColors.textPrimary)
-                        Text("\(projections.count) card\(projections.count == 1 ? "" : "s") · projected statements")
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    NwAmountText(totalProjected, variant: .body, color: NwAppColors.liability)
-                    Image(systemName: ccForecastExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if ccForecastExpanded {
-                ForEach(projections) { ccProjection in
-                    CCForecastCard(projection: ccProjection)
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
     }
 
     private func cashCard(projection: CashPositionProjector.Result) -> some View {
@@ -327,6 +299,51 @@ struct ProjectionsView: View {
     }
 }
 
+/// Section accordion above the individual CCForecastCard rows. Owns its own
+/// `expanded` state so toggling it doesn't ripple into ProjectionsView's body
+/// and force a recompute of cash + per-card projections.
+private struct CCForecastSection: View {
+    let projections: [StatementProjection]
+    @State private var expanded: Bool = false
+
+    private var totalProjected: Money {
+        Money(milliunits: projections.reduce(0) { $0 + $1.projectedStatementBalance.milliunits })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: NwSpacing.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Credit Card Forecast")
+                            .font(NwTypography.titleSmall)
+                            .foregroundStyle(NwAppColors.textPrimary)
+                        Text("\(projections.count) card\(projections.count == 1 ? "" : "s") · projected statements")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    NwAmountText(totalProjected, variant: .body, color: NwAppColors.liability)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                ForEach(projections) { ccProjection in
+                    CCForecastCard(projection: ccProjection)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
+
 private struct CCForecastCard: View {
     let projection: StatementProjection
     @State private var expanded: Bool = false
@@ -429,9 +446,13 @@ private struct CCForecastCard: View {
 private struct CategorySpendingCard: View {
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedCategory.groupName) private var categories: [CachedCategory]
-    @Query private var allTransactions: [CachedTransaction]
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query private var userSettings: [DurableUserSettings]
+
+    /// Already-summarized history passed in from ProjectionsView. Avoids a
+    /// duplicate @Query against CachedTransaction and skips a second pass of
+    /// JSON sub-decode work per render.
+    let history: [TransactionSummary]
 
     enum Mode: String, CaseIterable, Identifiable {
         case historical = "Historical"
@@ -449,19 +470,19 @@ private struct CategorySpendingCard: View {
     /// Window pill options.
     private static let pillOptions: [Int] = [30, 60, 90]
 
-    init() {
-        // Same 365-day bound as ProjectionsView — comfortably covers max 180-day
-        // lookback without dragging years of data into memory.
-        let cutoff = Calendar(identifier: .gregorian)
-            .date(byAdding: .day, value: -365, to: .now) ?? .distantPast
-        _allTransactions = Query(
-            filter: #Predicate<CachedTransaction> { $0.date >= cutoff && !$0.deleted },
-            sort: [SortDescriptor(\CachedTransaction.date, order: .reverse)]
-        )
+    init(history: [TransactionSummary]) {
+        self.history = history
     }
 
     /// Used as the historical basis for projection mode.
     private var settingsLookbackDays: Int { userSettings.first?.spendingLookbackDays ?? 60 }
+
+    /// User-facing rename for YNAB's hidden system group. "Internal Master
+    /// Category" houses inflows like "Inflow: Ready to Assign"; calling it
+    /// "Income" matches the user's mental model.
+    private func displayGroupName(_ raw: String) -> String {
+        raw == "Internal Master Category" ? "Income" : raw
+    }
 
     /// Active accounts whose transactions we scan for the breakdown.
     private var activeSpendAccountIds: Set<String> {
@@ -493,13 +514,13 @@ private struct CategorySpendingCard: View {
             if cat.hidden {
                 if cat.groupName == "Internal Master Category" {
                     internalIds.insert(cat.id)
-                    nameById[cat.id] = (cat.name, cat.groupName)
+                    nameById[cat.id] = (cat.name, displayGroupName(cat.groupName))
                 } else {
                     userHiddenIds.insert(cat.id)
                 }
                 continue
             }
-            nameById[cat.id] = (cat.name, cat.groupName)
+            nameById[cat.id] = (cat.name, displayGroupName(cat.groupName))
         }
         let activeIds = activeSpendAccountIds
         let allInternalIds = internalAccountIds
@@ -528,12 +549,11 @@ private struct CategorySpendingCard: View {
             totals[cid] = entry
         }
 
-        for txn in allTransactions {
+        for txn in history {
             guard activeIds.contains(txn.accountId) else { continue }
             guard txn.date >= windowStart else { continue }
-            let subs = txn.subtransactions
-            if !subs.isEmpty {
-                for sub in subs where !sub.deleted {
+            if txn.isSplit {
+                for sub in txn.subtransactions where !sub.deleted {
                     contribute(
                         amountMU: sub.amount.milliunits,
                         transferId: sub.transferAccountId,
@@ -543,7 +563,7 @@ private struct CategorySpendingCard: View {
                 }
             } else {
                 contribute(
-                    amountMU: txn.amountMilliunits,
+                    amountMU: txn.amount.milliunits,
                     transferId: txn.transferAccountId,
                     categoryId: txn.categoryId,
                     categoryName: txn.categoryName
@@ -646,11 +666,20 @@ private struct CategorySpendingCard: View {
                         .foregroundStyle(.secondary)
                 } else {
                     filterButton(rows: rows, selectedRows: selectedRows, selectionTotal: selectionTotal)
-                    Divider()
                     let groups = grouped(selectedRows)
-                    ForEach(Array(groups.enumerated()), id: \.element.group) { idx, group in
-                        groupSection(group: group.group, items: group.items)
-                        if idx != groups.count - 1 { Divider() }
+                    // Pinned section headers so the floating capsule sticks to
+                    // the top of the page scroll as you read down the groups.
+                    LazyVStack(spacing: NwSpacing.sm, pinnedViews: [.sectionHeaders]) {
+                        ForEach(groups, id: \.group) { group in
+                            Section {
+                                groupRowsCard(items: group.items)
+                            } header: {
+                                floatingGroupHeader(
+                                    title: group.group,
+                                    totalMU: group.items.reduce(0) { $0 + $1.total.milliunits }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -693,31 +722,57 @@ private struct CategorySpendingCard: View {
         }
     }
 
+    /// Sticky section header (modeled on WorkoutApp's `LiftFloatingHeader`).
+    /// Only the capsule itself is opaque — the spacers on either side are
+    /// fully transparent so content scrolls underneath cleanly.
     @ViewBuilder
-    private func groupSection(group: String, items: [Row]) -> some View {
-        let groupNetMU = items.reduce(0) { $0 + $1.total.milliunits }
-        VStack(alignment: .leading, spacing: NwSpacing.sm) {
-            HStack {
-                Text(group.uppercased())
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                NwAmountText(
-                    Money(milliunits: abs(groupNetMU)),
-                    variant: .body,
-                    color: groupNetMU < 0 ? NwAppColors.positive : NwAppColors.liability
-                )
+    private func floatingGroupHeader(title: String, totalMU: Int64) -> some View {
+        let groupColor: Color = totalMU < 0 ? NwAppColors.positive : NwAppColors.liability
+        HStack {
+            Spacer().frame(maxWidth: .infinity)
+            HStack(spacing: NwSpacing.sm) {
+                Text(title.uppercased())
+                    .font(NwTypography.headline)
+                    .foregroundStyle(.white)
+                Text("·")
+                    .foregroundStyle(.white.opacity(0.7))
+                Text(CurrencyFormatter.compact(Money(milliunits: abs(totalMU))))
+                    .font(NwTypography.headline)
+                    .foregroundStyle(.white)
             }
+            .padding(.horizontal, NwSpacing.lg)
+            .padding(.vertical, NwSpacing.sm)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(groupColor)
+                    .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+            )
+            .fixedSize()
+            Spacer().frame(maxWidth: .infinity)
+        }
+        .padding(.vertical, NwSpacing.sm)
+        .background(Color.clear)
+    }
+
+    @ViewBuilder
+    private func groupRowsCard(items: [Row]) -> some View {
+        VStack(spacing: 0) {
             ForEach(items) { row in
                 Button {
                     transactionsRow = row
                 } label: {
                     rowView(row)
+                        .padding(.horizontal, NwSpacing.md)
+                        .padding(.vertical, NwSpacing.sm)
                 }
                 .buttonStyle(.plain)
-                if row.id != items.last?.id { Divider() }
+                if row.id != items.last?.id {
+                    Divider().padding(.leading, NwSpacing.md)
+                }
             }
         }
+        .background(NwAppColors.cardSurfaceAlt)
+        .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
     }
 
     private func rowView(_ row: Row) -> some View {

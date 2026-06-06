@@ -14,9 +14,13 @@ struct ExcludedCategoriesSheet: View {
         Set(exclusions.map { $0.categoryId })
     }
 
+    private func displayGroupName(_ raw: String) -> String {
+        raw == "Internal Master Category" ? "Income" : raw
+    }
+
     private var grouped: [(group: String, items: [CachedCategory])] {
         let visible = categories.filter { !$0.deleted && !$0.name.isEmpty }
-        return Dictionary(grouping: visible, by: { $0.groupName })
+        return Dictionary(grouping: visible, by: { displayGroupName($0.groupName) })
             .map { (group: $0.key, items: $0.value.sorted { $0.name < $1.name }) }
             .sorted { lhs, rhs in
                 // Active groups first, "hidden master" groups at the bottom.
