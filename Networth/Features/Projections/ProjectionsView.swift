@@ -28,6 +28,8 @@ struct ProjectionsView: View {
     @Query private var userSettings: [DurableUserSettings]
     @Query private var exclusions: [DurableExcludedSpendCategory]
 
+    @State private var ccForecastExpanded: Bool = false
+
     init() {
         // Bound the historical-transactions query so we never pull years of
         // data into memory. 365 days comfortably covers the max 180-day
@@ -54,11 +56,7 @@ struct ProjectionsView: View {
                         .frame(minHeight: 320)
                     } else {
                         if !cardProjections.isEmpty {
-                            NwSectionHeader("Credit Card Forecast")
-                                .padding(.horizontal, 0)
-                            ForEach(cardProjections) { ccProjection in
-                                CCForecastCard(projection: ccProjection)
-                            }
+                            ccForecastSection(projections: cardProjections)
                         }
                         if !projection.pointsWithVariable.isEmpty {
                             cashCard(projection: projection)
@@ -177,6 +175,42 @@ struct ProjectionsView: View {
             horizonDays: horizon,
             dipThreshold: dipThreshold
         )
+    }
+
+    @ViewBuilder
+    private func ccForecastSection(projections: [StatementProjection]) -> some View {
+        let totalProjectedMU = projections.reduce(0) { $0 + $1.projectedStatementBalance.milliunits }
+        let totalProjected = Money(milliunits: totalProjectedMU)
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { ccForecastExpanded.toggle() }
+            } label: {
+                HStack(spacing: NwSpacing.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Credit Card Forecast")
+                            .font(NwTypography.titleSmall)
+                            .foregroundStyle(NwAppColors.textPrimary)
+                        Text("\(projections.count) card\(projections.count == 1 ? "" : "s") · projected statements")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    NwAmountText(totalProjected, variant: .body, color: NwAppColors.liability)
+                    Image(systemName: ccForecastExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if ccForecastExpanded {
+                ForEach(projections) { ccProjection in
+                    CCForecastCard(projection: ccProjection)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 
     private func cashCard(projection: CashPositionProjector.Result) -> some View {
@@ -399,10 +433,21 @@ private struct CategorySpendingCard: View {
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query private var userSettings: [DurableUserSettings]
 
+    enum Mode: String, CaseIterable, Identifiable {
+        case historical = "Historical"
+        case projection = "Projection"
+        var id: String { rawValue }
+    }
+
+    @State private var mode: Mode = .historical
+    @State private var windowDays: Int = 60
     /// nil = "all selected" pseudo-state (default). Empty set = none selected.
     @State private var selection: Set<String>? = nil
     @State private var showingFilterSheet = false
     @State private var transactionsRow: Row? = nil
+
+    /// Window pill options.
+    private static let pillOptions: [Int] = [30, 60, 90]
 
     init() {
         // Same 365-day bound as ProjectionsView — comfortably covers max 180-day
@@ -415,7 +460,8 @@ private struct CategorySpendingCard: View {
         )
     }
 
-    private var lookbackDays: Int { userSettings.first?.spendingLookbackDays ?? 60 }
+    /// Used as the historical basis for projection mode.
+    private var settingsLookbackDays: Int { userSettings.first?.spendingLookbackDays ?? 60 }
 
     /// Active accounts whose transactions we scan for the breakdown.
     private var activeSpendAccountIds: Set<String> {
@@ -434,7 +480,7 @@ private struct CategorySpendingCard: View {
     /// Aggregate the per-category totals once per body render. Hidden and
     /// deleted categories are skipped so this view stays consistent with the
     /// auto-excluded hidden categories in the cash projection.
-    private func computeRows() -> [Row] {
+    private func computeRows(lookbackDays: Int) -> [Row] {
         let now = Date.now
         let cal = Calendar(identifier: .gregorian)
         guard let windowStart = cal.date(byAdding: .day, value: -lookbackDays, to: cal.startOfDay(for: now)) else {
@@ -522,11 +568,50 @@ private struct CategorySpendingCard: View {
             .sorted { $0.total.milliunits > $1.total.milliunits }
     }
 
+    private func scaledRows(basis: Int, target: Int, source: [Row]) -> [Row] {
+        guard basis > 0 else { return source }
+        let scale = Double(target) / Double(basis)
+        return source.map { row in
+            Row(
+                id: row.id,
+                name: row.name,
+                groupName: row.groupName,
+                total: Money(milliunits: Int64((Double(row.total.milliunits) * scale).rounded())),
+                inflow: Money(milliunits: Int64((Double(row.inflow.milliunits) * scale).rounded())),
+                txnCount: row.txnCount
+            )
+        }
+    }
+
+    /// Rows for the selected mode/window combination. Historical = actual
+    /// activity over the pill window. Projection = activity over the user's
+    /// Settings lookback, scaled to the pill's future window length.
+    private var rows: [Row] {
+        switch mode {
+        case .historical:
+            return computeRows(lookbackDays: windowDays)
+        case .projection:
+            let basis = max(7, settingsLookbackDays)
+            let actuals = computeRows(lookbackDays: basis)
+            return scaledRows(basis: basis, target: windowDays, source: actuals)
+        }
+    }
+
+    private func grouped(_ rows: [Row]) -> [(group: String, items: [Row])] {
+        Dictionary(grouping: rows, by: { $0.groupName })
+            .map { (group: $0.key, items: $0.value.sorted { $0.total.milliunits > $1.total.milliunits }) }
+            .sorted { lhs, rhs in
+                let lhsTotal = lhs.items.reduce(0) { $0 + $1.total.milliunits }
+                let rhsTotal = rhs.items.reduce(0) { $0 + $1.total.milliunits }
+                return lhsTotal > rhsTotal
+            }
+    }
+
     var body: some View {
-        let rows = computeRows()
-        let selectedRows = selection.map { sel in rows.filter { sel.contains($0.id) } } ?? rows
+        let allRows = rows
+        let selectedRows = selection.map { sel in allRows.filter { sel.contains($0.id) } } ?? allRows
         let selectionTotal = Money(milliunits: selectedRows.reduce(0) { $0 + $1.total.milliunits })
-        return content(rows: rows, selectedRows: selectedRows, selectionTotal: selectionTotal)
+        return content(rows: allRows, selectedRows: selectedRows, selectionTotal: selectionTotal)
     }
 
     @ViewBuilder
@@ -534,58 +619,38 @@ private struct CategorySpendingCard: View {
         NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
                 HStack {
-                    Text("Spending by Category")
+                    Text(mode == .historical ? "Spending by Category" : "Projected Spend by Category")
                         .font(NwTypography.headline)
                     Spacer()
-                    Text("Last \(lookbackDays) days")
+                    Text(mode == .historical
+                         ? "Last \(windowDays) days"
+                         : "Next \(windowDays) days")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                 }
 
+                Picker("Mode", selection: $mode) {
+                    ForEach(Mode.allCases) { m in
+                        Text(m.rawValue).tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                pillsRow
+
                 if rows.isEmpty {
-                    Text("No cash-account spending in the window.")
+                    Text(mode == .historical
+                         ? "No cash-account spending in this window."
+                         : "Not enough history yet to project. Sync first.")
                         .font(NwTypography.callout)
                         .foregroundStyle(.secondary)
                 } else {
                     filterButton(rows: rows, selectedRows: selectedRows, selectionTotal: selectionTotal)
                     Divider()
-                    ForEach(selectedRows) { row in
-                        Button {
-                            transactionsRow = row
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(row.name)
-                                        .font(NwTypography.body)
-                                        .foregroundStyle(NwAppColors.textPrimary)
-                                    HStack(spacing: NwSpacing.xs) {
-                                        Text(row.groupName)
-                                        if row.hasInflow {
-                                            Text("·")
-                                            Text("incl. \(CurrencyFormatter.compact(row.inflow)) inflow")
-                                                .foregroundStyle(NwAppColors.positive)
-                                        }
-                                    }
-                                    .font(NwTypography.caption)
-                                    .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    NwAmountText(
-                                        row.total.absolute,
-                                        variant: .body,
-                                        color: row.total.isNegative ? NwAppColors.positive : NwAppColors.liability
-                                    )
-                                    Text("\(row.txnCount) txns")
-                                        .font(NwTypography.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                NwIcon.chevron.image.foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        if row.id != selectedRows.last?.id { Divider() }
+                    let groups = grouped(selectedRows)
+                    ForEach(Array(groups.enumerated()), id: \.element.group) { idx, group in
+                        groupSection(group: group.group, items: group.items)
+                        if idx != groups.count - 1 { Divider() }
                     }
                 }
             }
@@ -595,13 +660,92 @@ private struct CategorySpendingCard: View {
                 .environment(container)
         }
         .sheet(item: $transactionsRow) { row in
+            // Drill-down always uses the *historical* window — projections are
+            // derived from the same activity, so showing the basis history is
+            // the most useful context.
             CategoryTransactionsSheet(
                 categoryId: row.id,
                 categoryName: row.name,
-                lookbackDays: lookbackDays
+                lookbackDays: mode == .historical ? windowDays : settingsLookbackDays
             )
             .environment(container)
         }
+    }
+
+    private var pillsRow: some View {
+        HStack(spacing: NwSpacing.sm) {
+            ForEach(Self.pillOptions, id: \.self) { option in
+                let isOn = windowDays == option
+                Button {
+                    windowDays = option
+                } label: {
+                    Text("\(option)d")
+                        .font(NwTypography.footnoteEm)
+                        .padding(.vertical, NwSpacing.xs)
+                        .padding(.horizontal, NwSpacing.md)
+                        .background(isOn ? NwAppColors.primary : NwAppColors.cardSurfaceAlt)
+                        .foregroundStyle(isOn ? NwAppColors.textOnPrimary : NwAppColors.textPrimary)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private func groupSection(group: String, items: [Row]) -> some View {
+        let groupNetMU = items.reduce(0) { $0 + $1.total.milliunits }
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            HStack {
+                Text(group.uppercased())
+                    .font(NwTypography.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                NwAmountText(
+                    Money(milliunits: abs(groupNetMU)),
+                    variant: .body,
+                    color: groupNetMU < 0 ? NwAppColors.positive : NwAppColors.liability
+                )
+            }
+            ForEach(items) { row in
+                Button {
+                    transactionsRow = row
+                } label: {
+                    rowView(row)
+                }
+                .buttonStyle(.plain)
+                if row.id != items.last?.id { Divider() }
+            }
+        }
+    }
+
+    private func rowView(_ row: Row) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.name)
+                    .font(NwTypography.body)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                if row.hasInflow {
+                    Text("incl. \(CurrencyFormatter.compact(row.inflow)) inflow")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.positive)
+                }
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                NwAmountText(
+                    row.total.absolute,
+                    variant: .body,
+                    color: row.total.isNegative ? NwAppColors.positive : NwAppColors.liability
+                )
+                Text(mode == .historical ? "\(row.txnCount) txns" : "projected")
+                    .font(NwTypography.caption)
+                    .foregroundStyle(.secondary)
+            }
+            NwIcon.chevron.image.foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
     }
 
     private func filterButton(rows: [Row], selectedRows: [Row], selectionTotal: Money) -> some View {
