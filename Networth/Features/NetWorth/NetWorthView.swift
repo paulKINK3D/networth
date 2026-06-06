@@ -247,4 +247,5 @@ struct NetWorthView: View {
 
 extension Notification.Name {
     public static let selectTab = Notification.Name("NetworthSelectTab")
+    public static let showTutorial = Notification.Name("NetworthShowTutorial")
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// SF Symbols catalog. Use these names instead of raw strings so renames stay in one place.
-public enum NwIcon: String {
+public enum NwIcon: String, Sendable {
     // Navigation
     case netWorth     = "chart.line.uptrend.xyaxis"
     case projections  = "calendar.badge.clock"

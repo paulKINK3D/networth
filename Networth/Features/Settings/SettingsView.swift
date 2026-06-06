@@ -147,6 +147,27 @@ struct SettingsView: View {
                 } footer: {
                     Text("Set each card's statement close day so projections know when to roll over.")
                 }
+
+                Section {
+                    Button {
+                        NotificationCenter.default.post(name: .showTutorial, object: nil)
+                    } label: {
+                        HStack {
+                            Label {
+                                Text("Show Tutorial")
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                            } icon: {
+                                NwIcon.info.image.foregroundStyle(NwAppColors.primary)
+                            }
+                            Spacer()
+                            NwIcon.chevron.image.foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Help")
+                } footer: {
+                    Text("Replay the quick tour any time.")
+                }
             }
             .navigationTitle("Settings")
             .sheet(isPresented: $showingTokenSheet) {

@@ -1,9 +1,12 @@
 import SwiftUI
+import SwiftData
 
 struct ContentView: View {
     @Environment(AppContainerController.self) private var container
+    @Query private var userSettings: [DurableUserSettings]
     @State private var selection: Int = 0
     @State private var alertPayload: PersistenceFailure?
+    @State private var showingTutorial = false
 
     var body: some View {
         Group {
@@ -16,8 +19,24 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .selectTab)) { note in
             if let tab = note.object as? Int { selection = tab }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .showTutorial)) { _ in
+            showingTutorial = true
+        }
         .onChange(of: container.lastPersistenceError) { _, new in
             alertPayload = new
+        }
+        .onChange(of: container.unlocked) { _, isUnlocked in
+            if isUnlocked, !(userSettings.first?.hasSeenTutorial ?? false) {
+                showingTutorial = true
+            }
+        }
+        .task {
+            if container.unlocked, !(userSettings.first?.hasSeenTutorial ?? false) {
+                showingTutorial = true
+            }
+        }
+        .sheet(isPresented: $showingTutorial) {
+            TutorialView().environment(container)
         }
         .alert("Save failed",
                isPresented: Binding(get: { alertPayload != nil }, set: { if !$0 { alertPayload = nil } })) {

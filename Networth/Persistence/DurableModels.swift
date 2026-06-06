@@ -152,6 +152,7 @@ public final class DurableUserSettings {
     public var dipThresholdMilliunits: Int64 = 500_000  // $500
     public var historyHorizonMonths: Int = 24
     public var projectionHorizonDays: Int = 90
+    public var hasSeenTutorial: Bool = false
 
     public init(id: String = "singleton") { self.id = id }
 }
