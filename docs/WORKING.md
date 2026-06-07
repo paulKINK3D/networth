@@ -1,29 +1,29 @@
 # WORKING
 
-## Current State (2026-06-06)
-All seven phases (0-6) of `docs/PLAN.md` are implemented and validated.
+## Current State (2026-06-07)
+All seven phases (0-6) of `docs/PLAN.md` are implemented and validated. Post-phase additions also shipped: in-app tutorial, hidden-category exclusion for the spend projection, variable-spend extension of the CC forecaster, group rename, sticky group headers, Investments tab, app icon.
 
-- `Networth.xcodeproj` generated from `project.yml` via xcodegen.
-- App target builds clean on the iPhone 17 / iOS 26.5 simulator with zero warnings.
-- NetworthCore SPM package: 5 sub-modules plus an umbrella target — 17 Swift Testing tests pass under `swift test`.
-- App-target unit tests: 4 Swift Testing tests pass under `xcodebuild test`.
-
-## 2026-06-06 — Durable schema fix
-- First on-device launch crashed in `NetworthApp.init` with `SwiftDataError.loadIssueModelContainer`. Underlying CloudKit error: "CloudKit integration does not support unique constraints" on `DurableCardSettings.accountId`.
-- Stripped `@Attribute(.unique)` from all five durable models (`DurableManualAsset`, `DurableManualAssetValue`, `DurableNetWorthSnapshot`, `DurableCardSettings`, `DurableUserSettings`). The cache models keep `.unique` — they're in the local-only configuration.
-- The two call sites that depended on dedupe (`DurableUserSettings` singleton in `AppContainerController.bootstrap`, `DurableCardSettings` per accountId in `CardSettingsForm.save`) already do fetch-or-create, so behavior is unchanged.
-- **Lesson for any new durable model:** CloudKit-backed configurations forbid `@Attribute(.unique)`. Enforce uniqueness at the application layer via fetch-or-create instead.
+- `Networth.xcodeproj` is the source of truth. Add new files via Xcode's UI.
+- App target builds clean on the iPhone 17 / iOS 26.5 simulator.
+- NetworthCore SPM package: 5 sub-modules plus an umbrella target.
+- App-target unit tests: 8 Swift Testing tests under `xcodebuild test`.
 
 ## What ships
 - Single ModelContainer with two ModelConfigurations:
-  - `NetworthLocalCache` (no CloudKit) — `CachedBudget`, `CachedAccount`, `CachedTransaction`, `CachedScheduledTransaction`, `SyncCursor`.
-  - `NetworthDurable` (CloudKit private DB) — `DurableManualAsset`, `DurableManualAssetValue`, `DurableNetWorthSnapshot`, `DurableCardSettings`, `DurableUserSettings`.
+  - `NetworthLocalCache` (no CloudKit) — `CachedBudget`, `CachedAccount`, `CachedTransaction`, `CachedScheduledTransaction`, `CachedCategory`, `SyncCursor`.
+  - `NetworthDurable` (CloudKit private DB) — `DurableManualAsset`, `DurableManualAssetValue`, `DurableNetWorthSnapshot`, `DurableCardSettings`, `DurableUserSettings`, `DurableExcludedSpendCategory`.
 - `AppContainerController` (`@Observable`, `@MainActor`) owns `SecretStore`, `BiometricGate`, `YNABClient`, `ConnectivityMonitor`, `SnapshotScheduler`, `SyncCoordinator`.
 - Every IO boundary is protocol-based with a production and in-memory/scriptable/recorded fake.
 - `Nw*` design system: tokens (spacing, corner radius, typography, colors, shadow, opacity, stroke, icons) + components (card, section header, metric capsule, status badge, empty/loading state, inline notice, banner, modal layout, button styles, amount text).
-- 4 tabs: Net Worth · Projections · Accounts · Settings. CC payment forecast card with selectable payoff scenarios, cash position chart with dip/overdraft alerts.
-- Read-only YNAB v1 client (delta-sync aware via `last_knowledge_of_server`), Keychain-stored PAT with iCloud sync, optional Face ID gate.
+- 4 tabs: **Net Worth · Projections · Accounts · Investments**. Settings opens from a sheet behind the Net Worth toolbar. CC payment forecast card with selectable payoff scenarios, cash position chart with dip/overdraft alerts.
+- Read-only YNAB v1 client (delta-sync aware via `last_knowledge_of_server`), Keychain-stored PAT with iCloud sync, Face ID gate on by default when biometrics are available.
 - `safeSave(source:)` posts a notification on failure; container surfaces an alert.
+
+## Historical net-worth backfill
+- `SyncCoordinator.runHistoryBackfillIfNeeded(budgetId:)` runs at the end of `syncAll` and reconstructs 24 months of daily snapshots from cached YNAB transactions via `NetworthCore.AccountHistoryReconstructor` + `NetWorthHistoryAggregator`.
+- Gated by `DurableUserSettings.historyBackfillVersion` (default `0`, flipped to `1` after a successful run). The marker lives in the CloudKit-backed durable store so a device reinstall or iCloud restore doesn't re-trigger it.
+- Reconstructed rows are stamped `source = .backfill` (manual assets aren't included — their history doesn't extend that far back). When a `.backfill` row collides with a `.live` row from `SnapshotScheduler.recordIfNeeded`, the dedupe pass keeps `.live` so manual-asset totals are preserved.
+- `AppContainerController.forceFullResync()` clears all `SyncCursor` rows AND resets `historyBackfillVersion = 0`, so the next sync redoes the full 24-month fetch and reconstruction.
 
 ## Build & Test
 ```bash
@@ -43,6 +43,6 @@ xcodebuild test -project Networth.xcodeproj -scheme Networth \
 
 ## Known follow-ups
 - **First-build provisioning:** running on a real device (not the simulator) requires the user to set their development team in Xcode signing & capabilities. Use a personal Apple ID in `Xcode → Settings → Accounts`.
-- **App icon:** `AppIcon.appiconset` ships without a 1024×1024 PNG. Drop one in before TestFlight upload.
 - **CloudKit container:** the entitlement names `iCloud.com.bluelava.me.networth`. The user must create this container in their developer portal once before CloudKit sync starts working on-device.
 - **Numeric-first-tap-replaces-value:** the documented input pattern is stubbed in `ManualAssetForm.selectAllOnFirstTap()` — wire a UITextField responder coordinator if/when that polish is desired.
+- **Historical chart math when accounts close:** the 24-month reconstruction excludes closed YNAB accounts, which means transfers from a now-closed account into a still-open one get treated as external income. Walking the open account's balance backwards subtracts those inflows, producing artificially low (sometimes negative) historical values. Deferred — revisit after Plaid integration lands. Options when revisiting: detect YNAB-side transfers via `transfer_account_id` and skip them when the matching account isn't in the contributing set, or include closed accounts in reconstruction with a "closure shouldn't look like a drop" treatment. Diagnostic surface for inspecting the data is the ⓘ button on the Net Worth Trend card → `TrendDetailView`.

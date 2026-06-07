@@ -78,6 +78,9 @@ public final class SyncCoordinator {
             cacheContext.safeSave(source: "sync.cache")
             updateUserLastSynced(date: .now, budgetId: useBudget)
             durableContext.safeSave(source: "sync.durable")
+
+            runHistoryBackfillIfNeeded(budgetId: useBudget)
+
             lastSyncedAt = .now
             phase = .idle
         } catch let error as YNABClientError {
@@ -85,6 +88,122 @@ public final class SyncCoordinator {
         } catch {
             phase = .error(error.localizedDescription)
         }
+    }
+
+    // MARK: - Historical net-worth backfill
+
+    /// Reconstructs 24 months of daily net-worth snapshots from the cached
+    /// YNAB transactions and writes them as `.backfill` rows. Gated by a
+    /// CloudKit-synced marker on `DurableUserSettings` so it runs once per
+    /// iCloud account (re-runnable via `forceFullResync()`, which resets the
+    /// marker before syncing).
+    ///
+    /// Manual assets are intentionally excluded — their value history doesn't
+    /// extend that far back. When a backfill row collides with a `.live` row
+    /// for the same day, the dedupe pass keeps `.live` so manual-asset totals
+    /// are preserved.
+    func runHistoryBackfillIfNeeded(budgetId: String) {
+        let settingsDescriptor = FetchDescriptor<DurableUserSettings>()
+        guard let settings = try? durableContext.fetch(settingsDescriptor).first else { return }
+        guard settings.historyBackfillVersion < 1 else { return }
+
+        phase = .syncing(label: "Reconstructing history")
+
+        let calendar = Calendar(identifier: .gregorian)
+        let today = calendar.startOfDay(for: Date.now)
+        guard let windowStart = calendar.date(byAdding: .month, value: -24, to: today) else {
+            return
+        }
+
+        // Purge stale `.backfill` rows first so a re-run (via `forceFullResync`)
+        // regenerates clean history reflecting current account-filter logic.
+        // `.live` rows are preserved — they were written by `recordIfNeeded`
+        // during normal app use and already reflect the right account filter.
+        let backfillRaw = SnapshotSource.backfill.rawValue
+        let staleDescriptor = FetchDescriptor<DurableNetWorthSnapshot>(
+            predicate: #Predicate { $0.sourceRaw == backfillRaw }
+        )
+        if let stale = try? durableContext.fetch(staleDescriptor) {
+            for row in stale { durableContext.delete(row) }
+        }
+
+        // Match `SnapshotScheduler.computeBreakdown`'s filter so the historical
+        // chart and the live breakdown agree on which accounts contribute.
+        // Closed accounts are excluded: when a user closes an account in YNAB
+        // they expect it to leave the chart cleanly, not retroactively show up
+        // in earlier days and look like a drop on the close date.
+        let accountsDescriptor = FetchDescriptor<CachedAccount>(
+            predicate: #Predicate {
+                $0.budgetId == budgetId && $0.deleted == false && $0.closed == false
+            }
+        )
+        let accounts = (try? cacheContext.fetch(accountsDescriptor)) ?? []
+        guard !accounts.isEmpty else {
+            // Nothing to reconstruct, but mark complete so we don't keep retrying.
+            settings.historyBackfillVersion = 1
+            durableContext.safeSave(source: "sync.backfill.marker")
+            return
+        }
+
+        var dailyBalancesByAccount: [String: [AccountHistoryReconstructor.DailyBalance]] = [:]
+        var kindsById: [String: AccountKind] = [:]
+        let reconstructor = AccountHistoryReconstructor(calendar: calendar)
+
+        for account in accounts {
+            kindsById[account.id] = account.kind
+            let accountId = account.id
+            let txnDescriptor = FetchDescriptor<CachedTransaction>(
+                predicate: #Predicate {
+                    $0.accountId == accountId && $0.budgetId == budgetId && $0.deleted == false
+                }
+            )
+            let txns = ((try? cacheContext.fetch(txnDescriptor)) ?? []).map { $0.toSummary() }
+            dailyBalancesByAccount[account.id] = reconstructor.reconstruct(
+                currentBalance: account.balance,
+                transactions: txns,
+                from: windowStart,
+                to: today
+            )
+        }
+
+        let aggregated = NetWorthHistoryAggregator().aggregate(
+            dailyBalancesByAccount: dailyBalancesByAccount,
+            kindsById: kindsById,
+            manualAssetSeries: [:]
+        )
+
+        // After the purge above, the only days with existing snapshots are
+        // `.live` rows. Skip those so we never overwrite a richer live total
+        // (which includes manual assets) with a thinner backfill row.
+        let liveRaw = SnapshotSource.live.rawValue
+        let liveDescriptor = FetchDescriptor<DurableNetWorthSnapshot>(
+            predicate: #Predicate { $0.sourceRaw == liveRaw }
+        )
+        let liveDays = Set(((try? durableContext.fetch(liveDescriptor)) ?? [])
+            .map { calendar.startOfDay(for: $0.date) })
+
+        for snap in aggregated {
+            let day = calendar.startOfDay(for: snap.date)
+            if liveDays.contains(day) { continue }
+            durableContext.insert(DurableNetWorthSnapshot(
+                date: day,
+                assetsMilliunits: snap.assets.milliunits,
+                liabilitiesMilliunits: snap.liabilities.milliunits,
+                source: .backfill
+            ))
+        }
+
+        // Dedupe before flipping the marker so any same-day collisions get
+        // collapsed and the chart never renders a duplicate day.
+        SnapshotScheduler(cacheContext: cacheContext, durableContext: durableContext, calendar: calendar)
+            .dedupeSnapshotsForDuplicateDays()
+
+        durableContext.safeSave(source: "sync.backfill")
+
+        settings.historyBackfillVersion = 1
+        durableContext.safeSave(source: "sync.backfill.marker")
+
+        logger.info("History backfill complete: wrote \(aggregated.count) reconstructed days for budget \(budgetId, privacy: .private(mask: .hash)).")
     }
 
     private func humanize(_ err: YNABClientError) -> String {

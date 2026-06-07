@@ -21,7 +21,7 @@
 - **YNAB Personal Access Token (PAT)** entered once by the user.
 - Stored in **iCloud-synced Keychain** (`kSecAttrAccessibleWhenUnlocked` + `kSecAttrSynchronizable: true`).
 - API client abstracted so OAuth + write endpoints can be added later without rewriting call sites.
-- **Optional Face ID gate, off by default**, user toggle in Settings.
+- **Face ID gate enabled by default** when the device supports biometrics; user can disable in Settings. A versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows (from before the default change) to the new default on bootstrap, so iCloud-restored or cross-device settings do not silently leave the user unlocked.
 
 ### Data Model
 - **Net worth =** sum of YNAB account balances (assets − liabilities) **plus manual assets**.
@@ -69,6 +69,8 @@
 
 **Algorithm lives in `NetworthCore.Projections.CCPaymentForecaster`** — pure Swift, fully unit-tested with `swift test`.
 
+**Shipped extensions beyond the v1 spec above:** the forecaster also estimates ongoing variable spend from a configurable historical lookback (`DurableUserSettings.spendingLookbackDays`, default 60), handles split-transaction subcategories and internal transfers correctly, and supports a per-category hide/exclude list backed by `DurableExcludedSpendCategory` so cosmetic categories can be omitted from the projection.
+
 ### Manual Asset Cadence
 - **Monthly user-prompted updates.** App prompts on the 1st of each month to refresh values for any manual asset not edited in the past 30 days.
 - Each manual asset stores a value-history series (one entry per edit, timestamped).
@@ -80,7 +82,8 @@
   1. **Net Worth** — current total, historical chart, breakdown by account type, manual assets list.
   2. **Projections** — credit card payment cards, cash position, alerts, burn-downs.
   3. **Accounts** — YNAB accounts + manual assets, drill-down to balance and recent activity.
-  4. **Settings** — token entry, Face ID toggle, sync controls, manual asset CRUD.
+  4. **Investments** — investment-typed YNAB accounts and manual investment assets; placeholder for future Plaid-fed per-security holdings.
+- **Settings** is opened from a sheet behind the Net Worth toolbar (token entry, Face ID toggle, sync controls, manual asset CRUD) — not a tab. The 4-tab budget was spent on Investments instead.
 - No transactions tab; users open YNAB if they need to browse transactions.
 - No privacy mode (tap-to-blur amounts) in v1.
 
@@ -120,16 +123,21 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 - Endpoints we read: budgets, accounts, categories, transactions, scheduled_transactions, payees, months.
 
 ## Phases
-- [ ] **Phase 0 — Bootstrap:** Xcode project, SPM `NetworthCore` package, design-system token files (`Nw*`).
-- [ ] **Phase 1 — Auth + sync:** Settings screen, PAT entry, Keychain storage, YNAB client, initial budget/account fetch, SwiftData cache.
-- [ ] **Phase 2 — Net Worth tab:** Current total, account breakdown, 24-month historical reconstruction, daily snapshot job.
-- [ ] **Phase 3 — Manual Assets:** CRUD UI, CloudKit sync, integration into net worth total.
-- [ ] **Phase 4 — Projections tab:** Credit card payment forecasts (must-have), then cash position / alerts / burn-downs.
-- [ ] **Phase 5 — Accounts tab:** List + drill-down, recent activity (read-only from cache).
-- [ ] **Phase 6 — Polish:** Face ID toggle, error states, empty states, splash/onboarding, sync indicators.
+- [x] **Phase 0 — Bootstrap:** Xcode project, SPM `NetworthCore` package, design-system token files (`Nw*`).
+- [x] **Phase 1 — Auth + sync:** Settings screen, PAT entry, Keychain storage, YNAB client, initial budget/account fetch, SwiftData cache.
+- [x] **Phase 2 — Net Worth tab:** Current total, account breakdown, 24-month historical reconstruction, daily snapshot job.
+- [x] **Phase 3 — Manual Assets:** CRUD UI, CloudKit sync, integration into net worth total.
+- [x] **Phase 4 — Projections tab:** Credit card payment forecasts (must-have), then cash position / alerts / burn-downs.
+- [x] **Phase 5 — Accounts tab:** List + drill-down, recent activity (read-only from cache).
+- [x] **Phase 6 — Polish:** Face ID toggle, error states, empty states, splash/onboarding, sync indicators.
+
+All initial phases shipped. Next initiative: Plaid integration — see `docs/2026-06-06-plaid-integration-research.md`.
 
 ## Key Decisions Log
 - **2026-06-05** — Initial Q&A locked: PAT, iPhone-only, personal-use, hybrid persistence, 4-tab Net Worth–first IA, Deep Slate theme, read-only YNAB integration with write-capable architecture, 90-day projection horizon.
 - **2026-06-05** — Project identity locked: display name `BlueLava Networth`, bundle ID `com.bluelava.me.networth`, CloudKit container `iCloud.com.bluelava.me.networth`, iOS 26 minimum.
 - **2026-06-05** — CC payment forecast: user-entered statement cycle day per card; algorithm = balance + scheduled charges − scheduled payments before close.
 - **2026-06-05** — Manual asset cadence: monthly user-prompted updates, full value-history retained.
+- **2026-06-06** — IA change: replaced the planned Settings tab with an Investments tab (placeholder for Plaid-fed holdings); Settings now opens from a sheet behind the Net Worth toolbar.
+- **2026-06-06** — Face ID default flipped from off to on when the device supports biometrics; a versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows forward so iCloud-restored or cross-device settings never silently leave the user unlocked.
+- **2026-06-07** — Historical net-worth backfill wired into the first successful sync. Reconstruction lives in `NetworthCore`, is invoked from `SyncCoordinator.runHistoryBackfillIfNeeded`, writes `.backfill`-stamped `DurableNetWorthSnapshot` rows, and is gated by `DurableUserSettings.historyBackfillVersion` (CloudKit-synced, re-runnable via `forceFullResync()`). Source-aware dedupe preserves `.live` rows (which include manual assets) over `.backfill` rows on collision.

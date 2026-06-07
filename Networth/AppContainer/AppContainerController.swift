@@ -116,15 +116,30 @@ public final class AppContainerController {
         }
     }
 
-    /// Wipe all YNAB delta cursors, then run a full sync. Used when a schema
-    /// change requires a backfill (e.g. new fields on transactions).
+    /// Full reset: wipe all YNAB delta cursors, the historical-backfill marker,
+    /// AND every `DurableNetWorthSnapshot` row in the CloudKit-backed store,
+    /// then run a full sync. The snapshot purge is what makes the chart
+    /// consistent with the current account set — old `.live` rows from
+    /// previous sessions (when more accounts were open) would otherwise
+    /// shadow the freshly reconstructed history via the dedupe pass.
+    ///
+    /// Preserves manual assets, their value history, user settings, and card
+    /// settings. Only chart snapshots are destroyed.
     public func forceFullResync() async {
         let ctx = modelContainer.mainContext
-        let descriptor = FetchDescriptor<SyncCursor>()
-        if let cursors = try? ctx.fetch(descriptor) {
+        let cursorDescriptor = FetchDescriptor<SyncCursor>()
+        if let cursors = try? ctx.fetch(cursorDescriptor) {
             for cursor in cursors { ctx.delete(cursor) }
-            ctx.safeSave(source: "forceFullResync.clearCursors")
         }
+        let snapshotDescriptor = FetchDescriptor<DurableNetWorthSnapshot>()
+        if let snapshots = try? ctx.fetch(snapshotDescriptor) {
+            for snap in snapshots { ctx.delete(snap) }
+        }
+        let settingsDescriptor = FetchDescriptor<DurableUserSettings>()
+        if let settings = try? ctx.fetch(settingsDescriptor).first {
+            settings.historyBackfillVersion = 0
+        }
+        ctx.safeSave(source: "forceFullResync.wipeAll")
         await syncNow()
     }
 

@@ -33,11 +33,41 @@ public final class SnapshotScheduler {
         let snap = DurableNetWorthSnapshot(
             date: day,
             assetsMilliunits: breakdown.totalAssets.milliunits,
-            liabilitiesMilliunits: breakdown.totalLiabilities.milliunits
+            liabilitiesMilliunits: breakdown.totalLiabilities.milliunits,
+            source: .live
         )
         durableContext.insert(snap)
+        dedupeSnapshotsForDuplicateDays()
         durableContext.safeSave(source: "snapshot.daily")
         return snap
+    }
+
+    /// Collapses multiple snapshots sharing the same start-of-day. Tiebreak:
+    /// `.live` always wins over `.backfill` (live includes manual assets);
+    /// then highest `createdAt` (freshest write); then lexically-lowest UUID
+    /// for the rare case where source and timestamp tie.
+    ///
+    /// Safe to call any time — when there are no duplicates, this is just one
+    /// fetch and a group-by, no writes. Save is the caller's responsibility.
+    public func dedupeSnapshotsForDuplicateDays() {
+        let descriptor = FetchDescriptor<DurableNetWorthSnapshot>()
+        guard let all = try? durableContext.fetch(descriptor), !all.isEmpty else { return }
+
+        let groups = Dictionary(grouping: all) { calendar.startOfDay(for: $0.date) }
+        for (_, rows) in groups where rows.count > 1 {
+            let survivor = rows.sorted { lhs, rhs in
+                if lhs.source != rhs.source {
+                    return lhs.source == .live
+                }
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }.first!
+            for row in rows where row.id != survivor.id {
+                durableContext.delete(row)
+            }
+        }
     }
 
     public func computeBreakdown() -> NetWorthBreakdown {

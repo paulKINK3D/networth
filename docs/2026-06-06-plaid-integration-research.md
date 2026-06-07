@@ -51,7 +51,7 @@ iOS Link setup: use a stable HTTPS domain for the Worker before production linki
 ## iOS-side changes (this repo)
 
 ### New SPM dependency
-- Add Plaid Link through `project.yml` / XcodeGen, not by hand-editing `Networth.xcodeproj/project.pbxproj`.
+- Add Plaid Link in Xcode (File → Add Package Dependencies…). The repo no longer uses XcodeGen — `Networth.xcodeproj` is the source of truth.
 - Package URL: `https://github.com/plaid/plaid-link-ios-spm`
 - Product: `LinkKit`
 
@@ -101,14 +101,14 @@ iOS Link setup: use a stable HTTPS domain for the Worker before production linki
 ### Tutorial
 - Add a step explaining that Plaid is optional and only needed for per-security investments.
 
-### project.yml / pbxproj
-- Register the new files through existing source globs where possible.
-- Add the Plaid SPM dependency and `LinkKit` product in `project.yml`, then regenerate `Networth.xcodeproj` with XcodeGen. Do not hand-edit `project.pbxproj` as the source of truth.
+### Xcode project changes
+- Add new Swift files to the project via Xcode (drag into the navigator or right-click group → Add Files...).
+- Add the Plaid SPM dependency and `LinkKit` product via Xcode's File → Add Package Dependencies dialog.
 
 ## Implementation Phasing
 
 1. **Phase 1 — Backend (~half day)**: scaffold the Worker, model multiple Items per bearer token, deploy to `sandbox`, smoke-test link-token + exchange against the Plaid sandbox.
-2. **Phase 2 — iOS scaffolding (~half day)**: add the SPM dep through `project.yml`, create the cache models + core models, register in `ModelContainerFactory`, stub `PlaidClient`.
+2. **Phase 2 — iOS scaffolding (~half day)**: add the SPM dep via Xcode, create the cache models + core models, register in `ModelContainerFactory`, stub `PlaidClient`.
 3. **Phase 3 — Link flow (~half day)**: configure redirect URI + Universal Links, implement Settings → Connect a Bank, run a live link against the Plaid sandbox institution `ins_109508`, confirm exchange persists an Item server-side.
 4. **Phase 4 — Holdings sync (~half day)**: fetch and persist accounts + holdings + securities, rewrite InvestmentsView.
 5. **Phase 5 — Unlink + transactions sync + webhook (~half day)**: working Item removal, investment transactions, and a webhook receiver.
@@ -127,7 +127,7 @@ iOS Link setup: use a stable HTTPS domain for the Worker before production linki
 - `Networth/Features/Investments/InvestmentsView.swift` — rewrite around holdings.
 - `Networth/Features/Settings/SettingsView.swift` — Connect a Bank section.
 - `Networth/Features/Tutorial/TutorialStep.swift` — extra step.
-- `project.yml` — add Plaid SPM package + `LinkKit` dependency, then regenerate `Networth.xcodeproj`.
+- `Networth.xcodeproj` — add Plaid SPM package + `LinkKit` dependency via Xcode's package dialog.
 
 ## Verification
 

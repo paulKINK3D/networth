@@ -1,6 +1,19 @@
 import Foundation
 import Money
 
+/// Where a persisted `DurableNetWorthSnapshot` row came from.
+///
+/// `.live` rows are written by `SnapshotScheduler.recordIfNeeded` during normal
+/// app use and include manual assets. `.backfill` rows are written by the
+/// one-time 24-month reconstruction and only include YNAB account balances
+/// (manual-asset history doesn't extend that far back). When both kinds collide
+/// on the same day, the dedupe pass prefers `.live` because it carries more
+/// information.
+public enum SnapshotSource: String, Sendable, Hashable, Codable, CaseIterable {
+    case live
+    case backfill
+}
+
 public struct NetWorthSnapshot: Sendable, Hashable, Codable, Identifiable {
     public let id: UUID
     /// Day-resolution date (use the start of the local day).

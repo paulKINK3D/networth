@@ -92,17 +92,34 @@ public final class DurableNetWorthSnapshot {
     public var date: Date = Date.now
     public var assetsMilliunits: Int64 = 0
     public var liabilitiesMilliunits: Int64 = 0
+    /// Raw `SnapshotSource.rawValue`. Defaults to `"live"` so legacy rows that
+    /// predate this field are treated as live snapshots (which is what they
+    /// were — only `recordIfNeeded` wrote snapshots before backfill existed).
+    public var sourceRaw: String = SnapshotSource.live.rawValue
+    /// First-write time on this device. Used as a dedupe tiebreaker among same-
+    /// source rows so the freshest write survives.
+    public var createdAt: Date = Date.now
 
-    public init(id: UUID = UUID(), date: Date = .now, assetsMilliunits: Int64 = 0, liabilitiesMilliunits: Int64 = 0) {
+    public init(
+        id: UUID = UUID(),
+        date: Date = .now,
+        assetsMilliunits: Int64 = 0,
+        liabilitiesMilliunits: Int64 = 0,
+        source: SnapshotSource = .live,
+        createdAt: Date = .now
+    ) {
         self.id = id
         self.date = date
         self.assetsMilliunits = assetsMilliunits
         self.liabilitiesMilliunits = liabilitiesMilliunits
+        self.sourceRaw = source.rawValue
+        self.createdAt = createdAt
     }
 
     public var assets: Money { Money(milliunits: assetsMilliunits) }
     public var liabilities: Money { Money(milliunits: liabilitiesMilliunits) }
     public var netWorth: Money { assets - liabilities }
+    public var source: SnapshotSource { SnapshotSource(rawValue: sourceRaw) ?? .live }
 }
 
 @Model
@@ -159,6 +176,11 @@ public final class DurableUserSettings {
     /// Bumped when a one-time migration changes existing settings defaults.
     /// Version 2 = enable Face ID when biometric is available.
     public var settingsSchemaVersion: Int = 0
+    /// `0` = backfill not yet run on this iCloud account. Bumped to `1` after
+    /// the 24-month historical reconstruction successfully writes snapshots.
+    /// Lives here (CloudKit-synced) instead of in the disposable local cache
+    /// so a device reinstall or restore doesn't accidentally re-run backfill.
+    public var historyBackfillVersion: Int = 0
 
     public init(id: String = "singleton") { self.id = id }
 }

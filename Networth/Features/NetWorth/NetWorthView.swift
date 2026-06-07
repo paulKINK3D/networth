@@ -10,6 +10,7 @@ struct NetWorthView: View {
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
 
     @State private var range: Range = .twelveMonths
+    @State private var showingTrendDetail = false
 
     enum Range: String, CaseIterable, Identifiable {
         case threeMonths = "3M"
@@ -62,6 +63,9 @@ struct NetWorthView: View {
             .toolbar { syncToolbarItem }
             .refreshable {
                 await container.syncNow()
+            }
+            .sheet(isPresented: $showingTrendDetail) {
+                TrendDetailView().environment(container)
             }
         }
     }
@@ -169,6 +173,13 @@ struct NetWorthView: View {
                     Text("Trend")
                         .font(NwTypography.headline)
                     Spacer()
+                    Button {
+                        showingTrendDetail = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
                     Picker("", selection: $range) {
                         ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
                     }

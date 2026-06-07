@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var showingNewAsset = false
     @State private var showingCardSheet: CachedAccount? = nil
     @State private var showingExclusionsSheet = false
+    @State private var showingForceResyncConfirm = false
 
     private var settings: DurableUserSettings? { settingsList.first }
 
@@ -64,19 +65,26 @@ struct SettingsView: View {
                         Text(settings?.lastSyncedAt.map { DateDisplay.shortDate($0) } ?? "Never")
                             .foregroundStyle(.secondary)
                     }
+                    if let phaseLabel = syncPhaseLabel {
+                        HStack(spacing: NwSpacing.sm) {
+                            ProgressView().controlSize(.small)
+                            Text(phaseLabel)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Button("Sync Now") {
                         Task { await container.syncNow() }
                     }
-                    .disabled(!container.hasYNABToken)
+                    .disabled(!container.hasYNABToken || isSyncing)
                     Button("Force Full Resync") {
-                        Task { await container.forceFullResync() }
+                        showingForceResyncConfirm = true
                     }
-                    .disabled(!container.hasYNABToken)
+                    .disabled(!container.hasYNABToken || isSyncing)
                     .foregroundStyle(NwAppColors.liability)
                 } header: {
                     Text("Sync")
                 } footer: {
-                    Text("Force Full Resync clears the YNAB delta cursors so the next sync re-fetches everything — use this if categories or balances look stale.")
+                    Text("Force Full Resync wipes every daily net-worth snapshot from iCloud and rebuilds the chart from scratch by re-fetching YNAB. Use it when the chart is showing accounts you've since closed, or when balances look stale. Manual assets and your settings are preserved.")
                 }
 
                 Section {
@@ -222,7 +230,25 @@ struct SettingsView: View {
             .sheet(isPresented: $showingExclusionsSheet) {
                 ExcludedCategoriesSheet().environment(container)
             }
+            .alert("Force Full Resync?", isPresented: $showingForceResyncConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Wipe & Rebuild", role: .destructive) {
+                    Task { await container.forceFullResync() }
+                }
+            } message: {
+                Text("This deletes every daily net-worth snapshot from iCloud and rebuilds the chart from scratch by re-fetching YNAB. Manual assets and settings are preserved.")
+            }
         }
+    }
+
+    private var isSyncing: Bool {
+        if case .syncing = container.syncCoordinator.phase { return true }
+        return false
+    }
+
+    private var syncPhaseLabel: String? {
+        if case .syncing(let label) = container.syncCoordinator.phase { return label }
+        return nil
     }
 
     private var horizonBinding: Binding<Int> {

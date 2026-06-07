@@ -6,7 +6,7 @@
 - Distribution: personal use only — sideload via Xcode / TestFlight, not App Store
 - Main app target: `Networth`
 - Unit test target: `NetworthTests` (Apple Testing framework, not XCTest)
-- Xcode project: `Networth.xcodeproj` (not yet created — see `docs/WORKING.md`)
+- Xcode project: `Networth.xcodeproj` is the source of truth. Add files via Xcode's UI (drag into the navigator or "Add Files to Networth..."). No project-generation tooling.
 - Core domain package: `NetworthCore/` (local SPM package — pure Swift, no UI)
 
 ## Purpose
@@ -21,10 +21,10 @@ Personal iPhone app that augments YNAB with net worth tracking (YNAB accounts + 
 - `docs/`: PLAN.md (durable scope), WORKING.md (volatile session state), other long-lived notes
 
 ## Key App Behavior
-- Single-user app gated by an optional Face ID toggle (off by default).
+- Single-user app gated by a Face ID toggle that defaults ON when the device supports biometrics. A versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows forward so iCloud-restored or cross-device settings never silently leave the user unlocked.
 - YNAB Personal Access Token entered once in Settings, stored in iCloud-synced Keychain so a future device swap is zero-friction.
 - On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, `YNABClient` (actor), `ModelContainer`, `ConnectivityMonitor`.
-- 4-tab structure: Net Worth · Projections · Accounts · Settings.
+- 4-tab structure: Net Worth · Projections · Accounts · Investments. Settings is opened from a sheet behind the Net Worth toolbar (not a tab).
 - Sync strategy: SwiftData local cache for YNAB data (re-fetchable); CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings).
 
 ## Startup Checks
@@ -39,7 +39,6 @@ Personal iPhone app that augments YNAB with net worth tracking (YNAB accounts + 
 - At the start of work in a repo, also check whether the `~/dotfiles` repo is up to date with its remote before relying on shared templates or instructions. If it is behind, call that out so the user can decide whether to update it.
 
 ## Build And Test Commands
-Xcode project does not exist yet. Once Phase 0 (Bootstrap) lands, the canonical commands will be:
 ```bash
 # List available simulators (run this first to find a valid destination)
 xcodebuild -showdestinations -scheme Networth 2>&1 | head -30
@@ -120,7 +119,7 @@ cd NetworthCore && swift test
   fixes apply globally.
 - **Theme:** "Deep Slate" — navy/teal accent (`#1E3A8A` family); teal for positive deltas, muted red for liabilities/regressions. Defined in `NwAppColors`.
 - **Currency display:** never show raw milliunits. Always route through `NetworthCore.Money` formatters. Hide cents where the design calls for compact metrics; show full precision in detail rows.
-- **Information architecture is fixed at 4 tabs:** Net Worth · Projections · Accounts · Settings. Do not add tabs without a scope decision logged in `docs/PLAN.md`.
+- **Information architecture is fixed at 4 tabs:** Net Worth · Projections · Accounts · Investments. Settings is opened from a sheet behind the Net Worth toolbar (not a tab). Do not add tabs without a scope decision logged in `docs/PLAN.md`.
 - **No privacy/blur mode** in v1 (explicitly scoped out).
 - **No transactions tab** in v1 (explicitly scoped out — users open YNAB to browse transactions).
 
