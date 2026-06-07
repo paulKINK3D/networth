@@ -18,17 +18,19 @@ public final class SyncCoordinator {
     public private(set) var lastSyncedAt: Date?
 
     private let client: any YNABClient
-    private let cacheContext: ModelContext
-    private let durableContext: ModelContext
+    private let mainContext: ModelContext
     private let logger = Logger(subsystem: "com.bluelava.me.networth", category: "sync")
 
-    public init(client: any YNABClient, cacheContext: ModelContext, durableContext: ModelContext) {
+    public init(client: any YNABClient, mainContext: ModelContext) {
         self.client = client
-        self.cacheContext = cacheContext
-        self.durableContext = durableContext
+        self.mainContext = mainContext
     }
 
     public func syncAll(budgetId: String?) async {
+        // Don't pile on concurrent syncs. The phase observer doubles as a
+        // sync-in-flight flag here; if another sync is already running, this
+        // call is a no-op.
+        if case .syncing = phase { return }
         do {
             phase = .syncing(label: "Budgets")
             let budgets = try await client.budgets()
@@ -75,17 +77,36 @@ public final class SyncCoordinator {
             upsertTransactions(txnResp.transactions, budgetId: useBudget)
             saveCursor(key: "transactions:\(useBudget)", value: txnResp.server_knowledge)
 
-            cacheContext.safeSave(source: "sync.cache")
+            guard mainContext.safeSave(source: "sync.cache") else {
+                // Roll back the upserts + cursor writes so a retry in the
+                // same app session doesn't read partially-persisted state.
+                mainContext.rollback()
+                phase = .error("Saving synced data failed. Retry the sync in a moment.")
+                return
+            }
             updateUserLastSynced(date: .now, budgetId: useBudget)
-            durableContext.safeSave(source: "sync.durable")
+            guard mainContext.safeSave(source: "sync.durable") else {
+                mainContext.rollback()
+                phase = .error("Saving sync state failed. Retry the sync in a moment.")
+                return
+            }
 
-            runHistoryBackfillIfNeeded(budgetId: useBudget)
+            let backfillOK = runHistoryBackfillIfNeeded(budgetId: useBudget)
+            guard backfillOK else {
+                phase = .error("Saving the historical chart data failed. Retry the sync in a moment.")
+                return
+            }
 
             lastSyncedAt = .now
             phase = .idle
         } catch let error as YNABClientError {
+            // Any in-flight upserts before the YNAB request threw should be
+            // discarded — they were never saved, but rollback also clears
+            // them from the in-memory store.
+            mainContext.rollback()
             phase = .error(humanize(error))
         } catch {
+            mainContext.rollback()
             phase = .error(error.localizedDescription)
         }
     }
@@ -102,17 +123,36 @@ public final class SyncCoordinator {
     /// extend that far back. When a backfill row collides with a `.live` row
     /// for the same day, the dedupe pass keeps `.live` so manual-asset totals
     /// are preserved.
-    func runHistoryBackfillIfNeeded(budgetId: String) {
+    /// Returns `true` when the backfill is in a clean state (either it ran
+    /// to completion and persisted, or it was already done and nothing was
+    /// needed). Returns `false` only when the marker is still at 0 due to a
+    /// failed save — the caller should propagate that as a sync failure so
+    /// `lastSyncedAt` and `.idle` aren't set on a half-finished backfill.
+    @discardableResult
+    func runHistoryBackfillIfNeeded(budgetId: String) -> Bool {
         let settingsDescriptor = FetchDescriptor<DurableUserSettings>()
-        guard let settings = try? durableContext.fetch(settingsDescriptor).first else { return }
-        guard settings.historyBackfillVersion < 1 else { return }
+        // A failed fetch or a missing row both mean we can't trust the
+        // backfill state — treat as a real failure so sync surfaces it
+        // instead of silently reporting success.
+        let settings: DurableUserSettings
+        do {
+            guard let row = try mainContext.fetch(settingsDescriptor).first else {
+                logger.error("History backfill: no DurableUserSettings row; treating as failure.")
+                return false
+            }
+            settings = row
+        } catch {
+            logger.error("History backfill: settings fetch failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        guard settings.historyBackfillVersion < 1 else { return true }
 
         phase = .syncing(label: "Reconstructing history")
 
         let calendar = Calendar(identifier: .gregorian)
         let today = calendar.startOfDay(for: Date.now)
         guard let windowStart = calendar.date(byAdding: .month, value: -24, to: today) else {
-            return
+            return true
         }
 
         // Purge stale `.backfill` rows first so a re-run (via `forceFullResync`)
@@ -123,8 +163,8 @@ public final class SyncCoordinator {
         let staleDescriptor = FetchDescriptor<DurableNetWorthSnapshot>(
             predicate: #Predicate { $0.sourceRaw == backfillRaw }
         )
-        if let stale = try? durableContext.fetch(staleDescriptor) {
-            for row in stale { durableContext.delete(row) }
+        if let stale = try? mainContext.fetch(staleDescriptor) {
+            for row in stale { mainContext.delete(row) }
         }
 
         // Match `SnapshotScheduler.computeBreakdown`'s filter so the historical
@@ -137,12 +177,17 @@ public final class SyncCoordinator {
                 $0.budgetId == budgetId && $0.deleted == false && $0.closed == false
             }
         )
-        let accounts = (try? cacheContext.fetch(accountsDescriptor)) ?? []
+        let accounts = (try? mainContext.fetch(accountsDescriptor)) ?? []
         guard !accounts.isEmpty else {
             // Nothing to reconstruct, but mark complete so we don't keep retrying.
+            // Only flip the marker if the save actually persists.
             settings.historyBackfillVersion = 1
-            durableContext.safeSave(source: "sync.backfill.marker")
-            return
+            if !mainContext.safeSave(source: "sync.backfill.marker") {
+                mainContext.rollback()
+                logger.error("History backfill marker save failed for empty-accounts case; will retry on next sync.")
+                return false
+            }
+            return true
         }
 
         var dailyBalancesByAccount: [String: [AccountHistoryReconstructor.DailyBalance]] = [:]
@@ -157,7 +202,7 @@ public final class SyncCoordinator {
                     $0.accountId == accountId && $0.budgetId == budgetId && $0.deleted == false
                 }
             )
-            let txns = ((try? cacheContext.fetch(txnDescriptor)) ?? []).map { $0.toSummary() }
+            let txns = ((try? mainContext.fetch(txnDescriptor)) ?? []).map { $0.toSummary() }
             dailyBalancesByAccount[account.id] = reconstructor.reconstruct(
                 currentBalance: account.balance,
                 transactions: txns,
@@ -179,13 +224,13 @@ public final class SyncCoordinator {
         let liveDescriptor = FetchDescriptor<DurableNetWorthSnapshot>(
             predicate: #Predicate { $0.sourceRaw == liveRaw }
         )
-        let liveDays = Set(((try? durableContext.fetch(liveDescriptor)) ?? [])
+        let liveDays = Set(((try? mainContext.fetch(liveDescriptor)) ?? [])
             .map { calendar.startOfDay(for: $0.date) })
 
         for snap in aggregated {
             let day = calendar.startOfDay(for: snap.date)
             if liveDays.contains(day) { continue }
-            durableContext.insert(DurableNetWorthSnapshot(
+            mainContext.insert(DurableNetWorthSnapshot(
                 date: day,
                 assetsMilliunits: snap.assets.milliunits,
                 liabilitiesMilliunits: snap.liabilities.milliunits,
@@ -195,15 +240,32 @@ public final class SyncCoordinator {
 
         // Dedupe before flipping the marker so any same-day collisions get
         // collapsed and the chart never renders a duplicate day.
-        SnapshotScheduler(cacheContext: cacheContext, durableContext: durableContext, calendar: calendar)
+        SnapshotScheduler(mainContext: mainContext, calendar: calendar)
             .dedupeSnapshotsForDuplicateDays()
 
-        durableContext.safeSave(source: "sync.backfill")
+        guard mainContext.safeSave(source: "sync.backfill") else {
+            // Snapshot save failed. Discard the inserted-but-unsaved rows
+            // and the deletes-pending-save so the next retry starts from
+            // the same on-disk state we started this run from. Marker stays
+            // at 0.
+            mainContext.rollback()
+            logger.error("History backfill snapshot save failed; marker stays at 0 for retry.")
+            return false
+        }
 
         settings.historyBackfillVersion = 1
-        durableContext.safeSave(source: "sync.backfill.marker")
+        if !mainContext.safeSave(source: "sync.backfill.marker") {
+            // Snapshots saved but marker didn't. Roll back the unsaved
+            // marker change so in-memory state matches disk; the next sync
+            // sees version=0 on disk and re-runs. Dedupe and the
+            // .live-preserving skip keep that re-run idempotent.
+            mainContext.rollback()
+            logger.error("History backfill marker save failed; snapshots persisted but marker stays at 0.")
+            return false
+        }
 
         logger.info("History backfill complete: wrote \(aggregated.count) reconstructed days for budget \(budgetId, privacy: .private(mask: .hash)).")
+        return true
     }
 
     private func humanize(_ err: YNABClientError) -> String {
@@ -229,7 +291,7 @@ public final class SyncCoordinator {
                 existing.name = b.name
                 existing.currencyISO = b.currency_format?.iso_code ?? existing.currencyISO
             } else {
-                cacheContext.insert(CachedBudget(
+                mainContext.insert(CachedBudget(
                     id: b.id, name: b.name,
                     currencyISO: b.currency_format?.iso_code ?? "USD",
                     lastModifiedRaw: b.last_modified_on
@@ -253,7 +315,7 @@ public final class SyncCoordinator {
                 existing.deleted = a.deleted
                 existing.updatedAt = .now
             } else {
-                cacheContext.insert(CachedAccount(
+                mainContext.insert(CachedAccount(
                     id: a.id, budgetId: budgetId, name: a.name, typeRaw: a.type,
                     balanceMilliunits: a.balance, clearedMilliunits: a.cleared_balance,
                     unclearedMilliunits: a.uncleared_balance,
@@ -284,7 +346,7 @@ public final class SyncCoordinator {
                 existing.date = parsed
                 existing.subtransactionsData = subData
             } else {
-                cacheContext.insert(CachedTransaction(
+                mainContext.insert(CachedTransaction(
                     id: t.id, budgetId: budgetId, accountId: t.account_id, date: parsed,
                     amountMilliunits: t.amount,
                     cleared: t.cleared == "cleared" || t.cleared == "reconciled",
@@ -311,7 +373,7 @@ public final class SyncCoordinator {
                     existing.hidden = cat.hidden || group.hidden
                     existing.deleted = cat.deleted || group.deleted
                 } else {
-                    cacheContext.insert(CachedCategory(
+                    mainContext.insert(CachedCategory(
                         id: cat.id, budgetId: budgetId,
                         groupId: group.id, groupName: group.name,
                         name: cat.name,
@@ -338,7 +400,7 @@ public final class SyncCoordinator {
                 existing.memo = s.memo
                 existing.deleted = s.deleted
             } else {
-                cacheContext.insert(CachedScheduledTransaction(
+                mainContext.insert(CachedScheduledTransaction(
                     id: s.id, budgetId: budgetId, accountId: s.account_id,
                     nextDate: parsed, frequencyRaw: s.frequency,
                     amountMilliunits: s.amount,
@@ -354,11 +416,11 @@ public final class SyncCoordinator {
     private func updateUserLastSynced(date: Date, budgetId: String) {
         let descriptor = FetchDescriptor<DurableUserSettings>()
         let settings: DurableUserSettings
-        if let existing = try? durableContext.fetch(descriptor).first {
+        if let existing = try? mainContext.fetch(descriptor).first {
             settings = existing
         } else {
             settings = DurableUserSettings()
-            durableContext.insert(settings)
+            mainContext.insert(settings)
         }
         settings.lastSyncedAt = date
         if settings.selectedBudgetId == nil {
@@ -374,7 +436,7 @@ public final class SyncCoordinator {
 
     private func clearCursor(key: String) {
         if let existing = fetchOne(SyncCursor.self, where: #Predicate { $0.key == key }) {
-            cacheContext.delete(existing)
+            mainContext.delete(existing)
         }
     }
 
@@ -404,7 +466,7 @@ public final class SyncCoordinator {
             predicate: #Predicate { $0.categoryId != nil }
         )
         descriptor.fetchLimit = 1
-        return ((try? cacheContext.fetch(descriptor).count) ?? 0) > 0
+        return ((try? mainContext.fetch(descriptor).count) ?? 0) > 0
     }
 
     private func saveCursor(key: String, value: Int64?) {
@@ -413,13 +475,13 @@ public final class SyncCoordinator {
             existing.serverKnowledge = value
             existing.updatedAt = .now
         } else {
-            cacheContext.insert(SyncCursor(key: key, serverKnowledge: value))
+            mainContext.insert(SyncCursor(key: key, serverKnowledge: value))
         }
     }
 
     private func fetchOne<T: PersistentModel>(_ type: T.Type, where predicate: Predicate<T>) -> T? {
         var descriptor = FetchDescriptor<T>(predicate: predicate)
         descriptor.fetchLimit = 1
-        return try? cacheContext.fetch(descriptor).first
+        return try? mainContext.fetch(descriptor).first
     }
 }

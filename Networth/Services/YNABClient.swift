@@ -35,6 +35,7 @@ public actor LiveYNABClient: YNABClient {
     private let session: URLSession
     private var token: String?
     private var lastRate: YNABRateLimitInfo?
+    private var lastRateObservedAt: Date?
     private let logger = Logger(subsystem: "com.bluelava.me.networth", category: "ynab-client")
     private let decoder: JSONDecoder = JSONDecoder()
 
@@ -95,8 +96,31 @@ public actor LiveYNABClient: YNABClient {
         return env.data
     }
 
+    /// How close we let the rolling counter get to YNAB's stated limit before
+    /// proactively refusing requests. YNAB allows 200/hour; we stop at 195 so
+    /// a runaway burst (e.g. repeated force-resyncs) can't fully exhaust the
+    /// quota and lock the user out of legitimate syncs.
+    private static let rateLimitSafetyMargin: Int = 5
+
+    /// How long the throttle stays engaged before we let a probe request
+    /// through to refresh `lastRate`. YNAB's window is rolling-hour, so 60s
+    /// is enough for several slots to fall off and prevents us from getting
+    /// stuck refusing forever based on a single old observation.
+    private static let rateLimitCooldownSeconds: TimeInterval = 60
+
     private func get<T: Decodable & Sendable>(_ path: String) async throws -> T {
         guard let token, !token.isEmpty else { throw YNABClientError.missingToken }
+
+        // Proactive throttle: if the last response showed us near the limit
+        // AND that observation is still fresh, refuse before issuing another
+        // request. After the cooldown, a probe is allowed through so the
+        // rolling-hour window can naturally recover without an app restart.
+        if let rate = lastRate, let observed = lastRateObservedAt,
+           rate.used >= rate.limit - Self.rateLimitSafetyMargin,
+           Date.now.timeIntervalSince(observed) < Self.rateLimitCooldownSeconds {
+            throw YNABClientError.rateLimited
+        }
+
         // Concatenate explicitly: URL(string:relativeTo:) drops baseURL's path
         // segment when the relative ref starts with "/", which routes calls to
         // api.ynab.com/budgets instead of api.ynab.com/v1/budgets.
@@ -123,6 +147,7 @@ public actor LiveYNABClient: YNABClient {
             let parts = rateHeader.split(separator: "/")
             if parts.count == 2, let used = Int(parts[0]), let limit = Int(parts[1]) {
                 lastRate = YNABRateLimitInfo(used: used, limit: limit)
+                lastRateObservedAt = Date.now
             }
         }
 

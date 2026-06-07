@@ -8,6 +8,7 @@ struct CardSettingsForm: View {
     let account: CachedAccount
 
     @State private var cycleDay: Int = 1
+    @State private var saveError: String?
 
     var body: some View {
         NwModalLayout(
@@ -16,6 +17,9 @@ struct CardSettingsForm: View {
             onConfirm: save
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                if let saveError {
+                    NwInlineNotice("Couldn't save", message: saveError, tone: .warning)
+                }
                 NwInlineNotice(
                     "Statement cycle day",
                     message: "Enter the day of the month your statement closes. We use this for projections.",
@@ -57,15 +61,31 @@ struct CardSettingsForm: View {
         let descriptor = FetchDescriptor<DurableCardSettings>(
             predicate: #Predicate { $0.accountId == targetId }
         )
+        let isNew: Bool
         let setting: DurableCardSettings
         if let existing = try? ctx.fetch(descriptor).first {
             setting = existing
+            isNew = false
         } else {
             setting = DurableCardSettings(accountId: account.id)
             ctx.insert(setting)
+            isNew = true
         }
+        // Snapshot prior day so a save failure rolls back only this form's
+        // mutation. Context-wide rollback would also discard any unrelated
+        // pending changes in the shared main context.
+        let priorDay = setting.statementCycleDay
         setting.statementCycleDay = max(1, min(31, cycleDay))
-        ctx.safeSave(source: "cardSettings.save")
+        let succeeded = ctx.safeSave(source: "cardSettings.save")
+        guard succeeded else {
+            if isNew {
+                ctx.delete(setting)
+            } else {
+                setting.statementCycleDay = priorDay
+            }
+            saveError = "Saving card settings failed. Your selection is still here — try again."
+            return
+        }
         dismiss()
     }
 }

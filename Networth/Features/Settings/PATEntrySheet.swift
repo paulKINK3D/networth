@@ -13,7 +13,7 @@ struct PATEntrySheet: View {
             title: "YNAB Personal Access Token",
             onClose: { dismiss() },
             onConfirm: save,
-            confirmDisabled: token.isEmpty || saving
+            confirmDisabled: trimmedToken.isEmpty || saving
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
                 NwInlineNotice(
@@ -53,11 +53,15 @@ struct PATEntrySheet: View {
         .presentationDetents([.medium, .large])
     }
 
+    private var trimmedToken: String {
+        token.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func save() {
         saving = true
         Task {
             do {
-                try await container.saveYNABToken(token)
+                try await container.saveYNABToken(trimmedToken)
                 dismiss()
             } catch {
                 self.error = error.localizedDescription

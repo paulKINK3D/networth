@@ -7,14 +7,12 @@ import NetworthCore
 /// the latest known manual-asset values. Idempotent within a single day.
 @MainActor
 public final class SnapshotScheduler {
-    private let cacheContext: ModelContext
-    private let durableContext: ModelContext
+    private let mainContext: ModelContext
     private let calendar: Calendar
     private let logger = Logger(subsystem: "com.bluelava.me.networth", category: "snapshot")
 
-    public init(cacheContext: ModelContext, durableContext: ModelContext, calendar: Calendar = .current) {
-        self.cacheContext = cacheContext
-        self.durableContext = durableContext
+    public init(mainContext: ModelContext, calendar: Calendar = .current) {
+        self.mainContext = mainContext
         self.calendar = calendar
     }
 
@@ -25,7 +23,7 @@ public final class SnapshotScheduler {
         let descriptor = FetchDescriptor<DurableNetWorthSnapshot>(
             predicate: #Predicate { $0.date == day }
         )
-        if let existing = try? durableContext.fetch(descriptor).first {
+        if let existing = try? mainContext.fetch(descriptor).first {
             return existing
         }
 
@@ -36,9 +34,9 @@ public final class SnapshotScheduler {
             liabilitiesMilliunits: breakdown.totalLiabilities.milliunits,
             source: .live
         )
-        durableContext.insert(snap)
+        mainContext.insert(snap)
         dedupeSnapshotsForDuplicateDays()
-        durableContext.safeSave(source: "snapshot.daily")
+        mainContext.safeSave(source: "snapshot.daily")
         return snap
     }
 
@@ -51,7 +49,7 @@ public final class SnapshotScheduler {
     /// fetch and a group-by, no writes. Save is the caller's responsibility.
     public func dedupeSnapshotsForDuplicateDays() {
         let descriptor = FetchDescriptor<DurableNetWorthSnapshot>()
-        guard let all = try? durableContext.fetch(descriptor), !all.isEmpty else { return }
+        guard let all = try? mainContext.fetch(descriptor), !all.isEmpty else { return }
 
         let groups = Dictionary(grouping: all) { calendar.startOfDay(for: $0.date) }
         for (_, rows) in groups where rows.count > 1 {
@@ -65,7 +63,7 @@ public final class SnapshotScheduler {
                 return lhs.id.uuidString < rhs.id.uuidString
             }.first!
             for row in rows where row.id != survivor.id {
-                durableContext.delete(row)
+                mainContext.delete(row)
             }
         }
     }
@@ -81,7 +79,7 @@ public final class SnapshotScheduler {
         let accountDescriptor = FetchDescriptor<CachedAccount>(
             predicate: #Predicate { $0.deleted == false && $0.closed == false }
         )
-        let accounts = (try? cacheContext.fetch(accountDescriptor)) ?? []
+        let accounts = (try? mainContext.fetch(accountDescriptor)) ?? []
         for account in accounts {
             let kind = account.kind
             let balance = account.balance
@@ -106,7 +104,7 @@ public final class SnapshotScheduler {
         let manualDescriptor = FetchDescriptor<DurableManualAsset>(
             predicate: #Predicate { $0.deleted == false }
         )
-        let manual = (try? durableContext.fetch(manualDescriptor)) ?? []
+        let manual = (try? mainContext.fetch(manualDescriptor)) ?? []
         let manualTotal = Money(milliunits: manual.reduce(Int64(0)) { $0 + $1.currentValueMilliunits })
 
         return NetWorthBreakdown(

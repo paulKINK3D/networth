@@ -12,6 +12,7 @@ struct ManualAssetForm: View {
     @State private var kind: ManualAssetKind = .other
     @State private var amountText: String = ""
     @State private var note: String = ""
+    @State private var saveError: String?
 
     var body: some View {
         NwModalLayout(
@@ -21,6 +22,9 @@ struct ManualAssetForm: View {
             confirmDisabled: name.isEmpty || amountValue == nil
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                if let saveError {
+                    NwInlineNotice("Couldn't save", message: saveError, tone: .warning)
+                }
                 field("Name") {
                     TextField("e.g. Primary Home", text: $name)
                         .textInputAutocapitalization(.words)
@@ -110,6 +114,7 @@ struct ManualAssetForm: View {
         guard let amount = amountValue else { return }
         let ctx = container.modelContainer.mainContext
 
+        let isNew = (asset == nil)
         let working: DurableManualAsset
         if let asset {
             working = asset
@@ -117,6 +122,16 @@ struct ManualAssetForm: View {
             working = DurableManualAsset(name: name, kind: kind)
             ctx.insert(working)
         }
+
+        // Snapshot prior state so we can roll back only this form's
+        // mutations on save failure. ctx.rollback() would discard ALL
+        // pending changes in the shared main context, including any
+        // unrelated edits from elsewhere.
+        let priorName = working.name
+        let priorKindRaw = working.kindRaw
+        let priorNotes = working.notes
+        let priorLastUpdatedAt = working.lastUpdatedAt
+        let priorValues = working.values
 
         working.name = name
         working.kindRaw = kind.rawValue
@@ -136,7 +151,21 @@ struct ManualAssetForm: View {
             working.values?.append(entry)
         }
 
-        ctx.safeSave(source: "manualAsset.save")
+        let succeeded = ctx.safeSave(source: "manualAsset.save")
+        guard succeeded else {
+            ctx.delete(entry)
+            if isNew {
+                ctx.delete(working)
+            } else {
+                working.values = priorValues
+                working.name = priorName
+                working.kindRaw = priorKindRaw
+                working.notes = priorNotes
+                working.lastUpdatedAt = priorLastUpdatedAt
+            }
+            saveError = "Saving the asset failed. Your changes are still here — try again or close and re-open the sheet."
+            return
+        }
         container.recordDailySnapshot()
         dismiss()
     }

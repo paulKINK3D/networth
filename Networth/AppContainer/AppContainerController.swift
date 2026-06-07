@@ -36,8 +36,8 @@ public final class AppContainerController {
         self.modelContainer = modelContainer
         self.connectivity = ConnectivityMonitor()
         let ctx = modelContainer.mainContext
-        self.snapshotScheduler = SnapshotScheduler(cacheContext: ctx, durableContext: ctx)
-        self.syncCoordinator = SyncCoordinator(client: ynabClient, cacheContext: ctx, durableContext: ctx)
+        self.snapshotScheduler = SnapshotScheduler(mainContext: ctx)
+        self.syncCoordinator = SyncCoordinator(client: ynabClient, mainContext: ctx)
 
         observePersistenceFailures()
     }
@@ -92,9 +92,13 @@ public final class AppContainerController {
     }
 
     public func saveYNABToken(_ token: String) async throws {
-        try secretStore.save(token, for: .ynabPersonalAccessToken)
-        await ynabClient.setToken(token)
-        hasYNABToken = !token.isEmpty
+        // Trim whitespace and newlines before storing. Pasted tokens from web
+        // sources frequently include trailing newlines which corrupt the
+        // Authorization header and produce 401s with no obvious cause.
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        try secretStore.save(trimmed, for: .ynabPersonalAccessToken)
+        await ynabClient.setToken(trimmed)
+        hasYNABToken = !trimmed.isEmpty
     }
 
     public func clearYNABToken() async throws {
@@ -126,6 +130,10 @@ public final class AppContainerController {
     /// Preserves manual assets, their value history, user settings, and card
     /// settings. Only chart snapshots are destroyed.
     public func forceFullResync() async {
+        // Block the wipe if a sync is already running — we don't want to
+        // delete snapshots and cursors out from under it. The user should
+        // wait for the active sync to finish before resyncing from scratch.
+        if case .syncing = syncCoordinator.phase { return }
         let ctx = modelContainer.mainContext
         let cursorDescriptor = FetchDescriptor<SyncCursor>()
         if let cursors = try? ctx.fetch(cursorDescriptor) {
