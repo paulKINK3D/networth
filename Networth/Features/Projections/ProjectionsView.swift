@@ -448,6 +448,7 @@ private struct CategorySpendingCard: View {
     @Query(sort: \CachedCategory.groupName) private var categories: [CachedCategory]
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query private var userSettings: [DurableUserSettings]
+    @Query private var exclusions: [DurableExcludedSpendCategory]
 
     /// Already-summarized history passed in from ProjectionsView. Avoids a
     /// duplicate @Query against CachedTransaction and skips a second pass of
@@ -462,8 +463,6 @@ private struct CategorySpendingCard: View {
 
     @State private var mode: Mode = .historical
     @State private var windowDays: Int = 60
-    /// nil = "all selected" pseudo-state (default). Empty set = none selected.
-    @State private var selection: Set<String>? = nil
     @State private var showingFilterSheet = false
     @State private var transactionsRow: Row? = nil
 
@@ -627,9 +626,17 @@ private struct CategorySpendingCard: View {
             }
     }
 
+    /// Single source of truth for "deselected" categories: anything present in
+    /// `DurableExcludedSpendCategory` is hidden from this breakdown AND
+    /// excluded from the cash-position spend math (via the projector wiring
+    /// elsewhere in this file). Settings → Excluded Categories and the
+    /// Projections filter sheet both read/write this same list.
+    private var excludedIds: Set<String> { Set(exclusions.map { $0.categoryId }) }
+
     var body: some View {
         let allRows = rows
-        let selectedRows = selection.map { sel in allRows.filter { sel.contains($0.id) } } ?? allRows
+        let excluded = excludedIds
+        let selectedRows = allRows.filter { !excluded.contains($0.id) }
         let selectionTotal = Money(milliunits: selectedRows.reduce(0) { $0 + $1.total.milliunits })
         return content(rows: allRows, selectedRows: selectedRows, selectionTotal: selectionTotal)
     }
@@ -685,7 +692,7 @@ private struct CategorySpendingCard: View {
             }
         }
         .sheet(isPresented: $showingFilterSheet) {
-            CategoryFilterSheet(rows: rows, selection: $selection)
+            CategoryFilterSheet(rows: rows)
                 .environment(container)
         }
         .sheet(item: $transactionsRow) { row in
@@ -804,12 +811,14 @@ private struct CategorySpendingCard: View {
     }
 
     private func filterButton(rows: [Row], selectedRows: [Row], selectionTotal: Money) -> some View {
-        Button {
+        let visibleIds = Set(rows.map { $0.id })
+        let anyExcluded = !excludedIds.isDisjoint(with: visibleIds)
+        return Button {
             showingFilterSheet = true
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(selection == nil ? "All categories" : "\(selectedRows.count) of \(rows.count) selected")
+                    Text(anyExcluded ? "\(selectedRows.count) of \(rows.count) selected" : "All categories")
                         .font(NwTypography.bodyEmphasis)
                         .foregroundStyle(NwAppColors.textPrimary)
                     Text("Tap to filter")

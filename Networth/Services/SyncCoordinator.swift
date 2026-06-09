@@ -21,6 +21,16 @@ public final class SyncCoordinator {
     private let mainContext: ModelContext
     private let logger = Logger(subsystem: "com.bluelava.me.networth", category: "sync")
 
+    /// One-stop version constant for the history-backfill gate. Bumping this
+    /// re-runs the 24-month reconstruction for every existing install.
+    /// Versions:
+    ///   1 — original reconstruction (closed-only filter).
+    ///   2 — sign- and kind-aware cross-closed transfer handling (later abandoned).
+    ///   3 — closed-account opt-in inclusion (Fix 2 final design).
+    /// Used by the guard *and* every success marker write so the two can't
+    /// silently drift apart and cause backfill to re-run forever.
+    public static let currentHistoryBackfillVersion: Int = 3
+
     public init(client: any YNABClient, mainContext: ModelContext) {
         self.client = client
         self.mainContext = mainContext
@@ -145,20 +155,36 @@ public final class SyncCoordinator {
             logger.error("History backfill: settings fetch failed: \(error.localizedDescription, privacy: .public)")
             return false
         }
-        guard settings.historyBackfillVersion < 1 else { return true }
+        guard settings.historyBackfillVersion < Self.currentHistoryBackfillVersion else { return true }
 
         phase = .syncing(label: "Reconstructing history")
 
         let calendar = Calendar(identifier: .gregorian)
         let today = calendar.startOfDay(for: Date.now)
-        guard let windowStart = calendar.date(byAdding: .month, value: -24, to: today) else {
+        guard let defaultWindowStart = calendar.date(byAdding: .month, value: -24, to: today) else {
+            return true
+        }
+        // User-chosen floor wins over the 24-month default. Setting a
+        // `chartStartDate` is the user's way of saying "the historical
+        // reconstruction before this date is unreliable; don't try."
+        let chartFloor = settings.chartStartDate.map { calendar.startOfDay(for: $0) }
+        let windowStart = max(defaultWindowStart, chartFloor ?? defaultWindowStart)
+        // If the floor is at or after today, there's nothing to reconstruct.
+        guard windowStart <= today else {
+            settings.historyBackfillVersion = Self.currentHistoryBackfillVersion
+            if !mainContext.safeSave(source: "sync.backfill.marker") {
+                mainContext.rollback()
+                logger.error("History backfill marker save failed when chartStartDate >= today; will retry on next sync.")
+                return false
+            }
             return true
         }
 
-        // Purge stale `.backfill` rows first so a re-run (via `forceFullResync`)
-        // regenerates clean history reflecting current account-filter logic.
-        // `.live` rows are preserved — they were written by `recordIfNeeded`
-        // during normal app use and already reflect the right account filter.
+        // Purge stale `.backfill` rows first so a re-run (via `forceFullResync`
+        // or a version bump) regenerates clean history reflecting the current
+        // reconstruction logic. `.live` rows are preserved — they were
+        // written by `recordIfNeeded` during normal app use and already
+        // reflect the right account filter.
         let backfillRaw = SnapshotSource.backfill.rawValue
         let staleDescriptor = FetchDescriptor<DurableNetWorthSnapshot>(
             predicate: #Predicate { $0.sourceRaw == backfillRaw }
@@ -167,21 +193,32 @@ public final class SyncCoordinator {
             for row in stale { mainContext.delete(row) }
         }
 
-        // Match `SnapshotScheduler.computeBreakdown`'s filter so the historical
-        // chart and the live breakdown agree on which accounts contribute.
-        // Closed accounts are excluded: when a user closes an account in YNAB
-        // they expect it to leave the chart cleanly, not retroactively show up
-        // in earlier days and look like a drop on the close date.
-        let accountsDescriptor = FetchDescriptor<CachedAccount>(
+        // Fetch open accounts (`!closed && !deleted`) — those always contribute
+        // to the historical reconstruction. Then fetch the user's
+        // opt-in list of closed accounts to also walk. Walking a closed
+        // account today (with balance $0) recovers its real historical
+        // balance via the transactions YNAB still has on file; the user
+        // toggles in only accounts whose history matters (brokerage
+        // staging accounts, etc).
+        let openAccountsDescriptor = FetchDescriptor<CachedAccount>(
             predicate: #Predicate {
                 $0.budgetId == budgetId && $0.deleted == false && $0.closed == false
             }
         )
-        let accounts = (try? mainContext.fetch(accountsDescriptor)) ?? []
-        guard !accounts.isEmpty else {
+        let openAccounts = (try? mainContext.fetch(openAccountsDescriptor)) ?? []
+        let includedClosedDescriptor = FetchDescriptor<DurableIncludedClosedAccount>()
+        let includedIds = Set(((try? mainContext.fetch(includedClosedDescriptor)) ?? []).map { $0.accountId })
+        let closedAccountsDescriptor = FetchDescriptor<CachedAccount>(
+            predicate: #Predicate {
+                $0.budgetId == budgetId && $0.deleted == false && $0.closed == true
+            }
+        )
+        let includedClosedAccounts = ((try? mainContext.fetch(closedAccountsDescriptor)) ?? [])
+            .filter { includedIds.contains($0.id) }
+        let walkedAccounts = openAccounts + includedClosedAccounts
+        guard !walkedAccounts.isEmpty else {
             // Nothing to reconstruct, but mark complete so we don't keep retrying.
-            // Only flip the marker if the save actually persists.
-            settings.historyBackfillVersion = 1
+            settings.historyBackfillVersion = Self.currentHistoryBackfillVersion
             if !mainContext.safeSave(source: "sync.backfill.marker") {
                 mainContext.rollback()
                 logger.error("History backfill marker save failed for empty-accounts case; will retry on next sync.")
@@ -194,7 +231,7 @@ public final class SyncCoordinator {
         var kindsById: [String: AccountKind] = [:]
         let reconstructor = AccountHistoryReconstructor(calendar: calendar)
 
-        for account in accounts {
+        for account in walkedAccounts {
             kindsById[account.id] = account.kind
             let accountId = account.id
             let txnDescriptor = FetchDescriptor<CachedTransaction>(
@@ -247,24 +284,24 @@ public final class SyncCoordinator {
             // Snapshot save failed. Discard the inserted-but-unsaved rows
             // and the deletes-pending-save so the next retry starts from
             // the same on-disk state we started this run from. Marker stays
-            // at 0.
+            // at its previous version.
             mainContext.rollback()
-            logger.error("History backfill snapshot save failed; marker stays at 0 for retry.")
+            logger.error("History backfill snapshot save failed; marker stays at \(settings.historyBackfillVersion) for retry.")
             return false
         }
 
-        settings.historyBackfillVersion = 1
+        settings.historyBackfillVersion = Self.currentHistoryBackfillVersion
         if !mainContext.safeSave(source: "sync.backfill.marker") {
             // Snapshots saved but marker didn't. Roll back the unsaved
             // marker change so in-memory state matches disk; the next sync
-            // sees version=0 on disk and re-runs. Dedupe and the
+            // sees the prior version on disk and re-runs. Dedupe and the
             // .live-preserving skip keep that re-run idempotent.
             mainContext.rollback()
-            logger.error("History backfill marker save failed; snapshots persisted but marker stays at 0.")
+            logger.error("History backfill marker save failed; snapshots persisted but marker stays at \(settings.historyBackfillVersion).")
             return false
         }
 
-        logger.info("History backfill complete: wrote \(aggregated.count) reconstructed days for budget \(budgetId, privacy: .private(mask: .hash)).")
+        logger.info("History backfill complete: wrote \(aggregated.count) reconstructed days for budget \(budgetId, privacy: .private(mask: .hash)); walked \(walkedAccounts.count) accounts (\(includedClosedAccounts.count) closed opt-ins).")
         return true
     }
 

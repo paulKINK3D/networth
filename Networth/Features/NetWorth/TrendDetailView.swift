@@ -1,5 +1,5 @@
 import SwiftUI
-import SwiftData
+    import SwiftData
 import NetworthCore
 
 private func label(for kind: AccountKind) -> String {
@@ -119,6 +119,7 @@ struct TrendDetailView: View {
                 } footer: {
                     Text(".live rows are written by the daily snapshot scheduler. .backfill rows are produced by the 24-month reconstruction. Force Full Resync (in Settings) wipes both and rebuilds.")
                 }
+
             }
             .navigationTitle("Trend Detail")
             .navigationBarTitleDisplayMode(.inline)
@@ -161,8 +162,18 @@ struct TrendDetailView: View {
         }
     }
 
-    private var liveCount: Int { snapshots.filter { $0.source == .live }.count }
-    private var backfillCount: Int { snapshots.filter { $0.source == .backfill }.count }
+    private var chartFloor: Date? {
+        guard let raw = userSettings.first?.chartStartDate else { return nil }
+        return calendar.startOfDay(for: raw)
+    }
+
+    private var visibleSnapshots: [DurableNetWorthSnapshot] {
+        guard let floor = chartFloor else { return snapshots }
+        return snapshots.filter { $0.date >= floor }
+    }
+
+    private var liveCount: Int { visibleSnapshots.filter { $0.source == .live }.count }
+    private var backfillCount: Int { visibleSnapshots.filter { $0.source == .backfill }.count }
 
     private struct MonthlyBucket {
         let monthStart: Date
@@ -171,8 +182,9 @@ struct TrendDetailView: View {
     }
 
     private var monthlyBuckets: [MonthlyBucket] {
-        guard !snapshots.isEmpty else { return [] }
-        let groups = Dictionary(grouping: snapshots) { snap -> Date in
+        let pool = visibleSnapshots
+        guard !pool.isEmpty else { return [] }
+        let groups = Dictionary(grouping: pool) { snap -> Date in
             let comps = calendar.dateComponents([.year, .month], from: snap.date)
             return calendar.date(from: comps) ?? snap.date
         }

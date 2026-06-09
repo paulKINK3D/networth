@@ -176,13 +176,38 @@ public final class DurableUserSettings {
     /// Bumped when a one-time migration changes existing settings defaults.
     /// Version 2 = enable Face ID when biometric is available.
     public var settingsSchemaVersion: Int = 0
-    /// `0` = backfill not yet run on this iCloud account. Bumped to `1` after
+    /// `0` = backfill not yet run on this iCloud account. Bumped to the
+    /// current version (`SyncCoordinator.currentHistoryBackfillVersion`) after
     /// the 24-month historical reconstruction successfully writes snapshots.
     /// Lives here (CloudKit-synced) instead of in the disposable local cache
     /// so a device reinstall or restore doesn't accidentally re-run backfill.
     public var historyBackfillVersion: Int = 0
+    /// User-chosen floor for the trend chart. When set, the chart, the
+    /// backfill window, and the trend diagnostic all clamp to dates on or
+    /// after this. Use case: when the historical reconstruction produces
+    /// values the user knows are wrong (e.g. because real investment
+    /// balances aren't entered in YNAB and outflows look like expenses),
+    /// they reset the chart to "start fresh" from a chosen date.
+    /// `nil` = no floor (original behavior: 24 months back).
+    public var chartStartDate: Date? = nil
 
     public init(id: String = "singleton") { self.id = id }
+}
+
+/// One row per closed YNAB account the user wants to include in the trend
+/// chart's historical reconstruction. Default is to leave closed accounts
+/// out (matches the original behavior); the user opts a closed account in
+/// when its YNAB history is genuinely relevant to historical net worth
+/// (e.g. brokerage staging accounts the user funded then drained).
+@Model
+public final class DurableIncludedClosedAccount {
+    public var accountId: String = ""
+    public var addedAt: Date = Date.now
+
+    public init(accountId: String = "", addedAt: Date = .now) {
+        self.accountId = accountId
+        self.addedAt = addedAt
+    }
 }
 
 /// One row per YNAB category the user has opted out of the variable-spend

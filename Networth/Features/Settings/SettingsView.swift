@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \DurableCardSettings.accountId) private var cardSettings: [DurableCardSettings]
     @Query private var exclusions: [DurableExcludedSpendCategory]
+    @Query private var includedClosed: [DurableIncludedClosedAccount]
 
     @State private var showingTokenSheet = false
     @State private var showingAssetForm: DurableManualAsset? = nil
@@ -16,6 +17,8 @@ struct SettingsView: View {
     @State private var showingCardSheet: CachedAccount? = nil
     @State private var showingExclusionsSheet = false
     @State private var showingForceResyncConfirm = false
+    @State private var showingResetChartHistory = false
+    @State private var showingIncludedClosed = false
 
     private var settings: DurableUserSettings? { settingsList.first }
 
@@ -81,10 +84,42 @@ struct SettingsView: View {
                     }
                     .disabled(!container.hasYNABToken || isSyncing)
                     .foregroundStyle(NwAppColors.liability)
+                    Button {
+                        showingResetChartHistory = true
+                    } label: {
+                        HStack {
+                            Text("Reset Chart History…")
+                            Spacer()
+                            if let floor = settings?.chartStartDate {
+                                Text("From \(DateDisplay.shortDate(floor))")
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .disabled(isSyncing)
+                    .foregroundStyle(NwAppColors.liability)
+                    Button {
+                        showingIncludedClosed = true
+                    } label: {
+                        HStack {
+                            Label {
+                                Text("Include Closed Accounts…")
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                            } icon: {
+                                NwIcon.netWorth.image.foregroundStyle(NwAppColors.primary)
+                            }
+                            Spacer()
+                            Text("\(includedClosed.count)")
+                                .foregroundStyle(.secondary)
+                            NwIcon.chevron.image.foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(isSyncing)
                 } header: {
                     Text("Sync")
                 } footer: {
-                    Text("Force Full Resync wipes every daily net-worth snapshot from iCloud and rebuilds the chart from scratch by re-fetching YNAB. Use it when the chart is showing accounts you've since closed, or when balances look stale. Manual assets and your settings are preserved.")
+                    Text("Force Full Resync wipes every daily net-worth snapshot from iCloud and rebuilds the chart from scratch by re-fetching YNAB. Use it when the chart is showing accounts you've since closed, or when balances look stale. Manual assets and your settings are preserved.\n\nReset Chart History deletes snapshots before a date you pick and starts the chart fresh from that day. Useful when the reconstructed historical chart doesn't match reality and you'd rather build forward.")
                 }
 
                 Section {
@@ -229,6 +264,12 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingExclusionsSheet) {
                 ExcludedCategoriesSheet().environment(container)
+            }
+            .sheet(isPresented: $showingResetChartHistory) {
+                ResetChartHistorySheet().environment(container)
+            }
+            .sheet(isPresented: $showingIncludedClosed) {
+                IncludedClosedAccountsSheet().environment(container)
             }
             .alert("Force Full Resync?", isPresented: $showingForceResyncConfirm) {
                 Button("Cancel", role: .cancel) {}

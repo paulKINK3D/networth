@@ -48,6 +48,8 @@
 		D7170A1E000000000000A004 /* TutorialStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000A002 /* TutorialStep.swift */; };
 		D7170A1E000000000000A005 /* TutorialView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000A003 /* TutorialView.swift */; };
 		D7170A1E000000000000B001 /* ExcludedCategoriesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000B002 /* ExcludedCategoriesSheet.swift */; };
+		D7170A1E000000000000B003 /* ResetChartHistorySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000B004 /* ResetChartHistorySheet.swift */; };
+		D7170A1E000000000000B005 /* IncludedClosedAccountsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000B006 /* IncludedClosedAccountsSheet.swift */; };
 		D7170A1E000000000000C001 /* CategoryFilterSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000C002 /* CategoryFilterSheet.swift */; };
 		D7170A1E000000000000C003 /* CategoryTransactionsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000C004 /* CategoryTransactionsSheet.swift */; };
 		D7170A1E000000000000D001 /* InvestmentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000D002 /* InvestmentsView.swift */; };
@@ -113,6 +115,8 @@
 		D7170A1E000000000000A002 /* TutorialStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TutorialStep.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000A003 /* TutorialView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TutorialView.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000B002 /* ExcludedCategoriesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExcludedCategoriesSheet.swift; sourceTree = "<group>"; };
+		D7170A1E000000000000B004 /* ResetChartHistorySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResetChartHistorySheet.swift; sourceTree = "<group>"; };
+		D7170A1E000000000000B006 /* IncludedClosedAccountsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IncludedClosedAccountsSheet.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000C002 /* CategoryFilterSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryFilterSheet.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000C004 /* CategoryTransactionsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryTransactionsSheet.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000D002 /* InvestmentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvestmentsView.swift; sourceTree = "<group>"; };
@@ -234,6 +238,8 @@
 				D7170A1E000000000000B002 /* ExcludedCategoriesSheet.swift */,
 				3A988782B660CD247AC4D6D5 /* ManualAssetForm.swift */,
 				CAB7BC72F75C67ADCB78C364 /* PATEntrySheet.swift */,
+				D7170A1E000000000000B004 /* ResetChartHistorySheet.swift */,
+				D7170A1E000000000000B006 /* IncludedClosedAccountsSheet.swift */,
 				ABF47F58524FC7E021A2580C /* SettingsView.swift */,
 			);
 			path = Settings;
@@ -457,6 +463,8 @@
 				D7170A1E000000000000A004 /* TutorialStep.swift in Sources */,
 				D7170A1E000000000000A005 /* TutorialView.swift in Sources */,
 				D7170A1E000000000000B001 /* ExcludedCategoriesSheet.swift in Sources */,
+				D7170A1E000000000000B003 /* ResetChartHistorySheet.swift in Sources */,
+				D7170A1E000000000000B005 /* IncludedClosedAccountsSheet.swift in Sources */,
 				D7170A1E000000000000C001 /* CategoryFilterSheet.swift in Sources */,
 				D7170A1E000000000000C003 /* CategoryTransactionsSheet.swift in Sources */,
 				D7170A1E000000000000D001 /* InvestmentsView.swift in Sources */,

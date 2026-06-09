@@ -8,6 +8,7 @@ struct NetWorthView: View {
     @Query(sort: \DurableNetWorthSnapshot.date) private var snapshots: [DurableNetWorthSnapshot]
     @Query(sort: \CachedAccount.balanceMilliunits, order: .reverse) private var accounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
+    @Query private var userSettings: [DurableUserSettings]
 
     @State private var range: Range = .twelveMonths
     @State private var showingTrendDetail = false
@@ -247,18 +248,34 @@ struct NetWorthView: View {
 
     // MARK: - Data slicing
 
+    /// Honors `DurableUserSettings.chartStartDate` if set — anything older is
+    /// hidden so a user-initiated "Reset chart history" stays sticky even if
+    /// stale rows haven't been physically purged from the store yet.
+    private var chartFloor: Date? {
+        guard let raw = userSettings.first?.chartStartDate else { return nil }
+        return Calendar(identifier: .gregorian).startOfDay(for: raw)
+    }
+
     private func filteredSnapshots() -> [DurableNetWorthSnapshot] {
         let cal = Calendar(identifier: .gregorian)
-        guard let cutoff = cal.date(byAdding: .month, value: -range.months, to: .now) else {
-            return snapshots
-        }
-        return snapshots.filter { $0.date >= cutoff }
+        let rangeCutoff = cal.date(byAdding: .month, value: -range.months, to: .now)
+        let cutoffs = [rangeCutoff, chartFloor].compactMap { $0 }
+        guard let effective = cutoffs.max() else { return snapshots }
+        return snapshots.filter { $0.date >= effective }
     }
 
     private func monthDelta() -> Money? {
         let cal = Calendar(identifier: .gregorian)
         guard let target = cal.date(byAdding: .day, value: -30, to: .now) else { return nil }
-        let priorSnap = snapshots.filter { $0.date <= target }.last
+        // Respect the chart floor too — comparing today to a snapshot before
+        // the user's reset point would surface the very numbers they asked to
+        // hide.
+        let floor = chartFloor
+        let priorSnap = snapshots.last { snap in
+            guard snap.date <= target else { return false }
+            if let floor, snap.date < floor { return false }
+            return true
+        }
         guard let priorSnap else { return nil }
         return breakdown.netWorth - priorSnap.netWorth
     }

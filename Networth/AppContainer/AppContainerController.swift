@@ -145,6 +145,10 @@ public final class AppContainerController {
         }
         let settingsDescriptor = FetchDescriptor<DurableUserSettings>()
         if let settings = try? ctx.fetch(settingsDescriptor).first {
+            // Reset to the "never run" sentinel. The guard in
+            // `runHistoryBackfillIfNeeded` compares against
+            // `SyncCoordinator.currentHistoryBackfillVersion`, so any value
+            // less than the current version triggers a re-run on the next sync.
             settings.historyBackfillVersion = 0
         }
         ctx.safeSave(source: "forceFullResync.wipeAll")
