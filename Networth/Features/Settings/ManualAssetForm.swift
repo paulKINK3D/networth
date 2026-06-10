@@ -8,11 +8,24 @@ struct ManualAssetForm: View {
 
     let asset: DurableManualAsset?
 
+    @Query(sort: \DurableManualAsset.name) private var allManualAssets: [DurableManualAsset]
+
     @State private var name: String = ""
     @State private var kind: ManualAssetKind = .other
     @State private var amountText: String = ""
     @State private var note: String = ""
+    @State private var groupName: String = ""
+    @State private var recordedAt: Date = .now
     @State private var saveError: String?
+
+    /// Distinct, non-empty group names across all manual assets (sorted) so the
+    /// user can pick an existing label instead of retyping it.
+    private var existingGroups: [String] {
+        let raws = allManualAssets
+            .compactMap { $0.deleted ? nil : $0.groupName?.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return Array(Set(raws)).sorted()
+    }
 
     var body: some View {
         NwModalLayout(
@@ -21,41 +34,78 @@ struct ManualAssetForm: View {
             onConfirm: save,
             confirmDisabled: name.isEmpty || amountValue == nil
         ) {
-            VStack(alignment: .leading, spacing: NwSpacing.lg) {
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
                 if let saveError {
                     NwInlineNotice("Couldn't save", message: saveError, tone: .warning)
                 }
-                field("Name") {
-                    TextField("e.g. Primary Home", text: $name)
-                        .textInputAutocapitalization(.words)
-                        .padding(NwSpacing.md)
-                        .background(NwAppColors.cardSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
-                }
-                field("Kind") {
-                    Picker("Kind", selection: $kind) {
+                TextField("Name", text: $name, prompt: Text("Name").foregroundStyle(.secondary))
+                    .textInputAutocapitalization(.words)
+                    .padding(NwSpacing.md)
+                    .background(NwAppColors.cardSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+
+                HStack {
+                    Text("Type of Asset")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("", selection: $kind) {
                         ForEach(ManualAssetKind.allCases, id: \.self) { k in
                             Text(k.displayName).tag(k)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
+                    .tint(NwAppColors.textPrimary)
+                    .labelsHidden()
                 }
-                field("Current Value") {
-                    TextField("0.00", text: $amountText)
-                        .keyboardType(.decimalPad)
-                        .font(NwTypography.monoMetric)
-                        .padding(NwSpacing.md)
-                        .background(NwAppColors.cardSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
-                        .onAppear { selectAllOnFirstTap() }
+                .padding(NwSpacing.md)
+                .background(NwAppColors.cardSurface)
+                .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+
+                HStack(spacing: NwSpacing.sm) {
+                    TextField("Group (optional)", text: $groupName, prompt: Text("Group (optional)").foregroundStyle(.secondary))
+                        .textInputAutocapitalization(.words)
+                    if !existingGroups.isEmpty {
+                        Menu {
+                            ForEach(existingGroups, id: \.self) { g in
+                                Button(g) { groupName = g }
+                            }
+                            if !groupName.isEmpty {
+                                Divider()
+                                Button("Clear", role: .destructive) { groupName = "" }
+                            }
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
-                field("Note (optional)") {
-                    TextField("Bull market valuation, recent appraisal, …", text: $note, axis: .vertical)
-                        .lineLimit(3...6)
-                        .padding(NwSpacing.md)
-                        .background(NwAppColors.cardSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+                .padding(NwSpacing.md)
+                .background(NwAppColors.cardSurface)
+                .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+
+                TextField("Current Value", text: $amountText, prompt: Text("Current Value").foregroundStyle(.secondary))
+                    .keyboardType(.decimalPad)
+                    .padding(NwSpacing.md)
+                    .background(NwAppColors.cardSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+                    .onAppear { selectAllOnFirstTap() }
+
+                HStack {
+                    Text("As of")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    DatePicker("", selection: $recordedAt, in: ...Date.now, displayedComponents: .date)
+                        .labelsHidden()
                 }
+                .padding(NwSpacing.md)
+                .background(NwAppColors.cardSurface)
+                .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+
+                TextField("Note (optional)", text: $note, prompt: Text("Note (optional)").foregroundStyle(.secondary), axis: .vertical)
+                    .lineLimit(3...6)
+                    .padding(NwSpacing.md)
+                    .background(NwAppColors.cardSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
 
                 if let asset, !asset.sortedValues.isEmpty {
                     NwSectionHeader("History")
@@ -80,17 +130,6 @@ struct ManualAssetForm: View {
         .onAppear(perform: prefill)
     }
 
-    @ViewBuilder
-    private func field(_ label: String, @ViewBuilder content: () -> some View) -> some View {
-        VStack(alignment: .leading, spacing: NwSpacing.xs) {
-            Text(label)
-                .font(NwTypography.caption)
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-            content()
-        }
-    }
-
     private var amountValue: Money? {
         let trimmed = amountText.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, let decimal = Decimal(string: trimmed) else { return nil }
@@ -103,6 +142,7 @@ struct ManualAssetForm: View {
         kind = asset.kind
         amountText = String(describing: asset.currentValue.decimalValue)
         note = asset.notes ?? ""
+        groupName = asset.groupName ?? ""
     }
 
     private func selectAllOnFirstTap() {
@@ -132,14 +172,17 @@ struct ManualAssetForm: View {
         let priorNotes = working.notes
         let priorLastUpdatedAt = working.lastUpdatedAt
         let priorValues = working.values
+        let priorGroupName = working.groupName
 
+        let trimmedGroup = groupName.trimmingCharacters(in: .whitespaces)
         working.name = name
         working.kindRaw = kind.rawValue
         working.notes = note.isEmpty ? nil : note
+        working.groupName = trimmedGroup.isEmpty ? nil : trimmedGroup
         working.lastUpdatedAt = .now
 
         let entry = DurableManualAssetValue(
-            recordedAt: .now,
+            recordedAt: recordedAt,
             amountMilliunits: amount.milliunits,
             note: note.isEmpty ? nil : note,
             asset: working
@@ -161,12 +204,16 @@ struct ManualAssetForm: View {
                 working.name = priorName
                 working.kindRaw = priorKindRaw
                 working.notes = priorNotes
+                working.groupName = priorGroupName
                 working.lastUpdatedAt = priorLastUpdatedAt
             }
             saveError = "Saving the asset failed. Your changes are still here — try again or close and re-open the sheet."
             return
         }
         container.recordDailySnapshot()
+        // Rebuild .backfill rows so historical chart points pick up this
+        // asset's new/changed value entry. Doesn't hit YNAB.
+        Task { await container.rebuildChartHistory() }
         dismiss()
     }
 }

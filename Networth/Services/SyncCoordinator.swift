@@ -27,9 +27,11 @@ public final class SyncCoordinator {
     ///   1 — original reconstruction (closed-only filter).
     ///   2 — sign- and kind-aware cross-closed transfer handling (later abandoned).
     ///   3 — closed-account opt-in inclusion (Fix 2 final design).
+    ///   4 — historical manual-asset values folded into the aggregate.
+    ///   5 — bootstrap freshness check for cross-device iCloud sync.
     /// Used by the guard *and* every success marker write so the two can't
     /// silently drift apart and cause backfill to re-run forever.
-    public static let currentHistoryBackfillVersion: Int = 3
+    public static let currentHistoryBackfillVersion: Int = 5
 
     public init(client: any YNABClient, mainContext: ModelContext) {
         self.client = client
@@ -114,10 +116,23 @@ public final class SyncCoordinator {
             // discarded — they were never saved, but rollback also clears
             // them from the in-memory store.
             mainContext.rollback()
-            phase = .error(humanize(error))
+            if case .cancelled = error {
+                // SwiftUI .refreshable cancels the task when the view goes
+                // away mid-pull; that's not an error worth surfacing.
+                phase = .idle
+            } else {
+                phase = .error(humanize(error))
+            }
+        } catch is CancellationError {
+            mainContext.rollback()
+            phase = .idle
         } catch {
             mainContext.rollback()
-            phase = .error(error.localizedDescription)
+            if (error as NSError).code == NSURLErrorCancelled {
+                phase = .idle
+            } else {
+                phase = .error(error.localizedDescription)
+            }
         }
     }
 
@@ -158,6 +173,15 @@ public final class SyncCoordinator {
         guard settings.historyBackfillVersion < Self.currentHistoryBackfillVersion else { return true }
 
         phase = .syncing(label: "Reconstructing history")
+        // Always reset phase on exit so standalone callers (e.g.
+        // `AppContainerController.rebuildChartHistory`) don't get stuck on the
+        // "Reconstructing history" label. `syncAll` overwrites this with its
+        // own `.idle` write anyway.
+        defer {
+            if case .syncing(let label) = phase, label == "Reconstructing history" {
+                phase = .idle
+            }
+        }
 
         let calendar = Calendar(identifier: .gregorian)
         let today = calendar.startOfDay(for: Date.now)
@@ -248,10 +272,17 @@ public final class SyncCoordinator {
             )
         }
 
+        // Build a per-day manual-asset total for the backfill window. Each
+        // `DurableManualAssetValue` is a point-in-time entry, so for any day D
+        // we sum the most-recent value (recordedAt ≤ D) across every active
+        // manual asset. Without this, historical chart points would exclude
+        // manual assets entirely and today's value would appear to spike up.
+        let manualAssetSeries = buildManualAssetSeries(windowStart: windowStart, today: today, calendar: calendar)
+
         let aggregated = NetWorthHistoryAggregator().aggregate(
             dailyBalancesByAccount: dailyBalancesByAccount,
             kindsById: kindsById,
-            manualAssetSeries: [:]
+            manualAssetSeries: manualAssetSeries
         )
 
         // After the purge above, the only days with existing snapshots are
@@ -291,6 +322,7 @@ public final class SyncCoordinator {
         }
 
         settings.historyBackfillVersion = Self.currentHistoryBackfillVersion
+        settings.lastBackfillRunAt = .now
         if !mainContext.safeSave(source: "sync.backfill.marker") {
             // Snapshots saved but marker didn't. Roll back the unsaved
             // marker change so in-memory state matches disk; the next sync
@@ -303,6 +335,59 @@ public final class SyncCoordinator {
 
         logger.info("History backfill complete: wrote \(aggregated.count) reconstructed days for budget \(budgetId, privacy: .private(mask: .hash)); walked \(walkedAccounts.count) accounts (\(includedClosedAccounts.count) closed opt-ins).")
         return true
+    }
+
+    /// Builds a daily total of all manual-asset values over the backfill
+    /// window. Each asset's contribution on day D is the amount of its most
+    /// recent `DurableManualAssetValue` with `recordedAt ≤ D`. Assets with
+    /// no entry on or before D contribute zero.
+    ///
+    /// Returned dict is keyed by start-of-day so the aggregator's
+    /// `manualAssetSeries[date]` lookup matches the per-account daily series.
+    private func buildManualAssetSeries(windowStart: Date, today: Date, calendar: Calendar) -> [Date: Money] {
+        let descriptor = FetchDescriptor<DurableManualAsset>(
+            predicate: #Predicate { $0.deleted == false }
+        )
+        let assets = (try? mainContext.fetch(descriptor)) ?? []
+        guard !assets.isEmpty else { return [:] }
+
+        // For each asset, materialise its value entries sorted ascending by
+        // recorded-at (start-of-day). Skip assets with no values entirely.
+        struct AssetTimeline {
+            let entries: [(day: Date, amount: Int64)]
+        }
+        var timelines: [AssetTimeline] = []
+        for asset in assets {
+            let entries = asset.sortedValues.map {
+                (day: calendar.startOfDay(for: $0.recordedAt), amount: $0.amountMilliunits)
+            }
+            if !entries.isEmpty {
+                timelines.append(AssetTimeline(entries: entries))
+            }
+        }
+        guard !timelines.isEmpty else { return [:] }
+
+        // Walk the backfill window day-by-day, advancing each asset's cursor
+        // through its sorted entries. O(days × assets) — fine for our scale.
+        var result: [Date: Money] = [:]
+        var cursors = Array(repeating: 0, count: timelines.count)
+        var day = calendar.startOfDay(for: windowStart)
+        let endDay = calendar.startOfDay(for: today)
+        while day <= endDay {
+            var total: Int64 = 0
+            for (i, timeline) in timelines.enumerated() {
+                while cursors[i] < timeline.entries.count && timeline.entries[cursors[i]].day <= day {
+                    cursors[i] += 1
+                }
+                if cursors[i] > 0 {
+                    total += timeline.entries[cursors[i] - 1].amount
+                }
+            }
+            result[day] = Money(milliunits: total)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+        }
+        return result
     }
 
     private func humanize(_ err: YNABClientError) -> String {

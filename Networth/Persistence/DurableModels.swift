@@ -17,6 +17,11 @@ public final class DurableManualAsset {
     public var lastUpdatedAt: Date = Date.now
     public var notes: String? = nil
     public var deleted: Bool = false
+    /// Optional grouping label. Two assets sharing the same non-empty
+    /// `groupName` render together with a summed header — e.g. an institution
+    /// label like "Vanguard" containing per-account rows "IRA" and "401k".
+    /// `nil` or empty = ungrouped.
+    public var groupName: String? = nil
 
     @Relationship(deleteRule: .cascade, inverse: \DurableManualAssetValue.asset)
     public var values: [DurableManualAssetValue]? = []
@@ -26,13 +31,15 @@ public final class DurableManualAsset {
         name: String = "",
         kind: ManualAssetKind = .other,
         lastUpdatedAt: Date = .now,
-        notes: String? = nil
+        notes: String? = nil,
+        groupName: String? = nil
     ) {
         self.id = id
         self.name = name
         self.kindRaw = kind.rawValue
         self.lastUpdatedAt = lastUpdatedAt
         self.notes = notes
+        self.groupName = groupName
     }
 
     public var kind: ManualAssetKind {
@@ -182,6 +189,18 @@ public final class DurableUserSettings {
     /// Lives here (CloudKit-synced) instead of in the disposable local cache
     /// so a device reinstall or restore doesn't accidentally re-run backfill.
     public var historyBackfillVersion: Int = 0
+    /// Wall-clock time the last successful backfill completed. Compared to
+    /// `DurableManualAsset.lastUpdatedAt` on bootstrap: if any manual asset
+    /// is newer than this, the snapshots that came back via CloudKit are
+    /// stale (a different device added/changed an asset) and the backfill
+    /// re-runs to pick up the new contributions.
+    public var lastBackfillRunAt: Date? = nil
+    /// Minutes the app considers a recent unlock still trusted. On cold
+    /// launch, if `Date.now - lastBackgroundedAt < biometricGraceMinutes`,
+    /// Face ID is skipped. Defaults to 30 minutes so the user doesn't get
+    /// re-prompted every time iOS evicts the app from memory shortly after
+    /// backgrounding.
+    public var biometricGraceMinutes: Int = 30
     /// User-chosen floor for the trend chart. When set, the chart, the
     /// backfill window, and the trend diagnostic all clamp to dates on or
     /// after this. Use case: when the historical reconstruction produces

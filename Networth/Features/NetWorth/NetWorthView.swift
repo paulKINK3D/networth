@@ -54,7 +54,6 @@ struct NetWorthView: View {
                     heroCard
                     breakdownCard
                     chartCard
-                    manualAssetsCard
                 }
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.lg)
@@ -62,9 +61,6 @@ struct NetWorthView: View {
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Net Worth")
             .toolbar { syncToolbarItem }
-            .refreshable {
-                await container.syncNow()
-            }
             .sheet(isPresented: $showingTrendDetail) {
                 TrendDetailView().environment(container)
             }
@@ -82,18 +78,21 @@ struct NetWorthView: View {
                 }
             default:
                 Menu {
+                    // Settings first so an accidental release-over-first-item
+                    // when the menu opens fires a harmless action instead of
+                    // a sync. Refresh stays available as the second item.
+                    Button {
+                        NotificationCenter.default.post(name: .openSettings, object: nil)
+                    } label: {
+                        Label("Settings", systemImage: NwIcon.settings.rawValue)
+                    }
+
                     Button {
                         Task { await container.syncNow() }
                     } label: {
                         Label("Refresh", systemImage: NwIcon.sync.rawValue)
                     }
                     .disabled(!container.hasYNABToken)
-
-                    Button {
-                        NotificationCenter.default.post(name: .openSettings, object: nil)
-                    } label: {
-                        Label("Settings", systemImage: NwIcon.settings.rawValue)
-                    }
                 } label: {
                     if case .error = container.syncCoordinator.phase {
                         NwIcon.warning.image.foregroundStyle(NwAppColors.caution)
@@ -211,36 +210,6 @@ struct NetWorthView: View {
                         .lineStyle(StrokeStyle(lineWidth: 2.5))
                     }
                     .frame(height: 220)
-                }
-            }
-        }
-    }
-
-    private var manualAssetsCard: some View {
-        let assets = manualAssets.filter { !$0.deleted }
-        return Group {
-            if !assets.isEmpty {
-                NwCard(style: .primary) {
-                    VStack(alignment: .leading, spacing: NwSpacing.md) {
-                        Text("Manual Assets")
-                            .font(NwTypography.headline)
-                        ForEach(assets) { asset in
-                            HStack {
-                                NwIcon.forAccountKind(asset.kindRaw).image
-                                    .foregroundStyle(NwAppColors.accent)
-                                VStack(alignment: .leading) {
-                                    Text(asset.name)
-                                        .font(NwTypography.body)
-                                    Text(asset.kind.displayName)
-                                        .font(NwTypography.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                NwAmountText(asset.currentValue, variant: .body)
-                            }
-                            if asset.id != assets.last?.id { Divider() }
-                        }
-                    }
                 }
             }
         }

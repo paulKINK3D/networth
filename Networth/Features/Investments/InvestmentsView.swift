@@ -9,7 +9,21 @@ struct InvestmentsView: View {
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
 
-    private static let investmentManualKinds: Set<ManualAssetKind> = [.brokerage, .retirement, .crypto]
+    private static let investmentManualKinds: Set<ManualAssetKind> = [.brokerage, .retirement, .crypto, .other]
+    /// Display order of the per-kind sub-sections inside the Investments tab.
+    /// Empty sub-sections are hidden so the page stays tight when a user only
+    /// has, say, brokerage and retirement.
+    private static let kindOrder: [ManualAssetKind] = [.brokerage, .retirement, .crypto, .other]
+
+    private func kindLabel(_ kind: ManualAssetKind) -> String {
+        switch kind {
+        case .brokerage:  return "Brokerage"
+        case .retirement: return "Retirement"
+        case .crypto:     return "Crypto"
+        case .other:      return "Other"
+        default:          return kind.displayName
+        }
+    }
 
     private var ynabInvestments: [CachedAccount] {
         accounts.filter { !$0.deleted && !$0.closed && $0.kind == .investment }
@@ -18,6 +32,8 @@ struct InvestmentsView: View {
     private var manualInvestments: [DurableManualAsset] {
         manualAssets.filter { !$0.deleted && Self.investmentManualKinds.contains($0.kind) }
     }
+
+    @State private var updatingAsset: DurableManualAsset? = nil
 
     private var totalValueMU: Int64 {
         let ynabTotal = ynabInvestments.reduce(Int64(0)) { $0 + $1.balanceMilliunits }
@@ -55,11 +71,8 @@ struct InvestmentsView: View {
                         }
                         if !manualInvestments.isEmpty {
                             NwSectionHeader("Manual Investments")
-                            ForEach(manualInvestments) { asset in
-                                investmentRow(name: asset.name,
-                                              subtitle: asset.kind.displayName,
-                                              icon: icon(for: asset.kind),
-                                              value: asset.currentValue)
+                            ForEach(manualKindSections, id: \.kind) { section in
+                                manualKindSection(section)
                             }
                         }
                     }
@@ -69,6 +82,9 @@ struct InvestmentsView: View {
             }
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Investments")
+            .sheet(item: $updatingAsset) { asset in
+                ManualAssetUpdateSheet(asset: asset).environment(container)
+            }
         }
     }
 
@@ -102,6 +118,107 @@ struct InvestmentsView: View {
                 }
                 Spacer()
                 NwAmountText(value, variant: .body)
+            }
+        }
+    }
+
+    private struct ManualGroup: Identifiable {
+        /// Stable id used by ForEach.
+        let title: String
+        var id: String { title }
+        /// What to render in the header. `nil` for the ungrouped section so it
+        /// blends with the surrounding "Manual Investments" header.
+        let displayHeader: String?
+        let assets: [DurableManualAsset]
+        var total: Money {
+            Money(milliunits: assets.reduce(Int64(0)) { $0 + $1.currentValueMilliunits })
+        }
+    }
+
+    private struct ManualKindSection {
+        let kind: ManualAssetKind
+        let groups: [ManualGroup]
+        var total: Money {
+            Money(milliunits: groups.reduce(Int64(0)) { sum, g in sum + g.total.milliunits })
+        }
+    }
+
+    private var manualKindSections: [ManualKindSection] {
+        Self.kindOrder.compactMap { kind in
+            let assets = manualInvestments.filter { $0.kind == kind }
+            guard !assets.isEmpty else { return nil }
+            return ManualKindSection(kind: kind, groups: makeGroups(from: assets))
+        }
+    }
+
+    private func makeGroups(from assets: [DurableManualAsset]) -> [ManualGroup] {
+        let buckets = Dictionary(grouping: assets) {
+            ($0.groupName ?? "").trimmingCharacters(in: .whitespaces)
+        }
+        return buckets.map { key, list in
+            let sorted = list.sorted { $0.name.lowercased() < $1.name.lowercased() }
+            return ManualGroup(
+                title: key.isEmpty ? "" : key,
+                displayHeader: key.isEmpty ? nil : key,
+                assets: sorted
+            )
+        }
+        .sorted { lhs, rhs in
+            // Ungrouped goes last; named groups alphabetically.
+            if lhs.title.isEmpty { return false }
+            if rhs.title.isEmpty { return true }
+            return lhs.title.lowercased() < rhs.title.lowercased()
+        }
+    }
+
+    @ViewBuilder
+    private func manualKindSection(_ section: ManualKindSection) -> some View {
+        VStack(spacing: NwSpacing.sm) {
+            HStack {
+                Text(kindLabel(section.kind))
+                    .font(NwTypography.headline)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                Spacer()
+                Text(CurrencyFormatter.compact(section.total))
+                    .font(NwTypography.headline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, NwSpacing.sm)
+            ForEach(section.groups) { group in
+                manualGroupSection(group)
+                    .padding(.leading, NwSpacing.md)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func manualGroupSection(_ group: ManualGroup) -> some View {
+        let isGrouped = group.displayHeader != nil
+        VStack(spacing: NwSpacing.sm) {
+            if let title = group.displayHeader {
+                HStack {
+                    Text(title)
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    Spacer()
+                    Text(CurrencyFormatter.compact(group.total))
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, NwSpacing.sm)
+            }
+            ForEach(group.assets) { asset in
+                Button {
+                    updatingAsset = asset
+                } label: {
+                    investmentRow(name: asset.name,
+                                  subtitle: asset.kind.displayName,
+                                  icon: icon(for: asset.kind),
+                                  value: asset.currentValue)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, isGrouped ? NwSpacing.md : 0)
             }
         }
     }

@@ -8,16 +8,29 @@ struct ContentView: View {
     @State private var alertPayload: PersistenceFailure?
     @State private var showingTutorial = false
     @State private var showingSettings = false
+    /// Minimum hold time for the launch splash so it always shows long enough
+    /// to read — matches the WorkoutApp splash pause (1.2 s) before fading.
+    @State private var splashMinimumElapsed = false
 
     var body: some View {
-        Group {
-            if !container.bootstrapped {
+        ZStack {
+            if !container.bootstrapped || !splashMinimumElapsed {
                 SplashView()
+                    .transition(.opacity)
             } else if container.unlocked {
                 tabs
+                    .transition(.opacity)
             } else {
                 LockedView()
+                    .transition(.opacity)
             }
+        }
+        .animation(.easeOut(duration: 0.25), value: container.unlocked)
+        .animation(.easeOut(duration: 0.25), value: container.bootstrapped)
+        .animation(.easeOut(duration: 0.25), value: splashMinimumElapsed)
+        .task {
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            splashMinimumElapsed = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .selectTab)) { note in
             if let tab = note.object as? Int { selection = tab }
@@ -82,26 +95,37 @@ struct ContentView: View {
     }
 }
 
+/// Brand gradient used for both the launch splash and the locked screen so
+/// the transition between them never flashes the system grouped background
+/// (which is the off-white the user was seeing between splash and unlock).
+enum BlueLavaSplash {
+    static let gradient = LinearGradient(
+        gradient: Gradient(stops: [
+            .init(color: Color(red: 0x1E/255, green: 0x3A/255, blue: 0x8A/255), location: 0.0),
+            .init(color: Color(red: 0x1B/255, green: 0x2F/255, blue: 0x6F/255), location: 0.5),
+            .init(color: Color(red: 0x17/255, green: 0x25/255, blue: 0x54/255), location: 1.0)
+        ]),
+        startPoint: .top,
+        endPoint: .bottom
+    )
+}
+
 /// Shown briefly while `AppContainerController.bootstrap()` is running. Prevents
 /// the lock screen from racing against bootstrap to start (and being cancelled
-/// by) the Face ID prompt.
+/// by) the Face ID prompt. Visual matches the BlueLava family splash style.
 private struct SplashView: View {
     var body: some View {
-        VStack(spacing: NwSpacing.lg) {
-            ZStack {
-                Circle()
-                    .fill(NwAppColors.primary.opacity(0.12))
-                    .frame(width: 120, height: 120)
-                NwIcon.netWorth.image
-                    .font(.system(size: 52, weight: .light))
-                    .foregroundStyle(NwAppColors.primary)
+        ZStack {
+            BlueLavaSplash.gradient.ignoresSafeArea()
+            VStack(spacing: 4) {
+                Text("BlueLava")
+                    .font(.system(size: 48, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("NetWorth")
+                    .font(.system(size: 48, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
             }
-            Text("BlueLava\nNetworth")
-                .font(NwTypography.title)
-                .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(NwAppColors.background.ignoresSafeArea())
     }
 }
 
@@ -109,44 +133,23 @@ private struct LockedView: View {
     @Environment(AppContainerController.self) private var container
 
     var body: some View {
-        VStack(spacing: NwSpacing.xl) {
-            Spacer()
-            ZStack {
-                Circle()
-                    .fill(NwAppColors.primary.opacity(0.12))
-                    .frame(width: 120, height: 120)
-                NwIcon.lock.image
-                    .font(.system(size: 56, weight: .light))
-                    .foregroundStyle(NwAppColors.primary)
+        ZStack {
+            BlueLavaSplash.gradient.ignoresSafeArea()
+            VStack(spacing: 4) {
+                Text("BlueLava")
+                    .font(.system(size: 48, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("NetWorth")
+                    .font(.system(size: 48, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
             }
-            VStack(spacing: NwSpacing.sm) {
-                Text("BlueLava\nNetworth")
-                    .font(NwTypography.title)
-                    .multilineTextAlignment(.center)
-                Text("Your private financial dashboard")
-                    .font(NwTypography.callout)
-                    .foregroundStyle(.secondary)
-            }
-            VStack(spacing: NwSpacing.md) {
-                Text("Authenticate with \(container.biometricGate.displayName) to view your net worth, projections, and accounts.")
-                    .font(NwTypography.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                Text("Your data is stored only on your devices and in your private iCloud — never shared.")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal, NwSpacing.xl)
-            Button("Unlock with \(container.biometricGate.displayName)") {
-                Task { await container.unlockWithBiometrics() }
-            }
-            .buttonStyle(NwPrimaryButtonStyle())
-            .padding(.horizontal, NwSpacing.xl)
-            Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(NwAppColors.background.ignoresSafeArea())
+        // Tap anywhere on the locked screen to retry biometrics if the
+        // initial prompt was dismissed.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            Task { await container.unlockWithBiometrics() }
+        }
         .task { await container.unlockWithBiometrics() }
     }
 }

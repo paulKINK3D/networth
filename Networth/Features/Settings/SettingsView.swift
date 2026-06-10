@@ -51,10 +51,23 @@ struct SettingsView: View {
                         }
                     }
                     .disabled(!container.biometricGate.isAvailable)
+                    HStack {
+                        Text("Re-lock after")
+                        Spacer()
+                        Picker("", selection: graceBinding) {
+                            ForEach(Self.graceOptions, id: \.self) { mins in
+                                Text(graceLabel(mins)).tag(mins)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .tint(NwAppColors.textPrimary)
+                        .labelsHidden()
+                    }
+                    .disabled(!container.biometricGate.isAvailable || !(settings?.faceIDEnabled ?? false))
                 } header: {
                     Text("Authentication")
                 } footer: {
-                    Text("Token stored in iCloud-synced Keychain. Read-only access — Networth never writes to YNAB.")
+                    Text("Token stored in iCloud-synced Keychain. Read-only access — Networth never writes to YNAB.\n\n\"Re-lock after\" controls how long the app stays trusted after backgrounding. Within that window, returning to the app skips Face ID even after iOS evicts the app from memory.")
                 }
 
                 Section {
@@ -329,6 +342,36 @@ struct SettingsView: View {
     }
 
     private var excludedCount: Int { exclusions.count }
+
+    private static let graceOptions: [Int] = [0, 5, 15, 30, 60, 120, 240]
+
+    private func graceLabel(_ mins: Int) -> String {
+        switch mins {
+        case 0:   return "Immediately"
+        case 60:  return "1 hour"
+        case 120: return "2 hours"
+        case 240: return "4 hours"
+        default:  return "\(mins) min"
+        }
+    }
+
+    private var graceBinding: Binding<Int> {
+        Binding(
+            get: { settings?.biometricGraceMinutes ?? 30 },
+            set: { newValue in
+                let ctx = container.modelContainer.mainContext
+                let current: DurableUserSettings
+                if let existing = settings {
+                    current = existing
+                } else {
+                    current = DurableUserSettings()
+                    ctx.insert(current)
+                }
+                current.biometricGraceMinutes = newValue
+                ctx.safeSave(source: "settings.biometricGrace")
+            }
+        )
+    }
 
     private var faceIDBinding: Binding<Bool> {
         Binding(

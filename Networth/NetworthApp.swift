@@ -31,8 +31,18 @@ struct NetworthApp: App {
                     }
                 }
                 .onChange(of: scenePhase) { _, newPhase in
-                    if newPhase == .active {
+                    switch newPhase {
+                    case .active:
                         container.recordDailySnapshot()
+                    case .background:
+                        // Stamp the moment we lose the foreground so the
+                        // biometric grace check on next bootstrap knows how
+                        // long the app has been away.
+                        container.markBackgrounded()
+                    case .inactive:
+                        break
+                    @unknown default:
+                        break
                     }
                 }
         }

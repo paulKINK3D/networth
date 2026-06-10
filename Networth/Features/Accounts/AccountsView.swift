@@ -7,21 +7,25 @@ struct AccountsView: View {
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
 
+    @State private var showingNewAsset = false
+
     var body: some View {
         NavigationStack {
             List {
                 let ynab = accounts.filter { !$0.deleted && !$0.closed }
                 if !ynab.isEmpty {
-                    Section("YNAB") {
-                        ForEach(ynab) { account in
-                            NavigationLink {
-                                AccountDetailView(account: account)
-                            } label: {
-                                accountRow(name: account.name,
-                                           subtitle: subtitle(for: account.kind),
-                                           icon: NwIcon.forAccountKind(account.typeRaw),
-                                           amount: account.balance,
-                                           isLiability: account.kind.isLiability)
+                    ForEach(ynabKindSections(from: ynab), id: \.kind) { section in
+                        Section(subtitle(for: section.kind)) {
+                            ForEach(section.accounts) { account in
+                                NavigationLink {
+                                    AccountDetailView(account: account)
+                                } label: {
+                                    accountRow(name: account.name,
+                                               subtitle: subtitle(for: account.kind),
+                                               icon: NwIcon.forAccountKind(account.typeRaw),
+                                               amount: account.balance,
+                                               isLiability: account.kind.isLiability)
+                                }
                             }
                         }
                     }
@@ -30,16 +34,8 @@ struct AccountsView: View {
                 let assets = manualAssets.filter { !$0.deleted }
                 if !assets.isEmpty {
                     Section("Manual Assets") {
-                        ForEach(assets) { asset in
-                            NavigationLink {
-                                ManualAssetDetailView(asset: asset)
-                            } label: {
-                                accountRow(name: asset.name,
-                                           subtitle: asset.kind.displayName,
-                                           icon: manualIcon(for: asset.kind),
-                                           amount: asset.currentValue,
-                                           isLiability: false)
-                            }
+                        ForEach(manualGroups(from: assets)) { group in
+                            manualGroupRows(group)
                         }
                     }
                 }
@@ -54,6 +50,18 @@ struct AccountsView: View {
                 }
             }
             .navigationTitle("Accounts")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingNewAsset = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingNewAsset) {
+                ManualAssetForm(asset: nil).environment(container)
+            }
         }
     }
 
@@ -87,6 +95,87 @@ struct AccountsView: View {
         case .otherLiability: return "Other Liability"
         case .investment: return "Investment"
         case .unknown: return "Other"
+        }
+    }
+
+    private struct YnabKindSection {
+        let kind: AccountKind
+        let accounts: [CachedAccount]
+    }
+
+    /// Display order for YNAB account sub-sections — assets above liabilities,
+    /// each group ordered by typical use.
+    private static let ynabKindOrder: [AccountKind] = [
+        .checking, .savings, .cash, .investment, .otherAsset,
+        .creditCard, .lineOfCredit, .mortgage, .autoLoan,
+        .studentLoan, .personalLoan, .medicalDebt, .otherDebt, .otherLiability,
+        .unknown
+    ]
+
+    private func ynabKindSections(from accounts: [CachedAccount]) -> [YnabKindSection] {
+        Self.ynabKindOrder.compactMap { kind in
+            let matching = accounts.filter { $0.kind == kind }
+                .sorted { $0.name.lowercased() < $1.name.lowercased() }
+            guard !matching.isEmpty else { return nil }
+            return YnabKindSection(kind: kind, accounts: matching)
+        }
+    }
+
+    private struct ManualGroup: Identifiable {
+        let title: String
+        var id: String { title }
+        let displayHeader: String?
+        let assets: [DurableManualAsset]
+        var total: Money {
+            Money(milliunits: assets.reduce(Int64(0)) { $0 + $1.currentValueMilliunits })
+        }
+    }
+
+    private func manualGroups(from assets: [DurableManualAsset]) -> [ManualGroup] {
+        let buckets = Dictionary(grouping: assets) {
+            ($0.groupName ?? "").trimmingCharacters(in: .whitespaces)
+        }
+        return buckets.map { key, list in
+            let sorted = list.sorted { $0.name.lowercased() < $1.name.lowercased() }
+            return ManualGroup(
+                title: key.isEmpty ? "" : key,
+                displayHeader: key.isEmpty ? nil : key,
+                assets: sorted
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.title.isEmpty { return false }
+            if rhs.title.isEmpty { return true }
+            return lhs.title.lowercased() < rhs.title.lowercased()
+        }
+    }
+
+    @ViewBuilder
+    private func manualGroupRows(_ group: ManualGroup) -> some View {
+        let isGrouped = group.displayHeader != nil
+        if let title = group.displayHeader {
+            HStack {
+                Text(title)
+                    .font(NwTypography.footnoteEm)
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                Spacer()
+                Text(CurrencyFormatter.compact(group.total))
+                    .font(NwTypography.footnoteEm)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        ForEach(group.assets) { asset in
+            NavigationLink {
+                ManualAssetDetailView(asset: asset)
+            } label: {
+                accountRow(name: asset.name,
+                           subtitle: asset.kind.displayName,
+                           icon: manualIcon(for: asset.kind),
+                           amount: asset.currentValue,
+                           isLiability: false)
+                    .padding(.leading, isGrouped ? NwSpacing.md : 0)
+            }
         }
     }
 

@@ -76,11 +76,36 @@ public final class AppContainerController {
         }
 
         if settings.faceIDEnabled && biometricGate.isAvailable {
+            // Honor the user's biometric grace window: if the app was active
+            // recently and the grace minutes haven't elapsed, skip the lock.
+            // Lets iOS evict the app from memory without forcing a Face ID
+            // prompt on every cold launch immediately after backgrounding.
+            let graceMinutes = max(0, settings.biometricGraceMinutes)
+            if graceMinutes > 0 {
+                let lastEpoch = UserDefaults.standard.double(forKey: Self.lastBackgroundedAtKey)
+                if lastEpoch > 0 {
+                    let elapsed = Date.now.timeIntervalSince(Date(timeIntervalSince1970: lastEpoch))
+                    if elapsed < Double(graceMinutes) * 60 {
+                        unlocked = true
+                        bootstrapped = true
+                        return
+                    }
+                }
+            }
             unlocked = false
         } else {
             unlocked = true
         }
         bootstrapped = true
+    }
+
+    public static let lastBackgroundedAtKey = "networth.lastBackgroundedAt"
+
+    /// Stamp the last-active wall-clock time so the next cold launch knows
+    /// whether the biometric grace window applies. Called when the scene
+    /// goes to background.
+    public func markBackgrounded() {
+        UserDefaults.standard.set(Date.now.timeIntervalSince1970, forKey: Self.lastBackgroundedAtKey)
     }
 
     public func unlockWithBiometrics() async {
@@ -127,6 +152,21 @@ public final class AppContainerController {
     /// previous sessions (when more accounts were open) would otherwise
     /// shadow the freshly reconstructed history via the dedupe pass.
     ///
+    /// Rebuilds the historical chart snapshots from cached YNAB data + current
+    /// manual-asset values. Does NOT hit the YNAB API — meant for fast local
+    /// refreshes when manual assets change. Existing `.live` rows are
+    /// preserved; only `.backfill` rows are regenerated.
+    public func rebuildChartHistory() async {
+        if case .syncing = syncCoordinator.phase { return }
+        guard let budgetId = selectedBudgetId else { return }
+        let ctx = modelContainer.mainContext
+        if let settings = try? ctx.fetch(FetchDescriptor<DurableUserSettings>()).first {
+            settings.historyBackfillVersion = 0
+        }
+        ctx.safeSave(source: "rebuildChartHistory.resetMarker")
+        _ = syncCoordinator.runHistoryBackfillIfNeeded(budgetId: budgetId)
+    }
+
     /// Preserves manual assets, their value history, user settings, and card
     /// settings. Only chart snapshots are destroyed.
     public func forceFullResync() async {
