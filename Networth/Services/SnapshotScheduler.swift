@@ -16,22 +16,39 @@ public final class SnapshotScheduler {
         self.calendar = calendar
     }
 
-    /// Writes a snapshot for `referenceDate`'s start-of-day if one doesn't already exist.
+    /// Writes (or refreshes) a snapshot for `referenceDate`'s start-of-day.
+    /// If a snapshot already exists for today and the freshly computed assets
+    /// or liabilities differ, the existing row is **updated in place** rather
+    /// than skipped — otherwise today's value would lag behind newly added
+    /// manual assets, freshly synced YNAB balances, etc.
     @discardableResult
     public func recordIfNeeded(now referenceDate: Date = .now) -> DurableNetWorthSnapshot? {
         let day = calendar.startOfDay(for: referenceDate)
+        let breakdown = computeBreakdown()
+        let newAssets = breakdown.totalAssets.milliunits
+        let newLiabilities = breakdown.totalLiabilities.milliunits
+
         let descriptor = FetchDescriptor<DurableNetWorthSnapshot>(
             predicate: #Predicate { $0.date == day }
         )
         if let existing = try? mainContext.fetch(descriptor).first {
+            // Skip the write only if nothing about today's totals has changed.
+            if existing.assetsMilliunits == newAssets,
+               existing.liabilitiesMilliunits == newLiabilities,
+               existing.source == .live {
+                return existing
+            }
+            existing.assetsMilliunits = newAssets
+            existing.liabilitiesMilliunits = newLiabilities
+            existing.sourceRaw = SnapshotSource.live.rawValue
+            mainContext.safeSave(source: "snapshot.daily.refresh")
             return existing
         }
 
-        let breakdown = computeBreakdown()
         let snap = DurableNetWorthSnapshot(
             date: day,
-            assetsMilliunits: breakdown.totalAssets.milliunits,
-            liabilitiesMilliunits: breakdown.totalLiabilities.milliunits,
+            assetsMilliunits: newAssets,
+            liabilitiesMilliunits: newLiabilities,
             source: .live
         )
         mainContext.insert(snap)
@@ -105,13 +122,28 @@ public final class SnapshotScheduler {
             predicate: #Predicate { $0.deleted == false }
         )
         let manual = (try? mainContext.fetch(manualDescriptor)) ?? []
-        let manualTotal = Money(milliunits: manual.reduce(Int64(0)) { $0 + $1.currentValueMilliunits })
+        var manualAssets = Money.zero
+        for asset in manual {
+            let value = Money(milliunits: asset.currentValueMilliunits)
+            switch asset.kind {
+            case .brokerage, .retirement, .crypto:
+                // Investment-style manual assets contribute to the Investments
+                // tile alongside YNAB investment accounts.
+                investments += value
+            case .realEstate, .vehicle, .collectible:
+                // Tangible items live in the Manual Assets tile.
+                manualAssets += value
+            case .other:
+                // "Other" semantically belongs alongside YNAB .otherAsset.
+                otherAssets += value
+            }
+        }
 
         return NetWorthBreakdown(
             cash: cash,
             investments: investments,
             otherAssets: otherAssets,
-            manualAssets: manualTotal,
+            manualAssets: manualAssets,
             creditCardDebt: cardDebt,
             loans: loans,
             otherLiabilities: otherLiabs

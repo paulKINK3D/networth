@@ -8,6 +8,7 @@ struct AccountsView: View {
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
 
     @State private var showingNewAsset = false
+    @State private var updatingAsset: DurableManualAsset? = nil
 
     var body: some View {
         NavigationStack {
@@ -61,6 +62,9 @@ struct AccountsView: View {
             }
             .sheet(isPresented: $showingNewAsset) {
                 ManualAssetForm(asset: nil).environment(container)
+            }
+            .sheet(item: $updatingAsset) { asset in
+                ManualAssetUpdateSheet(asset: asset).environment(container)
             }
         }
     }
@@ -166,8 +170,8 @@ struct AccountsView: View {
             }
         }
         ForEach(group.assets) { asset in
-            NavigationLink {
-                ManualAssetDetailView(asset: asset)
+            Button {
+                updatingAsset = asset
             } label: {
                 accountRow(name: asset.name,
                            subtitle: asset.kind.displayName,
@@ -175,7 +179,9 @@ struct AccountsView: View {
                            amount: asset.currentValue,
                            isLiability: false)
                     .padding(.leading, isGrouped ? NwSpacing.md : 0)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
     }
 

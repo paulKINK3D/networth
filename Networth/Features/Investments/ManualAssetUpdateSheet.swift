@@ -20,12 +20,12 @@ struct ManualAssetUpdateSheet: View {
     let asset: DurableManualAsset
 
     enum Mode: String, CaseIterable, Identifiable {
-        case updateTotal = "Update Total"
         case addTransaction = "Transaction"
+        case updateTotal = "Update Total"
         var id: String { rawValue }
     }
 
-    @State private var mode: Mode = .updateTotal
+    @State private var mode: Mode = .addTransaction
     @State private var totalText: String = ""
     @State private var deltaText: String = ""
     @State private var deltaSign: DeltaSign = .deposit
@@ -101,12 +101,13 @@ struct ManualAssetUpdateSheet: View {
                     }
                 }
 
-                HStack {
+                DatePicker(
+                    selection: $recordedAt,
+                    in: ...Date.now,
+                    displayedComponents: .date
+                ) {
                     Text("As of")
                         .foregroundStyle(.secondary)
-                    Spacer()
-                    DatePicker("", selection: $recordedAt, in: ...Date.now, displayedComponents: .date)
-                        .labelsHidden()
                 }
                 .padding(NwSpacing.md)
                 .background(NwAppColors.cardSurface)

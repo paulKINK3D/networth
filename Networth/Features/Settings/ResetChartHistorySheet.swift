@@ -66,8 +66,8 @@ struct ResetChartHistorySheet: View {
     private var dateRange: ClosedRange<Date> {
         let cal = Calendar(identifier: .gregorian)
         let today = cal.startOfDay(for: .now)
-        let twoYearsAgo = cal.date(byAdding: .year, value: -2, to: today) ?? today
-        return twoYearsAgo...today
+        let fiveYearsAgo = cal.date(byAdding: .year, value: -5, to: today) ?? today
+        return fiveYearsAgo...today
     }
 
     private func performReset() async {

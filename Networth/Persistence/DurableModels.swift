@@ -176,7 +176,7 @@ public final class DurableUserSettings {
     public var selectedBudgetId: String? = nil
     public var lastSyncedAt: Date? = nil
     public var dipThresholdMilliunits: Int64 = 500_000  // $500
-    public var historyHorizonMonths: Int = 24
+    public var historyHorizonMonths: Int = 60
     public var projectionHorizonDays: Int = 90
     public var hasSeenTutorial: Bool = false
     public var spendingLookbackDays: Int = 60

@@ -10,9 +10,24 @@ struct ManualAssetForm: View {
 
     @Query(sort: \DurableManualAsset.name) private var allManualAssets: [DurableManualAsset]
 
+    enum Mode: String, CaseIterable, Identifiable {
+        case transaction = "Transaction"
+        case updateTotal = "Update Total"
+        var id: String { rawValue }
+    }
+
+    enum DeltaSign: String, CaseIterable, Identifiable {
+        case deposit = "+ Deposit"
+        case withdrawal = "− Withdrawal"
+        var id: String { rawValue }
+    }
+
     @State private var name: String = ""
     @State private var kind: ManualAssetKind = .other
     @State private var amountText: String = ""
+    @State private var deltaText: String = ""
+    @State private var deltaSign: DeltaSign = .deposit
+    @State private var mode: Mode = .transaction
     @State private var note: String = ""
     @State private var groupName: String = ""
     @State private var recordedAt: Date = .now
@@ -32,7 +47,7 @@ struct ManualAssetForm: View {
             title: asset == nil ? "New Manual Asset" : "Edit Asset",
             onClose: { dismiss() },
             onConfirm: save,
-            confirmDisabled: name.isEmpty || amountValue == nil
+            confirmDisabled: name.isEmpty || !isValid
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
                 if let saveError {
@@ -83,19 +98,52 @@ struct ManualAssetForm: View {
                 .background(NwAppColors.cardSurface)
                 .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
 
-                TextField("Current Value", text: $amountText, prompt: Text("Current Value").foregroundStyle(.secondary))
-                    .keyboardType(.decimalPad)
-                    .padding(NwSpacing.md)
-                    .background(NwAppColors.cardSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
-                    .onAppear { selectAllOnFirstTap() }
+                if asset != nil {
+                    Picker("Mode", selection: $mode) {
+                        ForEach(Mode.allCases) { m in Text(m.rawValue).tag(m) }
+                    }
+                    .pickerStyle(.segmented)
+                }
 
-                HStack {
+                if mode == .updateTotal || asset == nil {
+                    TextField("Current Value", text: $amountText, prompt: Text("Current Value").foregroundStyle(.secondary))
+                        .keyboardType(.decimalPad)
+                        .padding(NwSpacing.md)
+                        .background(NwAppColors.cardSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+                        .onAppear { selectAllOnFirstTap() }
+                } else {
+                    Picker("Sign", selection: $deltaSign) {
+                        ForEach(DeltaSign.allCases) { s in Text(s.rawValue).tag(s) }
+                    }
+                    .pickerStyle(.segmented)
+
+                    TextField("Amount", text: $deltaText, prompt: Text("Amount").foregroundStyle(.secondary))
+                        .keyboardType(.decimalPad)
+                        .padding(NwSpacing.md)
+                        .background(NwAppColors.cardSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+
+                    if let preview = transactionPreview {
+                        HStack {
+                            Text("New Total")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            NwAmountText(preview, variant: .body)
+                        }
+                        .padding(NwSpacing.md)
+                        .background(NwAppColors.cardSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+                    }
+                }
+
+                DatePicker(
+                    selection: $recordedAt,
+                    in: ...Date.now,
+                    displayedComponents: .date
+                ) {
                     Text("As of")
                         .foregroundStyle(.secondary)
-                    Spacer()
-                    DatePicker("", selection: $recordedAt, in: ...Date.now, displayedComponents: .date)
-                        .labelsHidden()
                 }
                 .padding(NwSpacing.md)
                 .background(NwAppColors.cardSurface)
@@ -112,11 +160,18 @@ struct ManualAssetForm: View {
                         .padding(.horizontal, 0)
                     VStack(spacing: NwSpacing.sm) {
                         ForEach(asset.sortedValues.reversed().prefix(10)) { entry in
-                            HStack {
+                            HStack(spacing: NwSpacing.sm) {
                                 Text(DateDisplay.shortDate(entry.recordedAt))
                                     .foregroundStyle(.secondary)
                                 Spacer()
                                 NwAmountText(Money(milliunits: entry.amountMilliunits), variant: .body)
+                                Button {
+                                    deleteHistoryEntry(entry, on: asset)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(NwAppColors.liability)
+                                }
+                                .buttonStyle(.plain)
                             }
                             .padding(.vertical, NwSpacing.xs)
                         }
@@ -136,6 +191,38 @@ struct ManualAssetForm: View {
         return Money.dollars(decimal)
     }
 
+    private var deltaValue: Money? {
+        let trimmed = deltaText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, let decimal = Decimal(string: trimmed) else { return nil }
+        let unsigned = Money.dollars(decimal)
+        return deltaSign == .deposit ? unsigned : Money(milliunits: -unsigned.milliunits)
+    }
+
+    /// New total when the form is in `.transaction` mode. Adds the signed
+    /// delta to the asset's current value.
+    private var transactionPreview: Money? {
+        guard let delta = deltaValue, let asset else { return nil }
+        return Money(milliunits: asset.currentValueMilliunits + delta.milliunits)
+    }
+
+    /// What ends up persisted, regardless of input mode.
+    private var resolvedAmount: Money? {
+        switch mode {
+        case .updateTotal: return amountValue
+        case .transaction: return transactionPreview ?? amountValue
+        }
+    }
+
+    private var isValid: Bool {
+        switch mode {
+        case .updateTotal: return amountValue != nil
+        case .transaction:
+            // Transaction mode only valid for existing assets; preview will
+            // exist when the delta is parseable.
+            return transactionPreview != nil
+        }
+    }
+
     private func prefill() {
         guard let asset else { return }
         name = asset.name
@@ -143,6 +230,9 @@ struct ManualAssetForm: View {
         amountText = String(describing: asset.currentValue.decimalValue)
         note = asset.notes ?? ""
         groupName = asset.groupName ?? ""
+        if let latest = asset.sortedValues.last {
+            recordedAt = latest.recordedAt
+        }
     }
 
     private func selectAllOnFirstTap() {
@@ -150,8 +240,16 @@ struct ManualAssetForm: View {
         // In practice we'd hook a UIResponder coordinator; deferring to v1.1 polish.
     }
 
+    private func deleteHistoryEntry(_ entry: DurableManualAssetValue, on asset: DurableManualAsset) {
+        let ctx = container.modelContainer.mainContext
+        ctx.delete(entry)
+        asset.values?.removeAll { $0.id == entry.id }
+        ctx.safeSave(source: "manualAsset.historyDelete")
+        Task { await container.rebuildChartHistory() }
+    }
+
     private func save() {
-        guard let amount = amountValue else { return }
+        guard let amount = resolvedAmount else { return }
         let ctx = container.modelContainer.mainContext
 
         let isNew = (asset == nil)
@@ -181,22 +279,48 @@ struct ManualAssetForm: View {
         working.groupName = trimmedGroup.isEmpty ? nil : trimmedGroup
         working.lastUpdatedAt = .now
 
-        let entry = DurableManualAssetValue(
-            recordedAt: recordedAt,
-            amountMilliunits: amount.milliunits,
-            note: note.isEmpty ? nil : note,
-            asset: working
-        )
-        ctx.insert(entry)
-        if working.values == nil {
-            working.values = [entry]
+        // Editing: update the existing latest value entry in-place. Creating
+        // a new entry on every Save would litter the History list with
+        // duplicates of the same current value. For genuinely adding a
+        // historical point or a transaction-style adjustment, the user goes
+        // through ManualAssetUpdateSheet from the Investments tab.
+        var insertedEntry: DurableManualAssetValue?
+        var editedEntry: DurableManualAssetValue?
+        var priorRecordedAt: Date = .now
+        var priorAmount: Int64 = 0
+        var priorNote: String? = nil
+        if !isNew, let latest = working.sortedValues.last {
+            priorRecordedAt = latest.recordedAt
+            priorAmount = latest.amountMilliunits
+            priorNote = latest.note
+            latest.recordedAt = recordedAt
+            latest.amountMilliunits = amount.milliunits
+            latest.note = note.isEmpty ? nil : note
+            editedEntry = latest
         } else {
-            working.values?.append(entry)
+            let entry = DurableManualAssetValue(
+                recordedAt: recordedAt,
+                amountMilliunits: amount.milliunits,
+                note: note.isEmpty ? nil : note,
+                asset: working
+            )
+            ctx.insert(entry)
+            if working.values == nil {
+                working.values = [entry]
+            } else {
+                working.values?.append(entry)
+            }
+            insertedEntry = entry
         }
 
         let succeeded = ctx.safeSave(source: "manualAsset.save")
         guard succeeded else {
-            ctx.delete(entry)
+            if let inserted = insertedEntry { ctx.delete(inserted) }
+            if let edited = editedEntry {
+                edited.recordedAt = priorRecordedAt
+                edited.amountMilliunits = priorAmount
+                edited.note = priorNote
+            }
             if isNew {
                 ctx.delete(working)
             } else {

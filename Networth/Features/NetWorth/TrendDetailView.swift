@@ -39,6 +39,9 @@ struct TrendDetailView: View {
     @Query(sort: \CachedAccount.balanceMilliunits, order: .reverse)
     private var allAccounts: [CachedAccount]
     @Query private var userSettings: [DurableUserSettings]
+    @Query(sort: \DurableManualAsset.name)
+    private var manualAssets: [DurableManualAsset]
+    @Query private var includedClosed: [DurableIncludedClosedAccount]
 
     private let calendar = Calendar(identifier: .gregorian)
     private static let monthFormatter: DateFormatter = {
@@ -96,6 +99,70 @@ struct TrendDetailView: View {
                     Text("Shows the last snapshot value recorded in each month. Tap an account above to see that account's contribution to the totals.")
                 }
 
+                if !overlapHints.isEmpty {
+                    Section {
+                        ForEach(overlapHints, id: \.id) { hint in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(hint.label)
+                                    .font(NwTypography.body)
+                                Text(hint.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    } header: {
+                        Text("Possible Double-Count")
+                    } footer: {
+                        Text("Manual-asset entries that overlap with the same-name (or similarly-named) closed YNAB accounts you've opted into. If your chart shows a peak then drop, this is the likely cause. Trim the manual-asset earliest entry to the YNAB closure date, or untick the closed account in Settings → Include Closed Accounts.")
+                    }
+                }
+
+                if !manualAssetContributions.isEmpty {
+                    Section {
+                        ForEach(manualAssetContributions, id: \.id) { entry in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.name)
+                                        .font(NwTypography.body)
+                                    Text("From \(entry.firstEntryLabel)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(CurrencyFormatter.compact(entry.currentValue))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } header: {
+                        Text("Manual Asset Contributions")
+                    } footer: {
+                        Text("Each manual asset adds its value to days on or after its earliest entry. Edit the asset to delete or move that earliest entry forward.")
+                    }
+                }
+
+                if !includedClosedContributions.isEmpty {
+                    Section {
+                        ForEach(includedClosedContributions, id: \.id) { entry in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.name)
+                                        .font(NwTypography.body)
+                                    Text(entry.detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                        }
+                    } header: {
+                        Text("Included Closed Accounts")
+                    } footer: {
+                        Text("Closed YNAB accounts you opted into. They contribute their walked-back historical balance until the day they hit $0 / closed in YNAB.")
+                    }
+                }
+
                 Section {
                     HStack {
                         Text(".live")
@@ -148,6 +215,86 @@ struct TrendDetailView: View {
                 .monospacedDigit()
                 .foregroundStyle(account.kind.isLiability ? NwAppColors.liability : .primary)
         }
+    }
+
+    // MARK: - Derived data: contributions & overlap
+
+    private static let shortDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        return f
+    }()
+
+    private struct ManualEntry {
+        let id: UUID
+        let name: String
+        let firstEntryAt: Date?
+        let currentValue: Money
+        var firstEntryLabel: String {
+            guard let date = firstEntryAt else { return "—" }
+            return TrendDetailView.shortDateFormatter.string(from: date)
+        }
+    }
+
+    private struct ClosedEntry {
+        let id: String
+        let name: String
+        let detail: String
+    }
+
+    private struct OverlapHint {
+        let id: String
+        let label: String
+        let detail: String
+    }
+
+    private var manualAssetContributions: [ManualEntry] {
+        manualAssets.filter { !$0.deleted }.map { asset in
+            ManualEntry(
+                id: asset.id,
+                name: asset.name.isEmpty ? "Untitled" : asset.name,
+                firstEntryAt: asset.sortedValues.first?.recordedAt,
+                currentValue: asset.currentValue
+            )
+        }
+        .sorted { ($0.firstEntryAt ?? .distantPast) < ($1.firstEntryAt ?? .distantPast) }
+    }
+
+    private var includedClosedContributions: [ClosedEntry] {
+        let selectedIds = Set(includedClosed.map { $0.accountId })
+        return allAccounts
+            .filter { !$0.deleted && $0.closed && selectedIds.contains($0.id) }
+            .map { ClosedEntry(id: $0.id, name: $0.name, detail: "\(label(for: $0.kind)) · closed") }
+    }
+
+    /// Heuristic: flag every manual-asset / included-closed-account pair
+    /// whose names share at least the first 3 characters (case-insensitive).
+    /// Catches the common "Vanguard" manual ↔ "Vanguard Brokerage" closed
+    /// YNAB overlap without doing balance reconciliation.
+    private var overlapHints: [OverlapHint] {
+        let manuals = manualAssetContributions
+        let closed = includedClosedContributions
+        var hints: [OverlapHint] = []
+        for m in manuals {
+            let mNorm = normalize(m.name)
+            guard mNorm.count >= 3 else { continue }
+            for c in closed {
+                let cNorm = normalize(c.name)
+                guard cNorm.count >= 3 else { continue }
+                if mNorm.hasPrefix(cNorm.prefix(3)) || cNorm.hasPrefix(mNorm.prefix(3)) {
+                    hints.append(OverlapHint(
+                        id: "\(m.id.uuidString)-\(c.id)",
+                        label: "\(m.name) ↔ \(c.name)",
+                        detail: "Manual asset entries from \(m.firstEntryLabel) may double-count the closed YNAB account's reconstructed history."
+                    ))
+                }
+            }
+        }
+        return hints
+    }
+
+    private func normalize(_ s: String) -> String {
+        s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Derived data
@@ -278,14 +425,14 @@ struct AccountTrendDetailView: View {
 
     private var transactionsInWindow: [CachedTransaction] {
         let today = calendar.startOfDay(for: Date.now)
-        guard let start = calendar.date(byAdding: .month, value: -24, to: today) else { return [] }
+        guard let start = calendar.date(byAdding: .month, value: -60, to: today) else { return [] }
         return allTransactions.filter { $0.date >= start && $0.date <= today }
     }
 
     private var monthlySeries: [MonthlyBalance] {
         guard let account = accountQuery.first else { return [] }
         let today = calendar.startOfDay(for: Date.now)
-        guard let windowStart = calendar.date(byAdding: .month, value: -24, to: today) else { return [] }
+        guard let windowStart = calendar.date(byAdding: .month, value: -60, to: today) else { return [] }
 
         let reconstructor = AccountHistoryReconstructor(calendar: calendar)
         let summaries = allTransactions.map { $0.toSummary() }

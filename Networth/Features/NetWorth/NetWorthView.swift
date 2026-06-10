@@ -12,12 +12,16 @@ struct NetWorthView: View {
 
     @State private var range: Range = .twelveMonths
     @State private var showingTrendDetail = false
+    /// Currently scrubbed date on the trend chart. `nil` when the user isn't
+    /// touching the chart.
+    @State private var scrubbedDate: Date? = nil
 
     enum Range: String, CaseIterable, Identifiable {
         case threeMonths = "3M"
         case sixMonths   = "6M"
         case twelveMonths = "1Y"
         case twoYears    = "2Y"
+        case fiveYears   = "5Y"
         var id: String { rawValue }
         var months: Int {
             switch self {
@@ -25,6 +29,7 @@ struct NetWorthView: View {
             case .sixMonths:   return 6
             case .twelveMonths: return 12
             case .twoYears:    return 24
+            case .fiveYears:   return 60
             }
         }
     }
@@ -165,6 +170,34 @@ struct NetWorthView: View {
         }
     }
 
+    /// Small readout above the chart showing the date and value at the
+    /// scrubbed position. Falls back to a neutral hint when the user isn't
+    /// touching the chart.
+    @ViewBuilder
+    private func scrubReadout(visible: [DurableNetWorthSnapshot]) -> some View {
+        let cal = Calendar(identifier: .gregorian)
+        let target = scrubbedDate ?? visible.last?.date
+        let nearest: DurableNetWorthSnapshot? = {
+            guard let target else { return visible.last }
+            let targetDay = cal.startOfDay(for: target)
+            return visible.min { lhs, rhs in
+                abs(cal.startOfDay(for: lhs.date).timeIntervalSince(targetDay)) <
+                abs(cal.startOfDay(for: rhs.date).timeIntervalSince(targetDay))
+            } ?? visible.last
+        }()
+        HStack(spacing: NwSpacing.sm) {
+            if let nearest {
+                Text(DateDisplay.shortDate(nearest.date))
+                    .font(NwTypography.footnoteEm)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                NwAmountText(nearest.netWorth, variant: .body, showCents: false)
+                    .foregroundStyle(scrubbedDate == nil ? .secondary : NwAppColors.textPrimary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var chartCard: some View {
         let visible = filteredSnapshots()
         return NwCard(style: .primary) {
@@ -193,6 +226,7 @@ struct NetWorthView: View {
                         .frame(height: 180, alignment: .center)
                         .frame(maxWidth: .infinity)
                 } else {
+                    scrubReadout(visible: visible)
                     Chart(visible) { snap in
                         AreaMark(
                             x: .value("Date", snap.date),
@@ -208,7 +242,13 @@ struct NetWorthView: View {
                         )
                         .foregroundStyle(NwAppColors.primary)
                         .lineStyle(StrokeStyle(lineWidth: 2.5))
+                        if let scrubbed = scrubbedDate {
+                            RuleMark(x: .value("Scrubbed", scrubbed))
+                                .foregroundStyle(NwAppColors.primary.opacity(0.5))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        }
                     }
+                    .chartXSelection(value: $scrubbedDate)
                     .frame(height: 220)
                 }
             }

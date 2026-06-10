@@ -29,9 +29,10 @@ public final class SyncCoordinator {
     ///   3 — closed-account opt-in inclusion (Fix 2 final design).
     ///   4 — historical manual-asset values folded into the aggregate.
     ///   5 — bootstrap freshness check for cross-device iCloud sync.
+    ///   6 — backfill window extended from 24 months to 60 months (5 years).
     /// Used by the guard *and* every success marker write so the two can't
     /// silently drift apart and cause backfill to re-run forever.
-    public static let currentHistoryBackfillVersion: Int = 5
+    public static let currentHistoryBackfillVersion: Int = 6
 
     public init(client: any YNABClient, mainContext: ModelContext) {
         self.client = client
@@ -84,7 +85,7 @@ public final class SyncCoordinator {
             phase = .syncing(label: "Transactions")
             let txnCursor = cursor(key: "transactions:\(useBudget)")
             let sinceDate: Date? = txnCursor == nil ? Calendar(identifier: .gregorian)
-                .date(byAdding: .month, value: -24, to: Date.now) : nil
+                .date(byAdding: .month, value: -60, to: Date.now) : nil
             let txnResp = try await client.transactions(budgetId: useBudget, accountId: nil, sinceDate: sinceDate, lastKnowledge: txnCursor)
             upsertTransactions(txnResp.transactions, budgetId: useBudget)
             saveCursor(key: "transactions:\(useBudget)", value: txnResp.server_knowledge)
@@ -185,7 +186,7 @@ public final class SyncCoordinator {
 
         let calendar = Calendar(identifier: .gregorian)
         let today = calendar.startOfDay(for: Date.now)
-        guard let defaultWindowStart = calendar.date(byAdding: .month, value: -24, to: today) else {
+        guard let defaultWindowStart = calendar.date(byAdding: .month, value: -60, to: today) else {
             return true
         }
         // User-chosen floor wins over the 24-month default. Setting a

@@ -33,7 +33,6 @@ struct InvestmentsView: View {
         manualAssets.filter { !$0.deleted && Self.investmentManualKinds.contains($0.kind) }
     }
 
-    @State private var updatingAsset: DurableManualAsset? = nil
 
     private var totalValueMU: Int64 {
         let ynabTotal = ynabInvestments.reduce(Int64(0)) { $0 + $1.balanceMilliunits }
@@ -82,9 +81,6 @@ struct InvestmentsView: View {
             }
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Investments")
-            .sheet(item: $updatingAsset) { asset in
-                ManualAssetUpdateSheet(asset: asset).environment(container)
-            }
         }
     }
 
@@ -209,16 +205,11 @@ struct InvestmentsView: View {
                 .padding(.horizontal, NwSpacing.sm)
             }
             ForEach(group.assets) { asset in
-                Button {
-                    updatingAsset = asset
-                } label: {
-                    investmentRow(name: asset.name,
-                                  subtitle: asset.kind.displayName,
-                                  icon: icon(for: asset.kind),
-                                  value: asset.currentValue)
-                }
-                .buttonStyle(.plain)
-                .padding(.leading, isGrouped ? NwSpacing.md : 0)
+                investmentRow(name: asset.name,
+                              subtitle: asset.kind.displayName,
+                              icon: icon(for: asset.kind),
+                              value: asset.currentValue)
+                    .padding(.leading, isGrouped ? NwSpacing.md : 0)
             }
         }
     }
