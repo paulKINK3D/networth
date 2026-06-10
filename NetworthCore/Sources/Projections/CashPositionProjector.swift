@@ -172,6 +172,14 @@ public struct CashPositionProjector: Sendable {
         // 1. Sum signed flows across the cash-account union (positive = inflow,
         // negative = outflow). Splits decompose into their subs so per-leg
         // categories and transfer destinations apply.
+        //
+        // Only transfers between two on-budget *spend* accounts (cash↔cash,
+        // cash↔CC) are skipped — those don't change overall spending or cash
+        // capacity. Transfers to/from off-budget accounts (brokerage, etc.)
+        // are real cash leaving/entering the user's cash universe and need to
+        // be counted. If a one-off off-budget transfer pollutes the smoothed
+        // rate, the user can exclude its category via Settings → Excluded
+        // Categories.
         var totalSignedMU: Int64 = 0
         for txn in historicalTransactions where !txn.deleted && cashAccountIds.contains(txn.accountId) {
             guard txn.date >= windowStart, txn.date < startOfDay else { continue }

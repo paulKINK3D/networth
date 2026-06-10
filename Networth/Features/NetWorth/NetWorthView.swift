@@ -220,7 +220,8 @@ struct NetWorthView: View {
                     .frame(maxWidth: 220)
                 }
                 if visible.count < 2 {
-                    Text("Snapshots will appear after a few days of syncing.")
+                    Text("Waiting for the first sync to populate. Pull the Sync action from the toolbar menu if it's been a while.")
+                        .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                         .font(NwTypography.footnote)
                         .frame(height: 180, alignment: .center)

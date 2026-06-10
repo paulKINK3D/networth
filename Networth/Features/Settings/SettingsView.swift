@@ -145,15 +145,6 @@ struct SettingsView: View {
                         Text("\(settings?.projectionHorizonDays ?? 90)d")
                             .foregroundStyle(.secondary)
                     }
-                    HStack {
-                        Text("Variable-spend lookback")
-                        Spacer()
-                        Stepper("\(settings?.spendingLookbackDays ?? 60) days",
-                                value: lookbackBinding, in: 14...180, step: 7)
-                            .labelsHidden()
-                        Text("\(settings?.spendingLookbackDays ?? 60)d")
-                            .foregroundStyle(.secondary)
-                    }
                     Button {
                         showingExclusionsSheet = true
                     } label: {
@@ -319,24 +310,6 @@ struct SettingsView: View {
                 }
                 current.projectionHorizonDays = newValue
                 ctx.safeSave(source: "settings.horizon")
-            }
-        )
-    }
-
-    private var lookbackBinding: Binding<Int> {
-        Binding(
-            get: { settings?.spendingLookbackDays ?? 60 },
-            set: { newValue in
-                let ctx = container.modelContainer.mainContext
-                let current: DurableUserSettings
-                if let existing = settings {
-                    current = existing
-                } else {
-                    current = DurableUserSettings()
-                    ctx.insert(current)
-                }
-                current.spendingLookbackDays = newValue
-                ctx.safeSave(source: "settings.lookback")
             }
         )
     }

@@ -75,6 +75,9 @@ public final class AppContainerController {
             ctx.safeSave(source: "bootstrap.migrate")
         }
 
+        // Variable-spend lookback is hardcoded to 365 days in the projection
+        // call sites — no migration needed; the persisted setting is ignored.
+
         if settings.faceIDEnabled && biometricGate.isAvailable {
             // Honor the user's biometric grace window: if the app was active
             // recently and the grace minutes haven't elapsed, skip the lock.

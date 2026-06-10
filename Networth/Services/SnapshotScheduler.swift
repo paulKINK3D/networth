@@ -31,18 +31,25 @@ public final class SnapshotScheduler {
         let descriptor = FetchDescriptor<DurableNetWorthSnapshot>(
             predicate: #Predicate { $0.date == day }
         )
-        if let existing = try? mainContext.fetch(descriptor).first {
-            // Skip the write only if nothing about today's totals has changed.
-            if existing.assetsMilliunits == newAssets,
-               existing.liabilitiesMilliunits == newLiabilities,
-               existing.source == .live {
-                return existing
+        if let existingRows = try? mainContext.fetch(descriptor), !existingRows.isEmpty {
+            // Update the freshest live row in place; drop everything else for
+            // this day so the chart can't render the same date with multiple
+            // overlapping marks (the vertical spike pattern).
+            let sorted = existingRows.sorted { lhs, rhs in
+                if lhs.source != rhs.source { return lhs.source == .live }
+                return lhs.createdAt > rhs.createdAt
             }
-            existing.assetsMilliunits = newAssets
-            existing.liabilitiesMilliunits = newLiabilities
-            existing.sourceRaw = SnapshotSource.live.rawValue
+            let survivor = sorted.first!
+            for row in sorted.dropFirst() { mainContext.delete(row) }
+            if survivor.assetsMilliunits != newAssets ||
+               survivor.liabilitiesMilliunits != newLiabilities ||
+               survivor.source != .live {
+                survivor.assetsMilliunits = newAssets
+                survivor.liabilitiesMilliunits = newLiabilities
+                survivor.sourceRaw = SnapshotSource.live.rawValue
+            }
             mainContext.safeSave(source: "snapshot.daily.refresh")
-            return existing
+            return survivor
         }
 
         let snap = DurableNetWorthSnapshot(

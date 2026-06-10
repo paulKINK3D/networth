@@ -179,7 +179,7 @@ public final class DurableUserSettings {
     public var historyHorizonMonths: Int = 60
     public var projectionHorizonDays: Int = 90
     public var hasSeenTutorial: Bool = false
-    public var spendingLookbackDays: Int = 60
+    public var spendingLookbackDays: Int = 365
     /// Bumped when a one-time migration changes existing settings defaults.
     /// Version 2 = enable Face ID when biometric is available.
     public var settingsSchemaVersion: Int = 0
