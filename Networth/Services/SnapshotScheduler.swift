@@ -24,6 +24,14 @@ public final class SnapshotScheduler {
     @discardableResult
     public func recordIfNeeded(now referenceDate: Date = .now) -> DurableNetWorthSnapshot? {
         let day = calendar.startOfDay(for: referenceDate)
+
+        // Don't write a zero-valued .live row before any data exists. The app
+        // records a snapshot on bootstrap and every activation, so on a brand-
+        // new install (no token, no manual assets, no sync yet) this path runs
+        // immediately and would otherwise stamp today as $0. The backfill skips
+        // `.live` days, so that bogus zero would survive the first real sync.
+        guard hasContributingData() else { return nil }
+
         let breakdown = computeBreakdown()
         let newAssets = breakdown.totalAssets.milliunits
         let newLiabilities = breakdown.totalLiabilities.milliunits
@@ -90,6 +98,27 @@ public final class SnapshotScheduler {
                 mainContext.delete(row)
             }
         }
+    }
+
+    /// True when at least one open YNAB account or one manual asset exists in
+    /// the store — i.e. there is real data that could contribute non-zero
+    /// values to today's snapshot.
+    private func hasContributingData() -> Bool {
+        var accountDescriptor = FetchDescriptor<CachedAccount>(
+            predicate: #Predicate { $0.deleted == false && $0.closed == false }
+        )
+        accountDescriptor.fetchLimit = 1
+        if let count = try? mainContext.fetchCount(accountDescriptor), count > 0 {
+            return true
+        }
+        var manualDescriptor = FetchDescriptor<DurableManualAsset>(
+            predicate: #Predicate { $0.deleted == false }
+        )
+        manualDescriptor.fetchLimit = 1
+        if let count = try? mainContext.fetchCount(manualDescriptor), count > 0 {
+            return true
+        }
+        return false
     }
 
     public func computeBreakdown() -> NetWorthBreakdown {

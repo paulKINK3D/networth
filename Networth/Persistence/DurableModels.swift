@@ -185,7 +185,7 @@ public final class DurableUserSettings {
     public var settingsSchemaVersion: Int = 0
     /// `0` = backfill not yet run on this iCloud account. Bumped to the
     /// current version (`SyncCoordinator.currentHistoryBackfillVersion`) after
-    /// the 24-month historical reconstruction successfully writes snapshots.
+    /// the 5-year historical reconstruction successfully writes snapshots.
     /// Lives here (CloudKit-synced) instead of in the disposable local cache
     /// so a device reinstall or restore doesn't accidentally re-run backfill.
     public var historyBackfillVersion: Int = 0
@@ -207,7 +207,7 @@ public final class DurableUserSettings {
     /// values the user knows are wrong (e.g. because real investment
     /// balances aren't entered in YNAB and outflows look like expenses),
     /// they reset the chart to "start fresh" from a chosen date.
-    /// `nil` = no floor (original behavior: 24 months back).
+    /// `nil` = no floor (default behavior: 60 months back).
     public var chartStartDate: Date? = nil
 
     public init(id: String = "singleton") { self.id = id }

@@ -37,7 +37,7 @@
 - Daily net worth snapshot job runs once per day.
 
 ### Historical Net Worth
-- On first sync, **reconstruct 24 months** of YNAB account balances day-by-day from transaction history.
+- On first sync, **reconstruct up to 5 years (60 months)** of YNAB account balances day-by-day from transaction history.
 - Manual assets snapshot **forward only** from install date.
 - Snapshots persisted via CloudKit so history survives device wipes.
 
@@ -125,7 +125,7 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 ## Phases
 - [x] **Phase 0 — Bootstrap:** Xcode project, SPM `NetworthCore` package, design-system token files (`Nw*`).
 - [x] **Phase 1 — Auth + sync:** Settings screen, PAT entry, Keychain storage, YNAB client, initial budget/account fetch, SwiftData cache.
-- [x] **Phase 2 — Net Worth tab:** Current total, account breakdown, 24-month historical reconstruction, daily snapshot job.
+- [x] **Phase 2 — Net Worth tab:** Current total, account breakdown, 5-year historical reconstruction, daily snapshot job.
 - [x] **Phase 3 — Manual Assets:** CRUD UI, CloudKit sync, integration into net worth total.
 - [x] **Phase 4 — Projections tab:** Credit card payment forecasts (must-have), then cash position / alerts / burn-downs.
 - [x] **Phase 5 — Accounts tab:** List + drill-down, recent activity (read-only from cache).

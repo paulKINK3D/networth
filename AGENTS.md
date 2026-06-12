@@ -10,7 +10,7 @@
 - Core domain package: `NetworthCore/` (local SPM package — pure Swift, no UI)
 
 ## Purpose
-Personal iPhone app that augments YNAB with net worth tracking (YNAB accounts + manual assets), a 24-month historical net worth chart, and forward-looking financial projections — primary differentiator is credit card payment forecasting. Read-only against YNAB. See `docs/PLAN.md` for the full scope, locked decisions, and phase plan.
+Personal iPhone app that augments YNAB with net worth tracking (YNAB accounts + manual assets), a 5-year historical net worth chart, and forward-looking financial projections — primary differentiator is credit card payment forecasting. Read-only against YNAB. See `docs/PLAN.md` for the full scope, locked decisions, and phase plan.
 
 ## Repo Layout
 - `Networth/`: app source — models, views, services, design system, app entrypoint

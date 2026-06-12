@@ -14,6 +14,7 @@ struct ResetChartHistorySheet: View {
 
     @State private var pickedDate: Date = Calendar(identifier: .gregorian).startOfDay(for: .now)
     @State private var isResetting = false
+    @State private var errorMessage: String?
 
     private var settings: DurableUserSettings? { settingsList.first }
 
@@ -25,9 +26,17 @@ struct ResetChartHistorySheet: View {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
                 NwInlineNotice(
                     "Start the trend chart from a fresh date",
-                    message: "Every daily net-worth snapshot older than the picked date is deleted. The chart, the Trend diagnostic, and the 24-month backfill all clamp to this date going forward. Your accounts, manual assets, and category settings are not touched.",
+                    message: "Every daily net-worth snapshot older than the picked date is deleted. The chart, the Trend diagnostic, and the 5-year backfill all clamp to this date going forward. Your accounts, manual assets, and category settings are not touched.",
                     tone: .warning
                 )
+
+                if let errorMessage {
+                    NwInlineNotice(
+                        "Save failed",
+                        message: errorMessage,
+                        tone: .warning
+                    )
+                }
 
                 VStack(alignment: .leading, spacing: NwSpacing.sm) {
                     Text("Start date")
@@ -73,6 +82,7 @@ struct ResetChartHistorySheet: View {
     private func performReset() async {
         guard !isResetting else { return }
         isResetting = true
+        errorMessage = nil
         defer { isResetting = false }
 
         let ctx = container.modelContainer.mainContext
@@ -105,7 +115,13 @@ struct ResetChartHistorySheet: View {
         // daily .live snapshot fills each day organically.
         target.historyBackfillVersion = 0
 
-        ctx.safeSave(source: "settings.resetChartHistory")
+        guard ctx.safeSave(source: "settings.resetChartHistory") else {
+            // Roll back the in-memory deletes + mutations so the sheet
+            // reflects on-disk state again and the user can retry cleanly.
+            ctx.rollback()
+            errorMessage = "Couldn't save the reset. Try again in a moment."
+            return
+        }
         dismiss()
         await container.syncNow()
     }

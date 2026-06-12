@@ -184,7 +184,7 @@ struct TrendDetailView: View {
                 } header: {
                     Text("Snapshot Store")
                 } footer: {
-                    Text(".live rows are written by the daily snapshot scheduler. .backfill rows are produced by the 24-month reconstruction. Force Full Resync (in Settings) wipes both and rebuilds.")
+                    Text(".live rows are written by the daily snapshot scheduler. .backfill rows are produced by the 5-year reconstruction. Force Full Resync (in Settings) wipes both and rebuilds.")
                 }
 
             }

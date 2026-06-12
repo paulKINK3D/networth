@@ -194,7 +194,14 @@ public final class AppContainerController {
             // less than the current version triggers a re-run on the next sync.
             settings.historyBackfillVersion = 0
         }
-        ctx.safeSave(source: "forceFullResync.wipeAll")
+        guard ctx.safeSave(source: "forceFullResync.wipeAll") else {
+            // Save failed. Roll back the in-memory deletes so we don't leave
+            // the user with a phantom-wiped store, and skip the follow-up
+            // sync — the persistence-failure alert will surface via the
+            // safeSave notification.
+            ctx.rollback()
+            return
+        }
         await syncNow()
     }
 

@@ -22,7 +22,7 @@ enum TutorialContent {
             lede: "A personal net-worth tracker that turns YNAB into a full financial picture — assets, liabilities, history, and projections.",
             bullets: [
                 "Net worth = your YNAB accounts plus any manual assets you add.",
-                "24 months of history reconstructed from your YNAB transactions on first sync.",
+                "Up to 5 years of history reconstructed from your YNAB transactions on first sync.",
                 "Forward-looking projections, including credit card statement forecasts."
             ],
             footnote: nil
@@ -52,7 +52,7 @@ enum TutorialContent {
                 "In YNAB: top-left avatar → My Account → Developer Settings → New Token.",
                 "Copy the token — YNAB only shows it once.",
                 "In Networth: Settings → Add YNAB Token → paste → save.",
-                "Tap Sync Now in Settings to pull your first 24 months."
+                "Tap Sync Now in Settings to pull your first 5 years of history."
             ],
             footnote: "If you ever rotate the token in YNAB, just re-enter it here."
         ),
@@ -65,7 +65,7 @@ enum TutorialContent {
             lede: "Your headline number and the trend behind it.",
             bullets: [
                 "Top: current net worth — assets minus liabilities.",
-                "Chart: 24-month history with month-over-month deltas.",
+                "Chart: up to 5 years of history with month-over-month deltas.",
                 "Breakdown: balances grouped by account type (checking, credit, manual, etc.)."
             ],
             footnote: nil
@@ -151,7 +151,7 @@ enum TutorialContent {
             title: "You're set",
             lede: "One last step to seed your data.",
             bullets: [
-                "Settings → Sync Now. First sync takes a few seconds and reconstructs 24 months of history.",
+                "Settings → Sync Now. First sync takes a few seconds and reconstructs up to 5 years of history.",
                 "Add any manual assets you want included.",
                 "Open the Projections tab once your cards have close days configured.",
                 "Re-open this tutorial any time from Settings → Show Tutorial."

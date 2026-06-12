@@ -93,7 +93,7 @@ struct AppContainerTests {
         let firstCount = try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).count
 
         let settings = try #require(try ctx.fetch(FetchDescriptor<DurableUserSettings>()).first)
-        #expect(settings.historyBackfillVersion == 1)
+        #expect(settings.historyBackfillVersion == SyncCoordinator.currentHistoryBackfillVersion)
 
         container.syncCoordinator.runHistoryBackfillIfNeeded(budgetId: "b1")
         let secondCount = try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).count

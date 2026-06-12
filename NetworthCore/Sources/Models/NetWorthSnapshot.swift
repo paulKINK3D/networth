@@ -5,7 +5,7 @@ import Money
 ///
 /// `.live` rows are written by `SnapshotScheduler.recordIfNeeded` during normal
 /// app use and include manual assets. `.backfill` rows are written by the
-/// one-time 24-month reconstruction and only include YNAB account balances
+/// one-time 5-year reconstruction and only include YNAB account balances
 /// (manual-asset history doesn't extend that far back). When both kinds collide
 /// on the same day, the dedupe pass prefers `.live` because it carries more
 /// information.

@@ -22,7 +22,7 @@ public final class SyncCoordinator {
     private let logger = Logger(subsystem: "com.bluelava.me.networth", category: "sync")
 
     /// One-stop version constant for the history-backfill gate. Bumping this
-    /// re-runs the 24-month reconstruction for every existing install.
+    /// re-runs the 5-year reconstruction for every existing install.
     /// Versions:
     ///   1 — original reconstruction (closed-only filter).
     ///   2 — sign- and kind-aware cross-closed transfer handling (later abandoned).
@@ -139,7 +139,7 @@ public final class SyncCoordinator {
 
     // MARK: - Historical net-worth backfill
 
-    /// Reconstructs 24 months of daily net-worth snapshots from the cached
+    /// Reconstructs up to 5 years of daily net-worth snapshots from the cached
     /// YNAB transactions and writes them as `.backfill` rows. Gated by a
     /// CloudKit-synced marker on `DurableUserSettings` so it runs once per
     /// iCloud account (re-runnable via `forceFullResync()`, which resets the
@@ -189,7 +189,7 @@ public final class SyncCoordinator {
         guard let defaultWindowStart = calendar.date(byAdding: .month, value: -60, to: today) else {
             return true
         }
-        // User-chosen floor wins over the 24-month default. Setting a
+        // User-chosen floor wins over the 60-month default. Setting a
         // `chartStartDate` is the user's way of saying "the historical
         // reconstruction before this date is unreliable; don't try."
         let chartFloor = settings.chartStartDate.map { calendar.startOfDay(for: $0) }

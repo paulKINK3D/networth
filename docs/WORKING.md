@@ -1,7 +1,9 @@
 # WORKING
 
-## Current State (2026-06-07)
+## Current State (2026-06-12)
 All seven phases (0-6) of `docs/PLAN.md` are implemented and validated. Post-phase additions also shipped: in-app tutorial, hidden-category exclusion for the spend projection, variable-spend extension of the CC forecaster, group rename, sticky group headers, Investments tab, app icon.
+
+**Projections tab is intentionally reset (commit `f0b2c06`, 2026-06-12).** The previously shipped CC forecast / cash-position / category screens were removed; `ProjectionsView.swift` is an empty placeholder pending a clean rebuild. The forecaster math in `NetworthCore.Projections` is still present and tested — only the UI was torn out.
 
 - `Networth.xcodeproj` is the source of truth. Add new files via Xcode's UI.
 - App target builds clean on the iPhone 17 / iOS 26.5 simulator.
@@ -20,10 +22,10 @@ All seven phases (0-6) of `docs/PLAN.md` are implemented and validated. Post-pha
 - `safeSave(source:)` posts a notification on failure; container surfaces an alert.
 
 ## Historical net-worth backfill
-- `SyncCoordinator.runHistoryBackfillIfNeeded(budgetId:)` runs at the end of `syncAll` and reconstructs 24 months of daily snapshots from cached YNAB transactions via `NetworthCore.AccountHistoryReconstructor` + `NetWorthHistoryAggregator`.
+- `SyncCoordinator.runHistoryBackfillIfNeeded(budgetId:)` runs at the end of `syncAll` and reconstructs up to 5 years (60 months) of daily snapshots from cached YNAB transactions via `NetworthCore.AccountHistoryReconstructor` + `NetWorthHistoryAggregator`.
 - Gated by `DurableUserSettings.historyBackfillVersion` (default `0`, flipped to `1` after a successful run). The marker lives in the CloudKit-backed durable store so a device reinstall or iCloud restore doesn't re-trigger it.
 - Reconstructed rows are stamped `source = .backfill` (manual assets aren't included — their history doesn't extend that far back). When a `.backfill` row collides with a `.live` row from `SnapshotScheduler.recordIfNeeded`, the dedupe pass keeps `.live` so manual-asset totals are preserved.
-- `AppContainerController.forceFullResync()` clears all `SyncCursor` rows AND resets `historyBackfillVersion = 0`, so the next sync redoes the full 24-month fetch and reconstruction.
+- `AppContainerController.forceFullResync()` clears all `SyncCursor` rows AND resets `historyBackfillVersion = 0`, so the next sync redoes the full 5-year fetch and reconstruction.
 
 ## Build & Test
 ```bash
