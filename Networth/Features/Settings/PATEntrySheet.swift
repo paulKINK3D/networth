@@ -18,7 +18,7 @@ struct PATEntrySheet: View {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
                 NwInlineNotice(
                     "Read-only access",
-                    message: "Networth uses your token to read accounts and transactions. It never writes to YNAB.",
+                    message: "Networth never writes to YNAB.",
                     tone: .info
                 )
 

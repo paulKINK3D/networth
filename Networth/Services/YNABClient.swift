@@ -174,6 +174,7 @@ public actor RecordedYNABClient: YNABClient {
     public var transactionsResult: YNABTransactionsResponse
     public var scheduledResult: YNABScheduledTransactionsResponse
     private var token: String?
+    public private(set) var budgetsCallCount: Int = 0
 
     public init(
         budgets: [YNABBudgetSummary] = [],
@@ -191,7 +192,10 @@ public actor RecordedYNABClient: YNABClient {
 
     public func setToken(_ token: String?) { self.token = token }
     public func rateLimit() -> YNABRateLimitInfo? { YNABRateLimitInfo(used: 0, limit: 200) }
-    public func budgets() async throws -> [YNABBudgetSummary] { budgetsResult }
+    public func budgets() async throws -> [YNABBudgetSummary] {
+        budgetsCallCount += 1
+        return budgetsResult
+    }
     public func accounts(budgetId: String, lastKnowledge: Int64?) async throws -> YNABAccountsResponse { accountsResult }
     public func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse { categoriesResult }
     public func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse { transactionsResult }

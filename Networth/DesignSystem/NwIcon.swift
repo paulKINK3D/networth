@@ -58,10 +58,14 @@ extension NwIcon {
         case "savings":    return .savings
         case "cash":       return .cash
         case "creditCard": return .creditCard
+        case "lineOfCredit": return .creditCard
         case "mortgage":   return .mortgage
         case "autoLoan":   return .autoLoan
         case "studentLoan":return .studentLoan
+        case "personalLoan", "medicalDebt", "otherDebt": return .otherLiability
         case "investment": return .investment
+        case "otherLiability": return .otherLiability
+        case "otherAsset": return .otherAsset
         default:           return .otherAsset
         }
     }

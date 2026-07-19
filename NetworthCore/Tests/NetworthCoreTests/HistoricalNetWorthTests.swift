@@ -138,4 +138,95 @@ struct HistoricalNetWorthTests {
                 "Post-transfer aggregate matches: checking holds the value, brokerage is $0.")
         #expect(byDay[day(2026, 3, 20)] == Money.dollars(5_000))
     }
+
+    @Test func investmentHistoryCombinesAccountsAndCarriesManualValuesForward() {
+        let account = InvestmentHistoryBuilder.Account(
+            id: "BROKERAGE",
+            currentBalance: Money.dollars(1_200),
+            transactions: [
+                txn(
+                    accountId: "BROKERAGE",
+                    date: day(2026, 3, 3),
+                    amount: Money.dollars(200)
+                )
+            ]
+        )
+        let manual = ManualAssetSnapshot(
+            id: UUID(),
+            name: "401k",
+            kind: .retirement,
+            currentValue: Money.dollars(2_500),
+            lastUpdatedAt: day(2026, 3, 4),
+            history: [
+                ManualAssetValueEntry(recordedAt: day(2026, 3, 2), value: Money.dollars(2_000)),
+                ManualAssetValueEntry(recordedAt: day(2026, 3, 4), value: Money.dollars(2_500))
+            ]
+        )
+
+        let points = InvestmentHistoryBuilder(calendar: utc).build(
+            accounts: [account],
+            manualAssets: [manual],
+            from: day(2026, 3, 1),
+            to: day(2026, 3, 5)
+        )
+        let byDay = Dictionary(uniqueKeysWithValues: points.map { ($0.date, $0.value) })
+
+        #expect(byDay[day(2026, 3, 1)] == Money.dollars(1_000))
+        #expect(byDay[day(2026, 3, 2)] == Money.dollars(3_000))
+        #expect(byDay[day(2026, 3, 3)] == Money.dollars(3_200))
+        #expect(byDay[day(2026, 3, 4)] == Money.dollars(3_700))
+        #expect(byDay[day(2026, 3, 5)] == Money.dollars(3_700))
+    }
+
+    @Test func investmentHistoryReturnsNoPointsForAnInvalidRange() {
+        let points = InvestmentHistoryBuilder(calendar: utc).build(
+            accounts: [],
+            manualAssets: [],
+            from: day(2026, 3, 2),
+            to: day(2026, 3, 1)
+        )
+
+        #expect(points.isEmpty)
+    }
+
+    @Test func investmentHistoryKeepsTransfersBetweenOpenAndClosedAccountsFlat() {
+        let oldId = "OLD_BROKERAGE"
+        let newId = "NEW_BROKERAGE"
+        let transferDate = day(2026, 3, 3)
+        let accounts = [
+            InvestmentHistoryBuilder.Account(
+                id: oldId,
+                currentBalance: .zero,
+                transactions: [
+                    txn(
+                        accountId: oldId,
+                        date: transferDate,
+                        amount: Money.dollars(-5_000),
+                        transferAccountId: newId
+                    )
+                ]
+            ),
+            InvestmentHistoryBuilder.Account(
+                id: newId,
+                currentBalance: Money.dollars(5_000),
+                transactions: [
+                    txn(
+                        accountId: newId,
+                        date: transferDate,
+                        amount: Money.dollars(5_000),
+                        transferAccountId: oldId
+                    )
+                ]
+            )
+        ]
+
+        let points = InvestmentHistoryBuilder(calendar: utc).build(
+            accounts: accounts,
+            manualAssets: [],
+            from: day(2026, 3, 1),
+            to: day(2026, 3, 5)
+        )
+
+        #expect(points.allSatisfy { $0.value == Money.dollars(5_000) })
+    }
 }

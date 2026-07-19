@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Observation
 import os
+import NetworthCore
 
 /// Top-level state container. `@Observable` + `@Environment`-injected so any view
 /// can reach into protocol-based services without view-model boilerplate.
@@ -15,12 +16,16 @@ public final class AppContainerController {
     public let connectivity: ConnectivityMonitor
     public let snapshotScheduler: SnapshotScheduler
     public let syncCoordinator: SyncCoordinator
+    public let ibrLoanStore: any IBRLoanStore
+    public let ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore
 
     public var unlocked: Bool = false
     public var bootstrapped: Bool = false
     public var hasYNABToken: Bool = false
     public var selectedBudgetId: String?
     public var lastPersistenceError: PersistenceFailure?
+    public private(set) var linkedIBRLoanDocument: SharedIBRLoanDocument?
+    public private(set) var linkedIBRLoanHistoryStartDate: Date?
 
     private let logger = Logger(subsystem: "com.bluelava.me.networth", category: "app-container")
 
@@ -28,12 +33,17 @@ public final class AppContainerController {
         secretStore: any SecretStore,
         biometricGate: any BiometricGate,
         ynabClient: any YNABClient,
-        modelContainer: ModelContainer
+        modelContainer: ModelContainer,
+        ibrLoanStore: any IBRLoanStore = AppGroupIBRLoanStore(),
+        ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore = InMemoryIBRLoanHistorySettingsStore()
     ) {
         self.secretStore = secretStore
         self.biometricGate = biometricGate
         self.ynabClient = ynabClient
         self.modelContainer = modelContainer
+        self.ibrLoanStore = ibrLoanStore
+        self.ibrLoanHistorySettingsStore = ibrLoanHistorySettingsStore
+        self.linkedIBRLoanHistoryStartDate = ibrLoanHistorySettingsStore.loadStartDate()
         self.connectivity = ConnectivityMonitor()
         let ctx = modelContainer.mainContext
         self.snapshotScheduler = SnapshotScheduler(mainContext: ctx)
@@ -46,6 +56,7 @@ public final class AppContainerController {
     /// Determines initial unlock state based on the user's Face ID setting and
     /// flips `bootstrapped = true` so ContentView can render the right state.
     public func bootstrap() async {
+        refreshLinkedIBRLoan()
         let token: String?
         do { token = try secretStore.load(.ynabPersonalAccessToken) }
         catch {
@@ -75,8 +86,11 @@ public final class AppContainerController {
             ctx.safeSave(source: "bootstrap.migrate")
         }
 
-        // Variable-spend lookback is hardcoded to 365 days in the projection
-        // call sites — no migration needed; the persisted setting is ignored.
+        if settings.settingsSchemaVersion < 3 {
+            settings.spendingLookbackDays = 365
+            settings.settingsSchemaVersion = 3
+            ctx.safeSave(source: "bootstrap.migrateProjectionLookback")
+        }
 
         if settings.faceIDEnabled && biometricGate.isAvailable {
             // Honor the user's biometric grace window: if the app was active
@@ -139,6 +153,67 @@ public final class AppContainerController {
         snapshotScheduler.recordIfNeeded()
     }
 
+    /// Refreshes IBR's opt-in, local-only App Group summary. The document is
+    /// kept in memory and never copied into Networth's CloudKit-backed models.
+    public func refreshLinkedIBRLoan() {
+        do {
+            linkedIBRLoanDocument = try ibrLoanStore.load()
+        } catch {
+            linkedIBRLoanDocument = nil
+            logger.error("IBR loan summary could not be read: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    public func setLinkedIBRLoanHistoryStartDate(_ date: Date?) {
+        let normalized = date.map { Calendar.current.startOfDay(for: $0) }
+        linkedIBRLoanHistoryStartDate = normalized
+        ibrLoanHistorySettingsStore.saveStartDate(normalized)
+    }
+
+    public func defaultLinkedIBRLoanHistoryStartDate(
+        calendar: Calendar = .current
+    ) -> Date? {
+        if let budgetId = selectedBudgetId {
+            var transactionDescriptor = FetchDescriptor<CachedTransaction>(
+                predicate: #Predicate {
+                    $0.budgetId == budgetId && $0.deleted == false
+                },
+                sortBy: [SortDescriptor(\CachedTransaction.date, order: .forward)]
+            )
+            transactionDescriptor.fetchLimit = 1
+            if let firstTransaction = (try? modelContainer.mainContext.fetch(transactionDescriptor))?.first {
+                return calendar.startOfDay(for: firstTransaction.date)
+            }
+        }
+
+        var snapshotDescriptor = FetchDescriptor<DurableNetWorthSnapshot>(
+            sortBy: [SortDescriptor(\DurableNetWorthSnapshot.date, order: .forward)]
+        )
+        snapshotDescriptor.fetchLimit = 1
+        guard let firstSnapshot = (try? modelContainer.mainContext.fetch(snapshotDescriptor))?.first else {
+            return nil
+        }
+        return calendar.startOfDay(for: firstSnapshot.date)
+    }
+
+    public func effectiveLinkedIBRLoanHistoryStartDate(
+        calendar: Calendar = .current
+    ) -> Date? {
+        linkedIBRLoanHistoryStartDate
+            ?? defaultLinkedIBRLoanHistoryStartDate(calendar: calendar)
+    }
+
+    public func linkedIBRLoanBalance(
+        on date: Date,
+        calendar: Calendar = .current
+    ) -> Money {
+        linkedIBRLoanDocument?.balance(
+            on: date,
+            calendar: calendar,
+            historyStartDate: effectiveLinkedIBRLoanHistoryStartDate(calendar: calendar)
+        ) ?? .zero
+    }
+
     public func syncNow() async {
         await syncCoordinator.syncAll(budgetId: selectedBudgetId)
         recordDailySnapshot()
@@ -146,6 +221,18 @@ public final class AppContainerController {
         if let settings = try? modelContainer.mainContext.fetch(descriptor).first {
             selectedBudgetId = settings.selectedBudgetId
         }
+    }
+
+    /// Refreshes the local YNAB cache only when the current successful sync is
+    /// older than the requested age. Keeps foreground refreshes comfortably
+    /// below YNAB's rate limit while making the projection useful on open.
+    public func refreshIfStale(now: Date = .now, maxAge: TimeInterval = 15 * 60) async {
+        guard unlocked, hasYNABToken else { return }
+        if case .syncing = syncCoordinator.phase { return }
+        let descriptor = FetchDescriptor<DurableUserSettings>()
+        let lastSync = (try? modelContainer.mainContext.fetch(descriptor).first)?.lastSyncedAt
+        if let lastSync, now.timeIntervalSince(lastSync) < maxAge { return }
+        await syncNow()
     }
 
     /// Full reset: wipe all YNAB delta cursors, the historical-backfill marker,
@@ -217,7 +304,9 @@ public final class AppContainerController {
             secretStore: secretStore,
             biometricGate: biometric,
             ynabClient: client,
-            modelContainer: container
+            modelContainer: container,
+            ibrLoanStore: AppGroupIBRLoanStore(),
+            ibrLoanHistorySettingsStore: UserDefaultsIBRLoanHistorySettingsStore()
         )
     }
 
@@ -228,7 +317,9 @@ public final class AppContainerController {
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(),
             ynabClient: RecordedYNABClient(),
-            modelContainer: container
+            modelContainer: container,
+            ibrLoanStore: InMemoryIBRLoanStore(),
+            ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore()
         )
     }
 

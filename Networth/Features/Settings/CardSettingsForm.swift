@@ -6,8 +6,11 @@ struct CardSettingsForm: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppContainerController.self) private var container
     let account: CachedAccount
+    @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
 
     @State private var cycleDay: Int = 1
+    @State private var dueDay: Int = 1
+    @State private var paymentAccountId: String = ""
     @State private var saveError: String?
 
     var body: some View {
@@ -20,23 +23,45 @@ struct CardSettingsForm: View {
                 if let saveError {
                     NwInlineNotice("Couldn't save", message: saveError, tone: .warning)
                 }
-                NwInlineNotice(
-                    "Statement cycle day",
-                    message: "Enter the day of the month your statement closes. We use this for projections.",
-                    tone: .info
-                )
-
                 VStack(alignment: .leading, spacing: NwSpacing.sm) {
                     Text("Statement closes on day").font(NwTypography.caption)
                         .foregroundStyle(.secondary).textCase(.uppercase)
-                    Picker("Day", selection: $cycleDay) {
+                    Picker("Close day", selection: $cycleDay) {
                         ForEach(1...31, id: \.self) { day in
                             Text("\(day)").tag(day)
                         }
                     }
                     .pickerStyle(.wheel)
                     .frame(maxHeight: 160)
-                    Text("For cards that close on day 29-31, short months fall back to the last day automatically.")
+                }
+
+                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                    Text("Autopay debits on day").font(NwTypography.caption)
+                        .foregroundStyle(.secondary).textCase(.uppercase)
+                    Picker("Due day", selection: $dueDay) {
+                        ForEach(1...31, id: \.self) { day in
+                            Text("\(day)").tag(day)
+                        }
+                    }
+                    .pickerStyle(.wheel)
+                    .frame(maxHeight: 160)
+                    Text("Days 29-31 use the month's final day when needed.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                    Text("Payment account").font(NwTypography.caption)
+                        .foregroundStyle(.secondary).textCase(.uppercase)
+                    Picker("Payment account", selection: $paymentAccountId) {
+                        Text("Select account").tag("")
+                        ForEach(cashAccounts) { cashAccount in
+                            Text(cashAccount.name).tag(cashAccount.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(NwAppColors.textPrimary)
+                    Text("Account used for full-statement autopay.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -52,10 +77,18 @@ struct CardSettingsForm: View {
         )
         if let existing = try? container.modelContainer.mainContext.fetch(descriptor).first {
             cycleDay = existing.statementCycleDay
+            if existing.paymentDueDay >= 1 {
+                dueDay = existing.paymentDueDay
+            }
+            paymentAccountId = existing.paymentAccountId ?? ""
         }
     }
 
     private func save() {
+        guard !paymentAccountId.isEmpty else {
+            saveError = "Choose the cash account that pays this card."
+            return
+        }
         let ctx = container.modelContainer.mainContext
         let targetId = account.id
         let descriptor = FetchDescriptor<DurableCardSettings>(
@@ -71,21 +104,31 @@ struct CardSettingsForm: View {
             ctx.insert(setting)
             isNew = true
         }
-        // Snapshot prior day so a save failure rolls back only this form's
+        // Snapshot prior values so a save failure rolls back only this form's
         // mutation. Context-wide rollback would also discard any unrelated
         // pending changes in the shared main context.
-        let priorDay = setting.statementCycleDay
+        let priorCycleDay = setting.statementCycleDay
+        let priorDueDay = setting.paymentDueDay
+        let priorPaymentAccountId = setting.paymentAccountId
         setting.statementCycleDay = max(1, min(31, cycleDay))
+        setting.paymentDueDay = max(1, min(31, dueDay))
+        setting.paymentAccountId = paymentAccountId
         let succeeded = ctx.safeSave(source: "cardSettings.save")
         guard succeeded else {
             if isNew {
                 ctx.delete(setting)
             } else {
-                setting.statementCycleDay = priorDay
+                setting.statementCycleDay = priorCycleDay
+                setting.paymentDueDay = priorDueDay
+                setting.paymentAccountId = priorPaymentAccountId
             }
             saveError = "Saving card settings failed. Your selection is still here — try again."
             return
         }
         dismiss()
+    }
+
+    private var cashAccounts: [CachedAccount] {
+        accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
     }
 }

@@ -19,11 +19,11 @@ enum TutorialContent {
             icon: .netWorth,
             iconTint: NwAppColors.primary,
             title: "Welcome to BlueLava Networth",
-            lede: "A personal net-worth tracker that turns YNAB into a full financial picture — assets, liabilities, history, and projections.",
+            lede: "A private financial radar for what you have, what is leaving, and whether upcoming obligations are safely covered.",
             bullets: [
                 "Net worth = your YNAB accounts plus any manual assets you add.",
                 "Up to 5 years of history reconstructed from your YNAB transactions on first sync.",
-                "Forward-looking projections, including credit card statement forecasts."
+                "A forward cash outlook that includes scheduled activity, expected spending, and credit card autopays."
             ],
             footnote: nil
         ),
@@ -64,9 +64,9 @@ enum TutorialContent {
             title: "The Net Worth tab",
             lede: "Your headline number and the trend behind it.",
             bullets: [
-                "Top: current net worth — assets minus liabilities.",
-                "Chart: up to 5 years of history with month-over-month deltas.",
-                "Breakdown: balances grouped by account type (checking, credit, manual, etc.)."
+                "Scorecard: current net worth, assets, liabilities, and the 30-day change.",
+                "Trend: scrub through up to 5 years of history.",
+                "Balance Sheet: tap any category to see the accounts and manual assets behind it."
             ],
             footnote: nil
         ),
@@ -87,35 +87,51 @@ enum TutorialContent {
 
         TutorialStep(
             id: 5,
-            icon: .projections,
-            iconTint: NwAppColors.primary,
-            title: "The Projections tab",
-            lede: "What your money looks like over the next 90 days.",
+            icon: .investment,
+            iconTint: NwAppColors.accent,
+            title: "The Investments tab",
+            lede: "A single portfolio view across YNAB and the investment balances you update manually.",
             bullets: [
-                "Credit card statement forecast — projected balance per card based on scheduled charges and payments.",
-                "Cash position chart — solid line uses scheduled transactions; dashed line adds an estimated daily drain from recent variable spending.",
-                "Spending by Category — tap chips to focus on a subset like food or transport.",
-                "All forecasts are computed locally — Networth never writes anything back to YNAB."
+                "See total value, the 30-day change, and up to 5 years of reconstructed balance history.",
+                "Allocation separates YNAB investments, brokerage, retirement, and crypto.",
+                "Tap a holding for its balance history and activity, or to update a manual value."
             ],
-            footnote: "Tune the lookback window and exclude categories (e.g. investments) from Settings → Projections."
+            footnote: "Balance movement includes deposits and withdrawals; it is not investment-return attribution."
         ),
 
         TutorialStep(
             id: 6,
-            icon: .creditCard,
-            iconTint: NwAppColors.accent,
-            title: "Set up your credit cards",
-            lede: "For accurate statement forecasts, tell Networth when each card closes.",
+            icon: .projections,
+            iconTint: NwAppColors.primary,
+            title: "The Projections tab",
+            lede: "Your daily answer for whether upcoming obligations are covered and when cash may get tight.",
             bullets: [
-                "Settings → Credit Card Statements → tap a card.",
-                "Set the statement close day (e.g. 17 for a card that closes on the 17th of each month).",
-                "That's it — the projection shows what'll be due on your next statement."
+                "The headline shows your lowest expected cash balance, its date, and the event behind it.",
+                "Known Commitments includes scheduled income, bills, transfers, and full-statement card autopays.",
+                "Estimated monthly spending includes scheduled and unscheduled external outflows; the curve adds only spending not already represented by known events.",
+                "Tap a card payment or the chart info button to see how the estimate was built.",
+                "All forecasts are computed locally — Networth never writes anything back to YNAB."
             ],
-            footnote: "You only need to do this once per card unless your issuer changes the cycle."
+            footnote: "Choose which cash accounts count, set your minimum cash buffer, and exclude unusual categories in Settings → Projections."
         ),
 
         TutorialStep(
             id: 7,
+            icon: .creditCard,
+            iconTint: NwAppColors.accent,
+            title: "Set up your credit cards",
+            lede: "For accurate cash timing, tell Networth when each card closes, pays, and which account funds it.",
+            bullets: [
+                "Settings → Credit Card Statements → tap a card.",
+                "Set the statement close day (e.g. 17 for a card that closes on the 17th of each month).",
+                "Set the autopay day and choose the checking, savings, or cash account that pays it.",
+                "Networth assumes full-statement autopay and includes each expected debit in the cash outlook."
+            ],
+            footnote: "You only need to revisit this when the issuer changes the cycle or you change the payment account."
+        ),
+
+        TutorialStep(
+            id: 8,
             icon: .sync,
             iconTint: NwAppColors.primary,
             title: "Get the most out of YNAB",
@@ -130,7 +146,7 @@ enum TutorialContent {
         ),
 
         TutorialStep(
-            id: 8,
+            id: 9,
             icon: .lock,
             iconTint: NwAppColors.primary,
             title: "Security & sync",
@@ -145,7 +161,7 @@ enum TutorialContent {
         ),
 
         TutorialStep(
-            id: 9,
+            id: 10,
             icon: .success,
             iconTint: NwAppColors.positive,
             title: "You're set",
@@ -153,7 +169,7 @@ enum TutorialContent {
             bullets: [
                 "Settings → Sync Now. First sync takes a few seconds and reconstructs up to 5 years of history.",
                 "Add any manual assets you want included.",
-                "Open the Projections tab once your cards have close days configured.",
+                "Choose your projection cash accounts and finish each card's statement and autopay setup.",
                 "Re-open this tutorial any time from Settings → Show Tutorial."
             ],
             footnote: nil

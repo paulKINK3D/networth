@@ -21,6 +21,7 @@ public enum ScheduleFrequency: String, Sendable, Hashable, Codable {
 public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifiable {
     public let id: String
     public let accountId: String
+    public let firstDate: Date?
     public let nextDate: Date
     public let frequency: ScheduleFrequency
     public let amount: Money            // signed: + inflow, - outflow per YNAB
@@ -33,6 +34,7 @@ public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifi
     public init(
         id: String,
         accountId: String,
+        firstDate: Date? = nil,
         nextDate: Date,
         frequency: ScheduleFrequency,
         amount: Money,
@@ -44,6 +46,7 @@ public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifi
     ) {
         self.id = id
         self.accountId = accountId
+        self.firstDate = firstDate
         self.nextDate = nextDate
         self.frequency = frequency
         self.amount = amount
@@ -66,14 +69,16 @@ extension ScheduledTransactionSummary {
         calendar: Calendar = Calendar(identifier: .gregorian)
     ) -> [Date] {
         guard start <= end else { return [] }
+        let effectiveStart = max(start, firstDate ?? start)
+        guard effectiveStart <= end else { return [] }
         if frequency == .never {
-            return (nextDate >= start && nextDate <= end) ? [nextDate] : []
+            return (nextDate >= effectiveStart && nextDate <= end) ? [nextDate] : []
         }
         var dates: [Date] = []
 
         // 1. Walk backward from nextDate (inclusive) collecting occurrences in range.
         var backCursor: Date? = nextDate
-        while let c = backCursor, c >= start {
+        while let c = backCursor, c >= effectiveStart {
             if c <= end { dates.append(c) }
             backCursor = step(c, calendar: calendar, direction: -1)
         }
@@ -81,7 +86,7 @@ extension ScheduledTransactionSummary {
         // 2. Walk forward from the occurrence after nextDate.
         var fwdCursor: Date? = step(nextDate, calendar: calendar, direction: 1)
         while let c = fwdCursor, c <= end {
-            if c >= start { dates.append(c) }
+            if c >= effectiveStart { dates.append(c) }
             fwdCursor = step(c, calendar: calendar, direction: 1)
         }
 

@@ -33,7 +33,9 @@ struct NetworthApp: App {
                 .onChange(of: scenePhase) { _, newPhase in
                     switch newPhase {
                     case .active:
+                        container.refreshLinkedIBRLoan()
                         container.recordDailySnapshot()
+                        Task { await container.refreshIfStale() }
                     case .background:
                         // Stamp the moment we lose the foreground so the
                         // biometric grace check on next bootstrap knows how

@@ -1,79 +1,143 @@
 import SwiftUI
 import SwiftData
+import Charts
 import NetworthCore
 
-/// Aggregated view of investment holdings — YNAB-tracked investment-type
-/// accounts plus manual assets of brokerage / retirement / crypto kinds.
+private enum InvestmentRange: String, CaseIterable, Identifiable {
+    case threeMonths = "3M"
+    case sixMonths = "6M"
+    case oneYear = "1Y"
+    case twoYears = "2Y"
+    case fiveYears = "5Y"
+
+    var id: String { rawValue }
+
+    var months: Int {
+        switch self {
+        case .threeMonths: return 3
+        case .sixMonths: return 6
+        case .oneYear: return 12
+        case .twoYears: return 24
+        case .fiveYears: return 60
+        }
+    }
+}
+
+private struct InvestmentAllocation: Identifiable {
+    let id: String
+    let title: String
+    let icon: NwIcon
+    let amount: Money
+}
+
+private enum InvestmentHolding: Identifiable {
+    case ynab(CachedAccount)
+    case manual(DurableManualAsset)
+
+    var id: String {
+        switch self {
+        case .ynab(let account): return "ynab:\(account.id)"
+        case .manual(let asset): return "manual:\(asset.id.uuidString)"
+        }
+    }
+
+    var name: String {
+        switch self {
+        case .ynab(let account): return account.name
+        case .manual(let asset): return asset.name.isEmpty ? "Untitled Asset" : asset.name
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .ynab: return "YNAB Investment"
+        case .manual(let asset): return asset.kind.displayName
+        }
+    }
+
+    var icon: NwIcon {
+        switch self {
+        case .ynab: return .investment
+        case .manual(let asset):
+            switch asset.kind {
+            case .brokerage: return .brokerage
+            case .retirement: return .retirement
+            case .crypto: return .crypto
+            default: return .otherAsset
+            }
+        }
+    }
+
+    var value: Money {
+        switch self {
+        case .ynab(let account): return account.balance
+        case .manual(let asset): return asset.currentValue
+        }
+    }
+}
+
+/// Portfolio view for YNAB investment accounts and manually tracked brokerage,
+/// retirement, and crypto holdings.
 struct InvestmentsView: View {
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
+    @Query(sort: \CachedTransaction.date) private var transactions: [CachedTransaction]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
+    @Query private var userSettings: [DurableUserSettings]
 
-    private static let investmentManualKinds: Set<ManualAssetKind> = [.brokerage, .retirement, .crypto, .other]
-    /// Display order of the per-kind sub-sections inside the Investments tab.
-    /// Empty sub-sections are hidden so the page stays tight when a user only
-    /// has, say, brokerage and retirement.
-    private static let kindOrder: [ManualAssetKind] = [.brokerage, .retirement, .crypto, .other]
+    @State private var range: InvestmentRange = .oneYear
+    @State private var scrubbedDate: Date?
 
-    private func kindLabel(_ kind: ManualAssetKind) -> String {
-        switch kind {
-        case .brokerage:  return "Brokerage"
-        case .retirement: return "Retirement"
-        case .crypto:     return "Crypto"
-        case .other:      return "Other"
-        default:          return kind.displayName
-        }
-    }
+    private static let investmentManualKinds: Set<ManualAssetKind> = [
+        .brokerage, .retirement, .crypto
+    ]
 
     private var ynabInvestments: [CachedAccount] {
         accounts.filter { !$0.deleted && !$0.closed && $0.kind == .investment }
     }
 
+    private var historicalYNABInvestments: [CachedAccount] {
+        accounts.filter { !$0.deleted && $0.kind == .investment }
+    }
+
     private var manualInvestments: [DurableManualAsset] {
-        manualAssets.filter { !$0.deleted && Self.investmentManualKinds.contains($0.kind) }
+        manualAssets.filter {
+            !$0.deleted && Self.investmentManualKinds.contains($0.kind)
+        }
     }
 
-
-    private var totalValueMU: Int64 {
-        let ynabTotal = ynabInvestments.reduce(Int64(0)) { $0 + $1.balanceMilliunits }
-        let manualTotal = manualInvestments.reduce(Int64(0)) { $0 + $1.currentValueMilliunits }
-        return ynabTotal + manualTotal
+    private var totalValue: Money {
+        ynabInvestments.map(\.balance).sum() + manualInvestments.map(\.currentValue).sum()
     }
 
-    private var totalValue: Money { Money(milliunits: totalValueMU) }
-
-    private var isEmpty: Bool {
-        ynabInvestments.isEmpty && manualInvestments.isEmpty
+    private var holdings: [InvestmentHolding] {
+        let values = ynabInvestments.map(InvestmentHolding.ynab)
+            + manualInvestments.map(InvestmentHolding.manual)
+        return values.sorted {
+            if $0.value != $1.value { return $0.value > $1.value }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
     }
+
+    private var isEmpty: Bool { holdings.isEmpty }
 
     var body: some View {
+        let points = historyPoints
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
                     if isEmpty {
                         NwEmptyState(
                             title: "No investments yet",
-                            message: "Add an investment account in YNAB or add a brokerage / retirement / crypto manual asset in Settings.",
+                            message: "Add an investment account in YNAB or a brokerage, retirement, or crypto asset in Settings.",
                             icon: .investment
                         )
                         .frame(minHeight: 320)
                     } else {
-                        heroCard
-                        if !ynabInvestments.isEmpty {
-                            NwSectionHeader("YNAB Investments")
-                            ForEach(ynabInvestments) { account in
-                                investmentRow(name: account.name,
-                                              subtitle: "Investment",
-                                              icon: .investment,
-                                              value: Money(milliunits: account.balanceMilliunits))
-                            }
-                        }
-                        if !manualInvestments.isEmpty {
-                            NwSectionHeader("Manual Investments")
-                            ForEach(manualKindSections, id: \.kind) { section in
-                                manualKindSection(section)
-                            }
-                        }
+                        heroCard(history: points)
+                        trendCard(history: points)
+                        allocationSection
+                        holdingsSection
                     }
                 }
                 .padding(.horizontal, NwSpacing.screenPadding)
@@ -84,145 +148,478 @@ struct InvestmentsView: View {
         }
     }
 
-    private var heroCard: some View {
-        NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.xs) {
-                Text("Total Investments")
+    private func heroCard(history: [InvestmentHistoryBuilder.Point]) -> some View {
+        let change = thirtyDayChange(in: history)
+        return NwCard(style: .primary) {
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
+                NwAmountText(totalValue, variant: .hero, showCents: false)
+
+                if let change {
+                    HStack(spacing: NwSpacing.xs) {
+                        (change.isNegative ? NwIcon.arrowDown : NwIcon.arrowUp).image
+                        NwAmountText(
+                            change,
+                            variant: .signed,
+                            showCents: false,
+                            color: change.isNegative
+                                ? NwAppColors.liability
+                                : NwAppColors.positive
+                        )
+                        Text("balance change over 30 days")
+                            .font(NwTypography.footnote)
+                    }
+                    .foregroundStyle(
+                        change.isNegative ? NwAppColors.liability : NwAppColors.positive
+                    )
+                }
+
+                Text("Updated \(lastUpdatedText)")
                     .font(NwTypography.caption)
                     .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                NwAmountText(totalValue, variant: .hero, showCents: false)
-                Text("\(ynabInvestments.count + manualInvestments.count) holding\(ynabInvestments.count + manualInvestments.count == 1 ? "" : "s")")
+            }
+        }
+    }
+
+    private func trendCard(history: [InvestmentHistoryBuilder.Point]) -> some View {
+        let points = sampledHistoryPoints(from: history)
+        let selected = selectedPoint(in: points)
+        return NwCard(style: .primary) {
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
+                Text("Balance Trend")
+                    .font(NwTypography.headline)
+
+                Picker("Investment history range", selection: $range) {
+                    ForEach(InvestmentRange.allCases) { range in
+                        Text(range.rawValue).tag(range)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if let selected {
+                    HStack {
+                        Text(DateDisplay.shortDate(selected.date))
+                            .font(NwTypography.footnoteEm)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        NwAmountText(selected.value, variant: .body, showCents: false)
+                    }
+                }
+
+                if points.count < 2 {
+                    Text("Waiting for enough history to draw the trend.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 180, alignment: .center)
+                } else {
+                    Chart(points) { point in
+                        AreaMark(
+                            x: .value("Date", point.date),
+                            y: .value("Balance", point.value.doubleValue)
+                        )
+                        .foregroundStyle(.linearGradient(
+                            colors: [NwAppColors.accent.opacity(0.35), NwAppColors.accent.opacity(0.03)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ))
+
+                        LineMark(
+                            x: .value("Date", point.date),
+                            y: .value("Balance", point.value.doubleValue)
+                        )
+                        .foregroundStyle(NwAppColors.primary)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5))
+
+                        if let scrubbedDate {
+                            RuleMark(x: .value("Selected date", scrubbedDate))
+                                .foregroundStyle(NwAppColors.primary.opacity(0.5))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        }
+                    }
+                    .chartXSelection(value: $scrubbedDate)
+                    .frame(height: 220)
+                }
+            }
+        }
+        .onChange(of: range) { _, _ in scrubbedDate = nil }
+    }
+
+    private var allocationSection: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Text("Allocation")
+                .font(NwTypography.titleSmall)
+
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach(Array(allocations.enumerated()), id: \.element.id) { index, allocation in
+                        allocationRow(allocation)
+                        if index < allocations.count - 1 {
+                            Divider().padding(.leading, 52)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func allocationRow(_ allocation: InvestmentAllocation) -> some View {
+        let share = allocationShare(for: allocation.amount)
+        return HStack(spacing: NwSpacing.md) {
+            allocation.icon.image
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(NwAppColors.accent)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                HStack {
+                    Text(allocation.title)
+                        .font(NwTypography.bodyEmphasis)
+                    Spacer()
+                    Text(share.formatted(.percent.precision(.fractionLength(0))))
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(.secondary)
+                }
+                ProgressView(value: max(0, min(1, share)))
+                    .tint(NwAppColors.accent)
+            }
+            NwAmountText(allocation.amount, variant: .body, showCents: false)
+                .frame(minWidth: 76, alignment: .trailing)
+        }
+        .padding(NwSpacing.md)
+    }
+
+    private var holdingsSection: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Text("Holdings")
+                .font(NwTypography.titleSmall)
+
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach(Array(holdings.enumerated()), id: \.element.id) { index, holding in
+                        NavigationLink {
+                            holdingDestination(holding)
+                        } label: {
+                            holdingRow(holding)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < holdings.count - 1 {
+                            Divider().padding(.leading, 52)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func holdingRow(_ holding: InvestmentHolding) -> some View {
+        HStack(spacing: NwSpacing.md) {
+            holding.icon.image
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(NwAppColors.primary)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(holding.name)
+                    .font(NwTypography.bodyEmphasis)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                Text("\(holding.subtitle), \(holdingShareText(holding.value))")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
+            NwAmountText(holding.value, variant: .body, showCents: false)
+            NwIcon.chevron.image
+                .font(NwTypography.footnote)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(NwSpacing.md)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func holdingDestination(_ holding: InvestmentHolding) -> some View {
+        switch holding {
+        case .ynab(let account):
+            InvestmentAccountDetailView(account: account)
+        case .manual(let asset):
+            ManualAssetDetailView(asset: asset)
+                .environment(container)
         }
     }
 
-    private func investmentRow(name: String, subtitle: String, icon: NwIcon, value: Money) -> some View {
-        NwCard(style: .primary) {
-            HStack(spacing: NwSpacing.md) {
-                icon.image
-                    .font(.system(size: 22, weight: .regular))
-                    .foregroundStyle(NwAppColors.accent)
-                    .frame(width: 32)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(NwTypography.body)
-                        .foregroundStyle(NwAppColors.textPrimary)
-                    Text(subtitle).font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                NwAmountText(value, variant: .body)
+    private var allocations: [InvestmentAllocation] {
+        var result: [InvestmentAllocation] = []
+        let ynabTotal = ynabInvestments.map(\.balance).sum()
+        if !ynabTotal.isZero {
+            result.append(InvestmentAllocation(
+                id: "ynab",
+                title: "YNAB Investments",
+                icon: .investment,
+                amount: ynabTotal
+            ))
+        }
+
+        let kinds: [(ManualAssetKind, String, NwIcon)] = [
+            (.brokerage, "Brokerage", .brokerage),
+            (.retirement, "Retirement", .retirement),
+            (.crypto, "Crypto", .crypto)
+        ]
+        for (kind, title, icon) in kinds {
+            let amount = manualInvestments
+                .filter { $0.kind == kind }
+                .map(\.currentValue)
+                .sum()
+            if !amount.isZero {
+                result.append(InvestmentAllocation(
+                    id: kind.rawValue,
+                    title: title,
+                    icon: icon,
+                    amount: amount
+                ))
             }
         }
+        return result.sorted { $0.amount > $1.amount }
     }
 
-    private struct ManualGroup: Identifiable {
-        /// Stable id used by ForEach.
-        let title: String
-        var id: String { title }
-        /// What to render in the header. `nil` for the ungrouped section so it
-        /// blends with the surrounding "Manual Investments" header.
-        let displayHeader: String?
-        let assets: [DurableManualAsset]
-        var total: Money {
-            Money(milliunits: assets.reduce(Int64(0)) { $0 + $1.currentValueMilliunits })
-        }
+    private func allocationShare(for amount: Money) -> Double {
+        guard totalValue > .zero else { return 0 }
+        return amount.doubleValue / totalValue.doubleValue
     }
 
-    private struct ManualKindSection {
-        let kind: ManualAssetKind
-        let groups: [ManualGroup]
-        var total: Money {
-            Money(milliunits: groups.reduce(Int64(0)) { sum, g in sum + g.total.milliunits })
-        }
+    private func holdingShareText(_ amount: Money) -> String {
+        allocationShare(for: amount).formatted(.percent.precision(.fractionLength(0)))
     }
 
-    private var manualKindSections: [ManualKindSection] {
-        Self.kindOrder.compactMap { kind in
-            let assets = manualInvestments.filter { $0.kind == kind }
-            guard !assets.isEmpty else { return nil }
-            return ManualKindSection(kind: kind, groups: makeGroups(from: assets))
+    private var historyPoints: [InvestmentHistoryBuilder.Point] {
+        let calendar = Calendar(identifier: .gregorian)
+        guard let start = calendar.date(byAdding: .month, value: -range.months, to: .now) else {
+            return []
         }
-    }
-
-    private func makeGroups(from assets: [DurableManualAsset]) -> [ManualGroup] {
-        let buckets = Dictionary(grouping: assets) {
-            ($0.groupName ?? "").trimmingCharacters(in: .whitespaces)
+        let summariesByAccount = Dictionary(grouping: transactions.lazy.filter { !$0.deleted }) {
+            $0.accountId
         }
-        return buckets.map { key, list in
-            let sorted = list.sorted { $0.name.lowercased() < $1.name.lowercased() }
-            return ManualGroup(
-                title: key.isEmpty ? "" : key,
-                displayHeader: key.isEmpty ? nil : key,
-                assets: sorted
+        let inputs = historicalYNABInvestments.map { account in
+            InvestmentHistoryBuilder.Account(
+                id: account.id,
+                currentBalance: account.balance,
+                transactions: (summariesByAccount[account.id] ?? []).map { $0.toSummary() }
             )
         }
-        .sorted { lhs, rhs in
-            // Ungrouped goes last; named groups alphabetically.
-            if lhs.title.isEmpty { return false }
-            if rhs.title.isEmpty { return true }
-            return lhs.title.lowercased() < rhs.title.lowercased()
+        return InvestmentHistoryBuilder(calendar: calendar).build(
+            accounts: inputs,
+            manualAssets: manualInvestments.map { $0.toSnapshot() },
+            from: start,
+            to: .now
+        )
+    }
+
+    private func sampledHistoryPoints(
+        from points: [InvestmentHistoryBuilder.Point]
+    ) -> [InvestmentHistoryBuilder.Point] {
+        let stride = max(1, points.count / 260)
+        var sampled = points.enumerated().compactMap { index, point in
+            index.isMultiple(of: stride) ? point : nil
+        }
+        if let last = points.last, sampled.last?.date != last.date {
+            sampled.append(last)
+        }
+        return sampled
+    }
+
+    private func selectedPoint(
+        in points: [InvestmentHistoryBuilder.Point]
+    ) -> InvestmentHistoryBuilder.Point? {
+        guard let scrubbedDate else { return points.last }
+        return points.min {
+            abs($0.date.timeIntervalSince(scrubbedDate))
+                < abs($1.date.timeIntervalSince(scrubbedDate))
         }
     }
 
-    @ViewBuilder
-    private func manualKindSection(_ section: ManualKindSection) -> some View {
-        VStack(spacing: NwSpacing.sm) {
-            HStack {
-                Text(kindLabel(section.kind))
-                    .font(NwTypography.headline)
-                    .foregroundStyle(NwAppColors.textPrimary)
-                Spacer()
-                Text(CurrencyFormatter.compact(section.total))
-                    .font(NwTypography.headline)
+    private func thirtyDayChange(
+        in points: [InvestmentHistoryBuilder.Point]
+    ) -> Money? {
+        let calendar = Calendar(identifier: .gregorian)
+        guard let target = calendar.date(byAdding: .day, value: -30, to: .now),
+              let prior = points.last(where: { $0.date <= target }) else {
+            return nil
+        }
+        return totalValue - prior.value
+    }
+
+    private var lastUpdatedText: String {
+        var dates = ynabInvestments.map(\.updatedAt) + manualInvestments.map(\.lastUpdatedAt)
+        if let syncDate = userSettings.first?.lastSyncedAt {
+            dates.append(syncDate)
+        }
+        return dates.max()?.formatted(.relative(presentation: .named)) ?? "never"
+    }
+}
+
+private struct InvestmentAccountDetailView: View {
+    let account: CachedAccount
+    @Query private var transactions: [CachedTransaction]
+
+    init(account: CachedAccount) {
+        self.account = account
+        let accountId = account.id
+        _transactions = Query(
+            filter: #Predicate<CachedTransaction> {
+                $0.accountId == accountId && $0.deleted == false
+            },
+            sort: [SortDescriptor(\.date, order: .reverse)]
+        )
+    }
+
+    var body: some View {
+        let points = historyPoints
+        ScrollView {
+            VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                NwCard(style: .primary) {
+                    VStack(alignment: .leading, spacing: NwSpacing.md) {
+                        Text("BALANCE")
+                            .font(NwTypography.caption)
+                            .foregroundStyle(.secondary)
+                        NwAmountText(account.balance, variant: .large)
+                        if let change = thirtyDayChange(in: points) {
+                            HStack(spacing: NwSpacing.xs) {
+                                NwAmountText(
+                                    change,
+                                    variant: .signed,
+                                    showCents: false,
+                                    color: change.isNegative
+                                        ? NwAppColors.liability
+                                        : NwAppColors.positive
+                                )
+                                Text("balance change over 30 days")
+                                    .font(NwTypography.footnote)
+                            }
+                        }
+                        Divider()
+                        HStack(spacing: NwSpacing.xl) {
+                            balanceMetric(
+                                "Cleared",
+                                Money(milliunits: account.clearedMilliunits)
+                            )
+                            balanceMetric(
+                                "Pending",
+                                Money(milliunits: account.unclearedMilliunits)
+                            )
+                        }
+                        Text("Updated \(account.updatedAt.formatted(.relative(presentation: .named)))")
+                            .font(NwTypography.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                NwCard(style: .primary) {
+                    VStack(alignment: .leading, spacing: NwSpacing.md) {
+                        Text("Balance Trend")
+                            .font(NwTypography.headline)
+                        if points.count < 2 {
+                            Text("Waiting for enough history to draw the trend.")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, minHeight: 160, alignment: .center)
+                        } else {
+                            Chart(points) { point in
+                                LineMark(
+                                    x: .value("Date", point.date),
+                                    y: .value("Balance", point.value.doubleValue)
+                                )
+                                .foregroundStyle(NwAppColors.primary)
+                                .lineStyle(StrokeStyle(lineWidth: 2.5))
+                            }
+                            .frame(height: 190)
+                        }
+                    }
+                }
+
+                if !transactions.isEmpty {
+                    VStack(alignment: .leading, spacing: NwSpacing.md) {
+                        Text("Recent Activity")
+                            .font(NwTypography.titleSmall)
+                        NwCard(style: .primary, padding: 0) {
+                            VStack(spacing: 0) {
+                                ForEach(Array(transactions.prefix(20).enumerated()), id: \.element.id) { index, transaction in
+                                    transactionRow(transaction)
+                                    if index < min(transactions.count, 20) - 1 {
+                                        Divider().padding(.leading, NwSpacing.md)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, NwSpacing.screenPadding)
+            .padding(.vertical, NwSpacing.lg)
+        }
+        .background(NwAppColors.background.ignoresSafeArea())
+        .navigationTitle(account.name)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func balanceMetric(_ title: String, _ value: Money) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased())
+                .font(NwTypography.caption)
+                .foregroundStyle(.secondary)
+            NwAmountText(value, variant: .body, showCents: false)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func transactionRow(_ transaction: CachedTransaction) -> some View {
+        HStack(spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(transaction.payeeName ?? transaction.memo ?? "Transaction")
+                    .font(NwTypography.body)
+                Text(transactionSubtitle(transaction))
+                    .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, NwSpacing.sm)
-            ForEach(section.groups) { group in
-                manualGroupSection(group)
-                    .padding(.leading, NwSpacing.md)
-            }
+            Spacer()
+            NwAmountText(
+                Money(milliunits: transaction.amountMilliunits),
+                variant: .signed,
+                color: transaction.amountMilliunits < 0
+                    ? NwAppColors.liability
+                    : NwAppColors.positive
+            )
         }
+        .padding(NwSpacing.md)
     }
 
-    @ViewBuilder
-    private func manualGroupSection(_ group: ManualGroup) -> some View {
-        let isGrouped = group.displayHeader != nil
-        VStack(spacing: NwSpacing.sm) {
-            if let title = group.displayHeader {
-                HStack {
-                    Text(title)
-                        .font(NwTypography.footnoteEm)
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                    Spacer()
-                    Text(CurrencyFormatter.compact(group.total))
-                        .font(NwTypography.footnoteEm)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, NwSpacing.sm)
-            }
-            ForEach(group.assets) { asset in
-                investmentRow(name: asset.name,
-                              subtitle: asset.kind.displayName,
-                              icon: icon(for: asset.kind),
-                              value: asset.currentValue)
-                    .padding(.leading, isGrouped ? NwSpacing.md : 0)
-            }
-        }
+    private func transactionSubtitle(_ transaction: CachedTransaction) -> String {
+        let date = DateDisplay.shortDate(transaction.date)
+        guard let category = transaction.categoryName, !category.isEmpty else { return date }
+        return "\(date), \(category)"
     }
 
-    private func icon(for kind: ManualAssetKind) -> NwIcon {
-        switch kind {
-        case .brokerage:   return .brokerage
-        case .retirement:  return .retirement
-        case .crypto:      return .crypto
-        case .realEstate:  return .realEstate
-        case .vehicle:     return .vehicle
-        case .collectible: return .collectible
-        case .other:       return .otherAsset
+    private var historyPoints: [InvestmentHistoryBuilder.Point] {
+        let calendar = Calendar(identifier: .gregorian)
+        guard let start = calendar.date(byAdding: .year, value: -1, to: .now) else {
+            return []
         }
+        return InvestmentHistoryBuilder(calendar: calendar).build(
+            accounts: [InvestmentHistoryBuilder.Account(
+                id: account.id,
+                currentBalance: account.balance,
+                transactions: transactions.map { $0.toSummary() }
+            )],
+            manualAssets: [],
+            from: start,
+            to: .now
+        )
+    }
+
+    private func thirtyDayChange(
+        in points: [InvestmentHistoryBuilder.Point]
+    ) -> Money? {
+        let calendar = Calendar(identifier: .gregorian)
+        guard let target = calendar.date(byAdding: .day, value: -30, to: .now),
+              let prior = points.last(where: { $0.date <= target }) else {
+            return nil
+        }
+        return account.balance - prior.value
     }
 }

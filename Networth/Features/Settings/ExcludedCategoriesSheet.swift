@@ -2,13 +2,14 @@ import SwiftUI
 import SwiftData
 import NetworthCore
 
-/// Multi-select sheet for categories the user wants kept *out* of the
-/// variable-spend daily drain (e.g. investments, transfers to savings).
+/// Manages category and one-off transaction exclusions from expected spending.
 struct ExcludedCategoriesSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedCategory.groupName) private var categories: [CachedCategory]
     @Query private var exclusions: [DurableExcludedSpendCategory]
+    @Query(sort: \DurableExcludedSpendTransaction.transactionDate, order: .reverse)
+    private var transactionExclusions: [DurableExcludedSpendTransaction]
 
     private var excludedIds: Set<String> {
         Set(exclusions.map { $0.categoryId })
@@ -33,15 +34,54 @@ struct ExcludedCategoriesSheet: View {
 
     var body: some View {
         NwModalLayout(
-            title: "Excluded Categories",
+            title: "Spending Exclusions",
             onClose: { dismiss() }
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
-                NwInlineNotice(
-                    "Skipped from variable-spend",
-                    message: "Tap a category to keep it out of the daily-drain calculation. Useful for transfers to investments or other non-spending categories.",
-                    tone: .info
-                )
+                Text("Tap categories to exclude them. Tap one-time transactions to restore them.")
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+
+                if !transactionExclusions.isEmpty {
+                    VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                        Text("ONE-TIME TRANSACTIONS")
+                            .font(NwTypography.caption)
+                            .foregroundStyle(.secondary)
+                        VStack(spacing: 0) {
+                            ForEach(transactionExclusions) { exclusion in
+                                Button {
+                                    restore(exclusion)
+                                } label: {
+                                    HStack(spacing: NwSpacing.sm) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(NwAppColors.primary)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(exclusion.payeeName.isEmpty ? "Transaction" : exclusion.payeeName)
+                                                .font(NwTypography.body)
+                                                .foregroundStyle(NwAppColors.textPrimary)
+                                            Text(exclusion.transactionDate, format: .dateTime.month(.abbreviated).day().year())
+                                                .font(NwTypography.footnote)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        NwAmountText(
+                                            Money(milliunits: exclusion.amountMilliunits),
+                                            variant: .body,
+                                            color: NwAppColors.textSecondary
+                                        )
+                                    }
+                                    .contentShape(Rectangle())
+                                    .padding(.vertical, NwSpacing.xs)
+                                }
+                                .buttonStyle(.plain)
+                                if exclusion.id != transactionExclusions.last?.id { Divider() }
+                            }
+                        }
+                        .padding(NwSpacing.md)
+                        .background(NwAppColors.cardSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+                    }
+                }
 
                 if grouped.isEmpty {
                     NwEmptyState(
@@ -117,5 +157,13 @@ struct ExcludedCategoriesSheet: View {
             ))
         }
         ctx.safeSave(source: "exclusions.toggle")
+    }
+
+    private func restore(_ exclusion: DurableExcludedSpendTransaction) {
+        let ctx = container.modelContainer.mainContext
+        ctx.delete(exclusion)
+        if !ctx.safeSave(source: "exclusions.restoreTransaction") {
+            ctx.rollback()
+        }
     }
 }

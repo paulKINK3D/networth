@@ -161,6 +161,7 @@ public final class CachedScheduledTransaction {
     @Attribute(.unique) public var id: String
     public var budgetId: String
     public var accountId: String
+    public var firstDate: Date? = nil
     public var nextDate: Date
     public var frequencyRaw: String
     public var amountMilliunits: Int64
@@ -171,7 +172,7 @@ public final class CachedScheduledTransaction {
     public var deleted: Bool
 
     public init(
-        id: String, budgetId: String, accountId: String, nextDate: Date,
+        id: String, budgetId: String, accountId: String, firstDate: Date? = nil, nextDate: Date,
         frequencyRaw: String, amountMilliunits: Int64,
         payeeName: String?, categoryId: String? = nil,
         transferAccountId: String? = nil, memo: String?, deleted: Bool
@@ -179,6 +180,7 @@ public final class CachedScheduledTransaction {
         self.id = id
         self.budgetId = budgetId
         self.accountId = accountId
+        self.firstDate = firstDate
         self.nextDate = nextDate
         self.frequencyRaw = frequencyRaw
         self.amountMilliunits = amountMilliunits
@@ -191,7 +193,7 @@ public final class CachedScheduledTransaction {
 
     public func toSummary() -> ScheduledTransactionSummary {
         ScheduledTransactionSummary(
-            id: id, accountId: accountId, nextDate: nextDate,
+            id: id, accountId: accountId, firstDate: firstDate, nextDate: nextDate,
             frequency: ScheduleFrequency.fromYNAB(frequencyRaw),
             amount: Money(milliunits: amountMilliunits),
             payeeName: payeeName,

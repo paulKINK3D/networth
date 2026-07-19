@@ -41,6 +41,73 @@ struct AppContainerTests {
         #expect(container.hasYNABToken == false)
     }
 
+    @Test func bootstrapMigratesProjectionLookback() async throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let settings = DurableUserSettings()
+        settings.settingsSchemaVersion = 2
+        settings.spendingLookbackDays = 60
+        modelContainer.mainContext.insert(settings)
+        try modelContainer.mainContext.save()
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            modelContainer: modelContainer
+        )
+
+        await container.bootstrap()
+
+        #expect(settings.settingsSchemaVersion == 3)
+        #expect(settings.spendingLookbackDays == 365)
+    }
+
+    @Test func projectionSelectionsAndCardSourcePersist() async throws {
+        let container = AppContainerController.makePreview()
+        let ctx = container.modelContainer.mainContext
+        ctx.insert(DurableProjectionCashAccountOverride(accountId: "reserve", included: false))
+        ctx.insert(DurableExcludedSpendTransaction(
+            transactionId: "one-time", payeeName: "One-time purchase",
+            transactionDate: .now, amountMilliunits: 250_000
+        ))
+        ctx.insert(DurableCardSettings(
+            accountId: "visa", statementCycleDay: 15,
+            paymentDueDay: 10, paymentAccountId: "checking"
+        ))
+        try ctx.save()
+
+        let overrides = try ctx.fetch(FetchDescriptor<DurableProjectionCashAccountOverride>())
+        let transactionExclusions = try ctx.fetch(FetchDescriptor<DurableExcludedSpendTransaction>())
+        let cards = try ctx.fetch(FetchDescriptor<DurableCardSettings>())
+        #expect(overrides.first?.accountId == "reserve")
+        #expect(overrides.first?.included == false)
+        #expect(transactionExclusions.first?.transactionId == "one-time")
+        #expect(cards.first?.paymentAccountId == "checking")
+    }
+
+    @Test func refreshIfStaleUsesFifteenMinuteWindow() async throws {
+        let client = RecordedYNABClient()
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(seed: [.ynabPersonalAccessToken: "token"]),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: client,
+            modelContainer: try ModelContainerFactory.makeContainer(inMemory: true)
+        )
+        await container.bootstrap()
+        let settings = try #require(try container.modelContainer.mainContext
+            .fetch(FetchDescriptor<DurableUserSettings>()).first)
+        let syncedAt = Date.now
+        settings.lastSyncedAt = syncedAt
+        try container.modelContainer.mainContext.save()
+
+        await container.refreshIfStale(now: syncedAt.addingTimeInterval(14 * 60))
+        let recentCallCount = await client.budgetsCallCount
+        #expect(recentCallCount == 0)
+
+        await container.refreshIfStale(now: syncedAt.addingTimeInterval(16 * 60))
+        let staleCallCount = await client.budgetsCallCount
+        #expect(staleCallCount == 1)
+    }
+
     @Test func snapshotIsIdempotentForSameDay() async {
         let container = AppContainerController.makePreview()
         await container.bootstrap()
@@ -62,6 +129,212 @@ struct AppContainerTests {
         let bd = container.snapshotScheduler.computeBreakdown()
         #expect(bd.manualAssets == Money.dollars(500_000))
         #expect(bd.netWorth == Money.dollars(500_000))
+    }
+
+    @Test func linkedIBRLoanLoadsLocallyAndContributesToCurrentBreakdown() async throws {
+        let snapshot = linkedLoanSnapshot(
+            asOf: Date(timeIntervalSince1970: 2_000_000),
+            principal: 80_000,
+            accruedInterest: 5_000
+        )
+        let document = SharedIBRLoanDocument(current: snapshot, history: [snapshot])
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            modelContainer: try ModelContainerFactory.makeContainer(inMemory: true),
+            ibrLoanStore: InMemoryIBRLoanStore(document: document)
+        )
+
+        await container.bootstrap()
+
+        #expect(container.linkedIBRLoanDocument?.current.totalBalance == Money.dollars(85_000))
+        let breakdown = container.snapshotScheduler.computeBreakdown(
+            linkedIBRLoan: container.linkedIBRLoanDocument?.current
+        )
+        #expect(breakdown.loans == Money.dollars(85_000))
+        #expect(breakdown.netWorth == Money.dollars(-85_000))
+    }
+
+    @Test func linkedIBRLoanHistoryCarriesForwardWithoutCloudPersistence() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let firstDate = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+        let secondDate = calendar.date(from: DateComponents(year: 2026, month: 2, day: 1))!
+        let first = linkedLoanSnapshot(asOf: firstDate, principal: 90_000, accruedInterest: 4_000)
+        let second = linkedLoanSnapshot(asOf: secondDate, principal: 89_000, accruedInterest: 4_500)
+        let document = SharedIBRLoanDocument(current: second, history: [first, second])
+
+        #expect(
+            document.balance(
+                on: calendar.date(from: DateComponents(year: 2025, month: 12, day: 31))!,
+                calendar: calendar
+            ) == .zero
+        )
+
+        let rateSnapshot = linkedLoanSnapshot(
+            asOf: firstDate,
+            principal: 90_000,
+            accruedInterest: 4_000,
+            weightedInterestRatePercent: 7.75
+        )
+        let rateDocument = SharedIBRLoanDocument(
+            current: rateSnapshot,
+            history: [rateSnapshot]
+        )
+        #expect(
+            rateDocument.balance(
+                on: calendar.date(from: DateComponents(year: 2025, month: 12, day: 1))!,
+                calendar: calendar,
+                historyStartDate: calendar.date(
+                    from: DateComponents(year: 2025, month: 1, day: 1)
+                )
+            ) == Money.dollars(93_407.603)
+        )
+        #expect(
+            document.balance(
+                on: calendar.date(from: DateComponents(year: 2026, month: 1, day: 15))!,
+                calendar: calendar
+            ) == Money.dollars(94_000)
+        )
+        #expect(
+            document.balance(
+                on: calendar.date(from: DateComponents(year: 2026, month: 2, day: 15))!,
+                calendar: calendar
+            ) == Money.dollars(93_500)
+        )
+        #expect(
+            document.balance(
+                on: calendar.date(from: DateComponents(year: 2025, month: 6, day: 1))!,
+                calendar: calendar,
+                historyStartDate: calendar.date(
+                    from: DateComponents(year: 2025, month: 1, day: 1)
+                )
+            ) == Money.dollars(94_000)
+        )
+        #expect(
+            document.balance(
+                on: calendar.date(from: DateComponents(year: 2024, month: 12, day: 31))!,
+                calendar: calendar,
+                historyStartDate: calendar.date(
+                    from: DateComponents(year: 2025, month: 1, day: 1)
+                )
+            ) == .zero
+        )
+
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let checking = CachedAccount(
+            id: "checking",
+            budgetId: "budget",
+            name: "Checking",
+            typeRaw: "checking",
+            balanceMilliunits: Money.dollars(1_000).milliunits,
+            clearedMilliunits: Money.dollars(1_000).milliunits,
+            unclearedMilliunits: 0,
+            onBudget: true,
+            closed: false,
+            deleted: false
+        )
+        modelContainer.mainContext.insert(checking)
+        try modelContainer.mainContext.save()
+        let scheduler = SnapshotScheduler(mainContext: modelContainer.mainContext, calendar: calendar)
+        let saved = try #require(scheduler.recordIfNeeded(now: secondDate))
+        #expect(saved.liabilities == .zero)
+    }
+
+    @Test func linkedIBRLoanHistoryStartOverrideStaysLocal() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let snapshotDate = calendar.date(
+            from: DateComponents(year: 2026, month: 1, day: 1)
+        )!
+        let overrideDate = calendar.date(
+            from: DateComponents(year: 2025, month: 1, day: 1)
+        )!
+        let snapshot = linkedLoanSnapshot(
+            asOf: snapshotDate,
+            principal: 90_000,
+            accruedInterest: 4_000
+        )
+        let historySettings = InMemoryIBRLoanHistorySettingsStore()
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            modelContainer: try ModelContainerFactory.makeContainer(inMemory: true),
+            ibrLoanStore: InMemoryIBRLoanStore(
+                document: SharedIBRLoanDocument(current: snapshot, history: [snapshot])
+            ),
+            ibrLoanHistorySettingsStore: historySettings
+        )
+
+        await container.bootstrap()
+        container.setLinkedIBRLoanHistoryStartDate(overrideDate)
+
+        #expect(historySettings.startDate == overrideDate)
+        #expect(
+            container.linkedIBRLoanBalance(
+                on: calendar.date(from: DateComponents(year: 2025, month: 6, day: 1))!,
+                calendar: calendar
+            ) == Money.dollars(94_000)
+        )
+        #expect(
+            try container.modelContainer.mainContext.fetch(
+                FetchDescriptor<DurableNetWorthSnapshot>()
+            ).isEmpty
+        )
+    }
+
+    @Test func linkedIBRLoanDefaultsToEarliestYNABTransaction() async throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let ynabStart = calendar.date(
+            from: DateComponents(year: 2021, month: 7, day: 1)
+        )!
+        let ibrStart = calendar.date(
+            from: DateComponents(year: 2026, month: 6, day: 29)
+        )!
+        let snapshot = linkedLoanSnapshot(
+            asOf: ibrStart,
+            principal: 90_000,
+            accruedInterest: 4_000,
+            weightedInterestRatePercent: 7.75
+        )
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        modelContainer.mainContext.insert(CachedTransaction(
+            id: "starting-balance",
+            budgetId: "budget",
+            accountId: "checking",
+            date: ynabStart,
+            amountMilliunits: Money.dollars(1_000).milliunits,
+            cleared: true,
+            approved: true,
+            payeeName: "Starting Balance",
+            categoryName: nil,
+            memo: nil,
+            deleted: false
+        ))
+        try modelContainer.mainContext.save()
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            modelContainer: modelContainer,
+            ibrLoanStore: InMemoryIBRLoanStore(
+                document: SharedIBRLoanDocument(current: snapshot, history: [snapshot])
+            ),
+            ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore()
+        )
+        await container.bootstrap()
+        container.selectedBudgetId = "budget"
+
+        #expect(
+            container.defaultLinkedIBRLoanHistoryStartDate(calendar: calendar) == ynabStart
+        )
+        #expect(
+            container.linkedIBRLoanBalance(on: ynabStart, calendar: calendar)
+                == Money.dollars(90_000)
+        )
     }
 
     // MARK: - Historical backfill
@@ -160,6 +433,25 @@ struct AppContainerTests {
     }
 
     // MARK: - Helpers
+
+    private func linkedLoanSnapshot(
+        asOf: Date,
+        principal: Int,
+        accruedInterest: Int,
+        weightedInterestRatePercent: Decimal? = nil
+    ) -> SharedIBRLoanSnapshot {
+        SharedIBRLoanSnapshot(
+            asOf: asOf,
+            principalMilliunits: Money.dollars(integer: principal).milliunits,
+            accruedInterestMilliunits: Money.dollars(integer: accruedInterest).milliunits,
+            weightedInterestRatePercent: weightedInterestRatePercent,
+            actualMonthlyPaymentMilliunits: Money.dollars(500).milliunits,
+            servicerName: "Example Servicer",
+            forgivenessDate: Date(timeIntervalSince1970: 3_000_000),
+            qualifyingPayments: 120,
+            forgivenessThreshold: 300
+        )
+    }
 
     private func seedAccountWithRecentTransactions(into ctx: ModelContext, budgetId: String) {
         let account = CachedAccount(

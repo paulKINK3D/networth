@@ -26,7 +26,7 @@ struct ResetChartHistorySheet: View {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
                 NwInlineNotice(
                     "Start the trend chart from a fresh date",
-                    message: "Every daily net-worth snapshot older than the picked date is deleted. The chart, the Trend diagnostic, and the 5-year backfill all clamp to this date going forward. Your accounts, manual assets, and category settings are not touched.",
+                    message: "Deletes older chart snapshots and rebuilds from the selected date. Accounts, assets, and settings stay intact.",
                     tone: .warning
                 )
 

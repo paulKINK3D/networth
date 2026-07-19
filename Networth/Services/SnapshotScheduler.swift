@@ -3,6 +3,173 @@ import SwiftData
 import os
 import NetworthCore
 
+public struct SharedIBRLoanSnapshot: Codable, Sendable, Hashable, Identifiable {
+    public var id: Date { asOf }
+    public let asOf: Date
+    public let principalMilliunits: Int64
+    public let accruedInterestMilliunits: Int64
+    public let weightedInterestRatePercent: Decimal?
+    public let actualMonthlyPaymentMilliunits: Int64?
+    public let servicerName: String?
+    public let forgivenessDate: Date
+    public let qualifyingPayments: Int
+    public let forgivenessThreshold: Int
+
+    public init(
+        asOf: Date,
+        principalMilliunits: Int64,
+        accruedInterestMilliunits: Int64,
+        weightedInterestRatePercent: Decimal? = nil,
+        actualMonthlyPaymentMilliunits: Int64? = nil,
+        servicerName: String? = nil,
+        forgivenessDate: Date,
+        qualifyingPayments: Int,
+        forgivenessThreshold: Int
+    ) {
+        self.asOf = asOf
+        self.principalMilliunits = principalMilliunits
+        self.accruedInterestMilliunits = accruedInterestMilliunits
+        self.weightedInterestRatePercent = weightedInterestRatePercent
+        self.actualMonthlyPaymentMilliunits = actualMonthlyPaymentMilliunits
+        self.servicerName = servicerName
+        self.forgivenessDate = forgivenessDate
+        self.qualifyingPayments = qualifyingPayments
+        self.forgivenessThreshold = forgivenessThreshold
+    }
+
+    public var principal: Money { Money(milliunits: principalMilliunits) }
+    public var accruedInterest: Money { Money(milliunits: accruedInterestMilliunits) }
+    public var totalBalance: Money { principal + accruedInterest }
+    public var actualMonthlyPayment: Money? {
+        actualMonthlyPaymentMilliunits.map(Money.init(milliunits:))
+    }
+    public var paymentsRemaining: Int { max(0, forgivenessThreshold - qualifyingPayments) }
+}
+
+public struct SharedIBRLoanDocument: Codable, Sendable, Hashable {
+    public let schemaVersion: Int
+    public let writtenAt: Date
+    public let current: SharedIBRLoanSnapshot
+    public let history: [SharedIBRLoanSnapshot]
+
+    public init(
+        schemaVersion: Int = 1,
+        writtenAt: Date = .now,
+        current: SharedIBRLoanSnapshot,
+        history: [SharedIBRLoanSnapshot]
+    ) {
+        self.schemaVersion = schemaVersion
+        self.writtenAt = writtenAt
+        self.current = current
+        self.history = history
+    }
+
+    public func balance(
+        on date: Date,
+        calendar: Calendar = .current,
+        historyStartDate: Date? = nil
+    ) -> Money {
+        let day = calendar.startOfDay(for: date)
+        let sortedHistory = history.sorted { $0.asOf < $1.asOf }
+        guard let earliest = sortedHistory.first else { return .zero }
+        let startDay = calendar.startOfDay(for: historyStartDate ?? earliest.asOf)
+        guard day >= startDay else { return .zero }
+
+        if let datedBalance = sortedHistory
+            .filter({ calendar.startOfDay(for: $0.asOf) <= day })
+            .max(by: { $0.asOf < $1.asOf }) {
+            return datedBalance.totalBalance
+        }
+
+        let sharedRate = earliest.weightedInterestRatePercent
+            ?? sortedHistory.compactMap(\.weightedInterestRatePercent).first
+            ?? current.weightedInterestRatePercent
+        guard let ratePercent = sharedRate,
+              ratePercent > 0 else {
+            return earliest.totalBalance
+        }
+        let anchorDay = calendar.startOfDay(for: earliest.asOf)
+        let days = max(0, calendar.dateComponents([.day], from: day, to: anchorDay).day ?? 0)
+        let accruedSinceDate = earliest.principal.scaled(
+            by: (ratePercent / 100) * Decimal(days) / 365
+        )
+        let estimatedAccrued = max(.zero, earliest.accruedInterest - accruedSinceDate)
+        return earliest.principal + estimatedAccrued
+    }
+}
+
+public protocol IBRLoanStore: Sendable {
+    func load() throws -> SharedIBRLoanDocument?
+}
+
+public struct AppGroupIBRLoanStore: IBRLoanStore {
+    public static let appGroupIdentifier = "group.com.bluelava.me.financial"
+    public static let fileName = "ibr-loan-summary-v1.json"
+
+    public init() {}
+
+    public func load() throws -> SharedIBRLoanDocument? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier
+        ) else {
+            return nil
+        }
+        let url = container.appendingPathComponent(Self.fileName)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let document = try decoder.decode(SharedIBRLoanDocument.self, from: data)
+        guard document.schemaVersion == 1 else { return nil }
+        return document
+    }
+}
+
+public struct InMemoryIBRLoanStore: IBRLoanStore {
+    public let document: SharedIBRLoanDocument?
+
+    public init(document: SharedIBRLoanDocument? = nil) {
+        self.document = document
+    }
+
+    public func load() throws -> SharedIBRLoanDocument? { document }
+}
+
+public protocol IBRLoanHistorySettingsStore {
+    func loadStartDate() -> Date?
+    func saveStartDate(_ date: Date?)
+}
+
+public struct UserDefaultsIBRLoanHistorySettingsStore: IBRLoanHistorySettingsStore {
+    public static let startDateKey = "networth.ibrLoanHistoryStartDate.v2"
+
+    public init() {}
+
+    public func loadStartDate() -> Date? {
+        let interval = UserDefaults.standard.double(forKey: Self.startDateKey)
+        return interval > 0 ? Date(timeIntervalSince1970: interval) : nil
+    }
+
+    public func saveStartDate(_ date: Date?) {
+        if let date {
+            UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Self.startDateKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.startDateKey)
+        }
+    }
+}
+
+public final class InMemoryIBRLoanHistorySettingsStore: IBRLoanHistorySettingsStore {
+    public var startDate: Date?
+
+    public init(startDate: Date? = nil) {
+        self.startDate = startDate
+    }
+
+    public func loadStartDate() -> Date? { startDate }
+    public func saveStartDate(_ date: Date?) { startDate = date }
+}
+
 /// Records a daily net-worth snapshot from current cached YNAB balances and
 /// the latest known manual-asset values. Idempotent within a single day.
 @MainActor
@@ -121,7 +288,9 @@ public final class SnapshotScheduler {
         return false
     }
 
-    public func computeBreakdown() -> NetWorthBreakdown {
+    public func computeBreakdown(
+        linkedIBRLoan: SharedIBRLoanSnapshot? = nil
+    ) -> NetWorthBreakdown {
         var cash = Money.zero
         var investments = Money.zero
         var otherAssets = Money.zero
@@ -173,6 +342,10 @@ public final class SnapshotScheduler {
                 // "Other" semantically belongs alongside YNAB .otherAsset.
                 otherAssets += value
             }
+        }
+
+        if let linkedIBRLoan {
+            loans += linkedIBRLoan.totalBalance
         }
 
         return NetWorthBreakdown(

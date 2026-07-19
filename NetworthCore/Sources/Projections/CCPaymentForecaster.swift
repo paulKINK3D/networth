@@ -37,7 +37,19 @@ public struct CCPaymentForecaster: Sendable {
         var chargesTotal = Money.zero
         var paymentsTotal = Money.zero
 
+        // When spendAccountIds is empty the caller hasn't given us context to
+        // distinguish internal transfers from real merchant activity, so we
+        // fall back to "this card only" — same convention as dailyAverageCharge.
+        let scheduledInternalAccounts = spendAccountIds.isEmpty ? [card.id] : spendAccountIds
         for sched in scheduled where !sched.deleted && sched.accountId == card.id {
+            // Skip scheduled transfers between internal accounts (e.g. autopay
+            // from checking to this card). Treating them as "payments" would
+            // double-count: the user already pays the statement at autopay,
+            // and the math then subtracts the same dollars from the next
+            // statement projection.
+            if let xfer = sched.transferAccountId, scheduledInternalAccounts.contains(xfer) {
+                continue
+            }
             let occurrences = sched.occurrences(from: max(today, lastClose), through: nextClose, calendar: calendar)
             for _ in occurrences {
                 if sched.amount.isNegative {
@@ -102,7 +114,13 @@ public struct CCPaymentForecaster: Sendable {
         lookbackDays: Int,
         asOf today: Date
     ) -> Money {
-        let lookback = max(1, lookbackDays)
+        // Callers explicitly opt out of variable-spend extrapolation by
+        // passing 0 (or negative). Returning zero here makes the forecaster
+        // stick to scheduled-only behavior — real-world data is too lumpy
+        // (one furniture purchase, one tax bill) for a 60-day average to
+        // give a trustworthy daily rate.
+        guard lookbackDays > 0 else { return .zero }
+        let lookback = lookbackDays
         let startOfDay = calendar.startOfDay(for: today)
         guard let windowStart = calendar.date(byAdding: .day, value: -lookback, to: startOfDay) else {
             return .zero

@@ -96,7 +96,7 @@ struct TrendDetailView: View {
                 } header: {
                     Text("Monthly Net Worth (\(monthlyBuckets.count) months)")
                 } footer: {
-                    Text("Shows the last snapshot value recorded in each month. Tap an account above to see that account's contribution to the totals.")
+                    Text("Last recorded value in each month.")
                 }
 
                 if !overlapHints.isEmpty {
@@ -114,7 +114,7 @@ struct TrendDetailView: View {
                     } header: {
                         Text("Possible Double-Count")
                     } footer: {
-                        Text("Manual-asset entries that overlap with the same-name (or similarly-named) closed YNAB accounts you've opted into. If your chart shows a peak then drop, this is the likely cause. Trim the manual-asset earliest entry to the YNAB closure date, or untick the closed account in Settings → Include Closed Accounts.")
+                        Text("Possible overlap between manual assets and included closed accounts.")
                     }
                 }
 
@@ -138,7 +138,36 @@ struct TrendDetailView: View {
                     } header: {
                         Text("Manual Asset Contributions")
                     } footer: {
-                        Text("Each manual asset adds its value to days on or after its earliest entry. Edit the asset to delete or move that earliest entry forward.")
+                        Text("Values begin on each asset's first entry.")
+                    }
+                }
+
+                if let document = container.linkedIBRLoanDocument {
+                    Section {
+                        HStack {
+                            Text("Student Loans")
+                            Spacer()
+                            Text(CurrencyFormatter.compact(document.current.totalBalance))
+                                .monospacedDigit()
+                                .foregroundStyle(NwAppColors.liability)
+                        }
+                        HStack {
+                            Text("Dated balances")
+                            Spacer()
+                            Text("\(document.history.count)")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Text("Included from")
+                            Spacer()
+                            Text(linkedLoanHistoryStartDate(document).formatted(date: .abbreviated, time: .omitted))
+                                .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text("Local IBR Contribution")
+                    } footer: {
+                        Text("Earlier values are estimated locally and excluded from CloudKit.")
                     }
                 }
 
@@ -159,7 +188,7 @@ struct TrendDetailView: View {
                     } header: {
                         Text("Included Closed Accounts")
                     } footer: {
-                        Text("Closed YNAB accounts you opted into. They contribute their walked-back historical balance until the day they hit $0 / closed in YNAB.")
+                        Text("Included accounts contribute through closure.")
                     }
                 }
 
@@ -184,7 +213,7 @@ struct TrendDetailView: View {
                 } header: {
                     Text("Snapshot Store")
                 } footer: {
-                    Text(".live rows are written by the daily snapshot scheduler. .backfill rows are produced by the 5-year reconstruction. Force Full Resync (in Settings) wipes both and rebuilds.")
+                    Text("Recorded and reconstructed points. Full resync rebuilds both.")
                 }
 
             }
@@ -331,19 +360,37 @@ struct TrendDetailView: View {
     private var monthlyBuckets: [MonthlyBucket] {
         let pool = visibleSnapshots
         guard !pool.isEmpty else { return [] }
+        let linkedLoanDocument = container.linkedIBRLoanDocument
+        let linkedLoanHistoryStart = container.effectiveLinkedIBRLoanHistoryStartDate(
+            calendar: calendar
+        )
         let groups = Dictionary(grouping: pool) { snap -> Date in
             let comps = calendar.dateComponents([.year, .month], from: snap.date)
             return calendar.date(from: comps) ?? snap.date
         }
         return groups.map { (monthStart, rows) in
             let sorted = rows.sorted { $0.date < $1.date }
+            let last = sorted.last
+            let linkedLoan = last.map {
+                linkedLoanDocument?.balance(
+                    on: $0.date,
+                    calendar: calendar,
+                    historyStartDate: linkedLoanHistoryStart
+                ) ?? .zero
+            } ?? .zero
             return MonthlyBucket(
                 monthStart: monthStart,
                 snapshotCount: rows.count,
-                endValue: sorted.last?.netWorth ?? .zero
+                endValue: (last?.netWorth ?? .zero) - linkedLoan
             )
         }
         .sorted { $0.monthStart < $1.monthStart }
+    }
+
+    private func linkedLoanHistoryStartDate(_ document: SharedIBRLoanDocument) -> Date {
+        container.effectiveLinkedIBRLoanHistoryStartDate(calendar: calendar)
+            ?? document.history.map(\.asOf).min()
+            ?? document.current.asOf
     }
 }
 
@@ -406,7 +453,7 @@ struct AccountTrendDetailView: View {
                 } header: {
                     Text("Month-End Balance (reconstructed)")
                 } footer: {
-                    Text("Reconstructed by walking transactions backward from today's balance. If a month shows a value that doesn't match what the account actually held, the contributing transactions are likely off (e.g. an unexpectedly large deposit or a missed transfer).")
+                    Text("Reconstructed backward from the current balance and cached transactions.")
                 }
             } else {
                 Text("Account not found.").foregroundStyle(.secondary)

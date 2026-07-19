@@ -69,6 +69,7 @@ public final class SyncCoordinator {
             // transfer_account_id land on existing rows. Self-healing — runs
             // once, then never again because the categories cursor exists.
             resetCursorsIfPreCategoryCache(budgetId: useBudget)
+            resetScheduledCursorIfMissingFirstDate(budgetId: useBudget)
 
             phase = .syncing(label: "Categories")
             let categoriesCursor = cursor(key: "categories:\(useBudget)")
@@ -514,6 +515,7 @@ public final class SyncCoordinator {
             let targetId = s.id
             let existing = fetchOne(CachedScheduledTransaction.self, where: #Predicate { $0.id == targetId })
             if let existing {
+                existing.firstDate = YNABTransactionDTO.dateParser.date(from: s.date_first)
                 existing.nextDate = parsed
                 existing.frequencyRaw = s.frequency
                 existing.amountMilliunits = s.amount
@@ -525,6 +527,7 @@ public final class SyncCoordinator {
             } else {
                 mainContext.insert(CachedScheduledTransaction(
                     id: s.id, budgetId: budgetId, accountId: s.account_id,
+                    firstDate: YNABTransactionDTO.dateParser.date(from: s.date_first),
                     nextDate: parsed, frequencyRaw: s.frequency,
                     amountMilliunits: s.amount,
                     payeeName: s.payee_name,
@@ -590,6 +593,20 @@ public final class SyncCoordinator {
         )
         descriptor.fetchLimit = 1
         return ((try? mainContext.fetch(descriptor).count) ?? 0) > 0
+    }
+
+    /// Schedules cached before `firstDate` was introduced will not be replayed
+    /// by delta sync when unchanged. Force one full scheduled fetch so the
+    /// expected-spend lookback never invents occurrences before creation.
+    private func resetScheduledCursorIfMissingFirstDate(budgetId: String) {
+        guard cursor(key: "scheduled:\(budgetId)") != nil else { return }
+        var descriptor = FetchDescriptor<CachedScheduledTransaction>(
+            predicate: #Predicate { $0.firstDate == nil && !$0.deleted }
+        )
+        descriptor.fetchLimit = 1
+        guard ((try? mainContext.fetch(descriptor).isEmpty) == false) else { return }
+        clearCursor(key: "scheduled:\(budgetId)")
+        logger.info("Resetting scheduled cursor to backfill firstDate.")
     }
 
     private func saveCursor(key: String, value: Int64?) {

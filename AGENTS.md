@@ -2,7 +2,7 @@
 
 ## Project Overview
 - App name: `Networth`
-- Platform: iOS 18+, iPhone only (no iPad, no Catalyst)
+- Platform: iOS 26+, iPhone only (no iPad, no Catalyst)
 - Distribution: personal use only — sideload via Xcode / TestFlight, not App Store
 - Main app target: `Networth`
 - Unit test target: `NetworthTests` (Apple Testing framework, not XCTest)
@@ -10,7 +10,7 @@
 - Core domain package: `NetworthCore/` (local SPM package — pure Swift, no UI)
 
 ## Purpose
-Personal iPhone app that augments YNAB with net worth tracking (YNAB accounts + manual assets), a 5-year historical net worth chart, and forward-looking financial projections — primary differentiator is credit card payment forecasting. Read-only against YNAB. See `docs/PLAN.md` for the full scope, locked decisions, and phase plan.
+Personal financial radar that helps the user understand their real financial position today and see cash problems before they happen. Its primary daily job is near-term cash-flow confidence: explain what money is leaving, when it leaves, and whether upcoming obligations are safely covered. Credit-card statement and autopay forecasting is the core differentiator. Net worth is the supporting long-term scorecard, not a proxy for spendable cash. Keep forecasts conservative, understandable, and explainable. Read-only against YNAB and the optional local BL IBR bridge. See `docs/PLAN.md` for the product north star, full scope, locked decisions, and phase plan.
 
 ## Repo Layout
 - `Networth/`: app source — models, views, services, design system, app entrypoint
@@ -23,9 +23,10 @@ Personal iPhone app that augments YNAB with net worth tracking (YNAB accounts + 
 ## Key App Behavior
 - Single-user app gated by a Face ID toggle that defaults ON when the device supports biometrics. A versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows forward so iCloud-restored or cross-device settings never silently leave the user unlocked.
 - YNAB Personal Access Token entered once in Settings, stored in iCloud-synced Keychain so a future device swap is zero-friction.
-- On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, `YNABClient` (actor), `ModelContainer`, `ConnectivityMonitor`.
+- On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, `YNABClient` (actor), `ModelContainer`, `ConnectivityMonitor`, the read-only `IBRLoanStore`, and local `IBRLoanHistorySettingsStore`.
 - 4-tab structure: Net Worth · Projections · Accounts · Investments. Settings is opened from a sheet behind the Net Worth toolbar (not a tab).
 - Sync strategy: SwiftData local cache for YNAB data (re-fetchable); CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings).
+- Optional IBR loan sharing uses `group.com.bluelava.me.financial`. The decoded summary stays in memory; its dated balances overlay the chart locally and must never be copied into SwiftData or CloudKit.
 
 ## Startup Checks
 - At the start of work in a repo, review the global instructions exposed through
@@ -64,7 +65,7 @@ cd NetworthCore && swift test
 - Treat code as source of truth if legacy docs conflict.
 - **Design system first.** If a visual pattern appears in 2+ places, promote it into `Networth/DesignSystem/` before the second use. All `Nw*` tokens and components live there.
 - **No view models.** Follow the inventory-app pattern: views read `@Query` directly; logic lives in services and pure helpers (in `NetworthCore` when domain logic, in `Networth/Services/` when SwiftData-coupled).
-- **Protocol-based DI** for any IO boundary: `SecretStore`, `BiometricGate`, `YNABClient`, `SnapshotScheduler`. Always ship an in-memory / recorded fake alongside the production implementation.
+- **Protocol-based DI** for any IO boundary: `SecretStore`, `BiometricGate`, `YNABClient`, `SnapshotScheduler`, `IBRLoanStore`, `IBRLoanHistorySettingsStore`. Always ship an in-memory / recorded fake alongside the production implementation.
 - **Actor-isolate the YNAB client** for thread-safe token access and rate-limit bookkeeping.
 - **Milliunit math lives in `NetworthCore.Money`.** Never do `÷1000` in views. Prefer `..._formatted` / `..._currency` fields from YNAB when present.
 - **Delta sync (`last_knowledge_of_server`) on supported endpoints** to stay well under YNAB's 200 req/hour limit.
@@ -91,6 +92,8 @@ cd NetworthCore && swift test
   - Do not mix the two stores. Do not put cached YNAB data in CloudKit.
 - **YNAB PAT is high-sensitivity.** Store via the `SecretStore` protocol backed by iCloud-synced Keychain (`kSecAttrAccessibleWhenUnlocked` + `kSecAttrSynchronizable: true`). Never log token values, never write them to SwiftData, never include them in diagnostic exports.
 - **YNAB API is read-only in v1.** This is a security posture: even if the token had write scope, the client must not expose write endpoints. Future write support requires explicit user approval and a separate review.
+- **BL IBR bridge is local-only and read-only.** Networth may decode the opt-in versioned App Group document but must not write to it, upload its fields, or generate a second projected loan payment. YNAB checking activity remains the cash-flow source for payments.
+- **IBR history overrides are presentation-only.** With no override, linked-loan history begins on the earliest cached YNAB transaction date. A user-selected replacement date stays in local preferences. Before IBR's first dated balance, estimate backward from the earliest snapshot using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Never persist the estimated balances or infer capitalization events.
 
 ## UX And Design Consistency Requirements
 - Match the visual and interaction style already established across views.
@@ -104,6 +107,7 @@ cd NetworthCore && swift test
   - Custom confirmation sheets for positive/completion actions and dialogs with text input.
   - `.confirmationDialog()` for multi-option pickers with 3+ actions.
 - For numeric entry fields, first numeric tap should replace existing value by default.
+- For controls that invalidate multi-year chart calculations, stage edits locally and commit with an explicit Apply action instead of recalculating on every picker change.
 - For high-frequency actions, prefer always-visible large tap targets over hidden menus.
 - For list-row management actions, prefer swipe actions.
 - Treat long-press menus as optional secondary access, not the primary path for common actions.

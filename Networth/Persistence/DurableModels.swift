@@ -136,19 +136,29 @@ public final class DurableCardSettings {
     public var minimumPaymentPercentNumerator: Int = 2
     public var minimumPaymentPercentDenominator: Int = 100
     public var minimumPaymentFloorMilliunits: Int64 = 25_000
+    /// Day of the month autopay debits checking for this card. `0` means
+    /// "not set yet" — UI skips cards until both close + due days are set.
+    /// Days 29-31 fall back to the last day of short months.
+    public var paymentDueDay: Int = 0
+    /// Cash account that funds this card's full-statement autopay.
+    public var paymentAccountId: String? = nil
 
     public init(
         accountId: String,
         statementCycleDay: Int = 1,
         minimumPaymentPercentNumerator: Int = 2,
         minimumPaymentPercentDenominator: Int = 100,
-        minimumPaymentFloorMilliunits: Int64 = 25_000
+        minimumPaymentFloorMilliunits: Int64 = 25_000,
+        paymentDueDay: Int = 0,
+        paymentAccountId: String? = nil
     ) {
         self.accountId = accountId
         self.statementCycleDay = max(1, min(31, statementCycleDay))
         self.minimumPaymentPercentNumerator = minimumPaymentPercentNumerator
         self.minimumPaymentPercentDenominator = minimumPaymentPercentDenominator
         self.minimumPaymentFloorMilliunits = minimumPaymentFloorMilliunits
+        self.paymentDueDay = max(0, min(31, paymentDueDay))
+        self.paymentAccountId = paymentAccountId
     }
 
     public var minimumPaymentPercent: Decimal {
@@ -161,6 +171,8 @@ public final class DurableCardSettings {
         CardStatementSettings(
             accountId: accountId,
             statementCycleDay: statementCycleDay,
+            paymentDueDay: paymentDueDay,
+            paymentAccountId: paymentAccountId,
             minimumPaymentPercent: minimumPaymentPercent,
             minimumPaymentFloor: minimumPaymentFloor
         )
@@ -182,6 +194,7 @@ public final class DurableUserSettings {
     public var spendingLookbackDays: Int = 365
     /// Bumped when a one-time migration changes existing settings defaults.
     /// Version 2 = enable Face ID when biometric is available.
+    /// Version 3 = normalize expected-spending lookback to 365 days.
     public var settingsSchemaVersion: Int = 0
     /// `0` = backfill not yet run on this iCloud account. Bumped to the
     /// current version (`SyncCoordinator.currentHistoryBackfillVersion`) after
@@ -243,5 +256,48 @@ public final class DurableExcludedSpendCategory {
         self.categoryId = categoryId
         self.categoryName = categoryName
         self.groupName = groupName
+    }
+}
+
+/// One user-excluded YNAB transaction or split leg. This is additive durable
+/// CloudKit data; transaction IDs remain stable across YNAB delta syncs.
+@Model
+public final class DurableExcludedSpendTransaction {
+    public var id: UUID = UUID()
+    public var transactionId: String = ""
+    public var payeeName: String = ""
+    public var transactionDate: Date = Date.now
+    public var amountMilliunits: Int64 = 0
+    public var createdAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        transactionId: String = "",
+        payeeName: String = "",
+        transactionDate: Date = .now,
+        amountMilliunits: Int64 = 0,
+        createdAt: Date = .now
+    ) {
+        self.id = id
+        self.transactionId = transactionId
+        self.payeeName = payeeName
+        self.transactionDate = transactionDate
+        self.amountMilliunits = amountMilliunits
+        self.createdAt = createdAt
+    }
+}
+
+/// A durable override to the projection cash-pool default. Open on-budget
+/// cash accounts default on; off-budget cash accounts default off.
+@Model
+public final class DurableProjectionCashAccountOverride {
+    public var id: UUID = UUID()
+    public var accountId: String = ""
+    public var included: Bool = false
+
+    public init(id: UUID = UUID(), accountId: String = "", included: Bool = false) {
+        self.id = id
+        self.accountId = accountId
+        self.included = included
     }
 }

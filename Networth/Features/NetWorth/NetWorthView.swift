@@ -3,6 +3,65 @@ import SwiftData
 import Charts
 import NetworthCore
 
+private enum NetWorthCategory: String, CaseIterable, Identifiable {
+    case cash
+    case investments
+    case property
+    case otherAssets
+    case cards
+    case loans
+    case otherLiabilities
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .cash: return "Cash"
+        case .investments: return "Investments"
+        case .property: return "Property & Valuables"
+        case .otherAssets: return "Other Assets"
+        case .cards: return "Credit Cards"
+        case .loans: return "Loans"
+        case .otherLiabilities: return "Other Liabilities"
+        }
+    }
+
+    var icon: NwIcon {
+        switch self {
+        case .cash: return .cash
+        case .investments: return .investment
+        case .property: return .realEstate
+        case .otherAssets: return .otherAsset
+        case .cards: return .creditCard
+        case .loans: return .mortgage
+        case .otherLiabilities: return .otherLiability
+        }
+    }
+
+    var isLiability: Bool {
+        switch self {
+        case .cards, .loans, .otherLiabilities: return true
+        case .cash, .investments, .property, .otherAssets: return false
+        }
+    }
+}
+
+private struct NetWorthEntry: Identifiable {
+    let id: String
+    let name: String
+    let subtitle: String
+    let amount: Money
+    let updatedAt: Date?
+}
+
+private struct NetWorthTrendPoint: Identifiable {
+    var id: Date { date }
+    let date: Date
+    let assets: Money
+    let liabilities: Money
+    var netWorth: Money { assets - liabilities }
+}
+
 struct NetWorthView: View {
     @Environment(AppContainerController.self) private var container
     @Query(sort: \DurableNetWorthSnapshot.date) private var snapshots: [DurableNetWorthSnapshot]
@@ -57,8 +116,8 @@ struct NetWorthView: View {
                     }
 
                     heroCard
-                    breakdownCard
                     chartCard
+                    balanceSheet
                 }
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.lg)
@@ -112,72 +171,72 @@ struct NetWorthView: View {
     // MARK: - Cards
 
     private var breakdown: NetWorthBreakdown {
-        container.snapshotScheduler.computeBreakdown()
+        container.snapshotScheduler.computeBreakdown(
+            linkedIBRLoan: container.linkedIBRLoanDocument?.current
+        )
     }
 
     private var heroCard: some View {
         let total = breakdown.netWorth
         let delta = monthDelta()
         return NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                Text("Current Net Worth")
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
                 NwAmountText(total, variant: .hero, showCents: false)
-                HStack(spacing: NwSpacing.sm) {
-                    if let delta {
-                        NwAmountText(delta, variant: .signed)
-                        Text("vs. 30 days ago")
+                if let delta {
+                    HStack(spacing: NwSpacing.xs) {
+                        (delta.isNegative ? NwIcon.arrowDown : NwIcon.arrowUp).image
+                            .font(NwTypography.footnoteEm)
+                        NwAmountText(
+                            delta,
+                            variant: .signed,
+                            showCents: false,
+                            color: delta.isNegative ? NwAppColors.liability : NwAppColors.positive
+                        )
+                        Text("over 30 days")
                             .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Snapshots will start appearing after your first sync.")
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
                     }
+                    .foregroundStyle(delta.isNegative ? NwAppColors.liability : NwAppColors.positive)
+                } else {
+                    Text("A 30-day comparison will appear as history builds.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+                HStack(spacing: NwSpacing.xl) {
+                    balanceMetric(
+                        "Assets",
+                        amount: breakdown.totalAssets,
+                        color: NwAppColors.positive
+                    )
+                    balanceMetric(
+                        "Liabilities",
+                        amount: breakdown.totalLiabilities,
+                        color: NwAppColors.liability
+                    )
                 }
             }
         }
     }
 
-    private var breakdownCard: some View {
-        let bd = breakdown
-        return NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.md) {
-                Text("Breakdown")
-                    .font(NwTypography.headline)
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: NwSpacing.md) {
-                    NwMetricCapsule(label: "Cash", value: CurrencyFormatter.compact(bd.cash), valueColor: NwAppColors.positive, symbol: .cash)
-                    NwMetricCapsule(label: "Investments", value: CurrencyFormatter.compact(bd.investments), valueColor: NwAppColors.accent, symbol: .investment)
-                    NwMetricCapsule(label: "Manual Assets", value: CurrencyFormatter.compact(bd.manualAssets), symbol: .realEstate)
-                    NwMetricCapsule(label: "Other Assets", value: CurrencyFormatter.compact(bd.otherAssets), symbol: .otherAsset)
-                    NwMetricCapsule(label: "Cards", value: CurrencyFormatter.compact(bd.creditCardDebt), valueColor: NwAppColors.liability, symbol: .creditCard)
-                    NwMetricCapsule(label: "Loans", value: CurrencyFormatter.compact(bd.loans), valueColor: NwAppColors.liability, symbol: .mortgage)
-                }
-                Divider().padding(.vertical, NwSpacing.xs)
-                HStack {
-                    Text("Assets")
-                    Spacer()
-                    NwAmountText(bd.totalAssets, variant: .body)
-                }
-                HStack {
-                    Text("Liabilities")
-                    Spacer()
-                    NwAmountText(-bd.totalLiabilities, variant: .body, color: NwAppColors.liability)
-                }
-            }
+    private func balanceMetric(_ label: String, amount: Money, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(NwTypography.caption)
+                .foregroundStyle(.secondary)
+            NwAmountText(amount, variant: .body, showCents: false, color: color)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Small readout above the chart showing the date and value at the
     /// scrubbed position. Falls back to a neutral hint when the user isn't
     /// touching the chart.
     @ViewBuilder
-    private func scrubReadout(visible: [DurableNetWorthSnapshot]) -> some View {
+    private func scrubReadout(visible: [NetWorthTrendPoint]) -> some View {
         let cal = Calendar(identifier: .gregorian)
         let target = scrubbedDate ?? visible.last?.date
-        let nearest: DurableNetWorthSnapshot? = {
+        let nearest: NetWorthTrendPoint? = {
             guard let target else { return visible.last }
             let targetDay = cal.startOfDay(for: target)
             return visible.min { lhs, rhs in
@@ -203,7 +262,7 @@ struct NetWorthView: View {
         return NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
                 HStack {
-                    Text("Trend")
+                    Text("Net Worth Trend")
                         .font(NwTypography.headline)
                     Spacer()
                     Button {
@@ -213,14 +272,15 @@ struct NetWorthView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    Picker("", selection: $range) {
-                        ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 220)
+                    .accessibilityLabel("Net worth trend details")
                 }
+                Picker("Trend range", selection: $range) {
+                    ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+
                 if visible.count < 2 {
-                    Text("Waiting for the first sync to populate. Pull the Sync action from the toolbar menu if it's been a while.")
+                    Text("Waiting for enough history to draw the trend.")
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                         .font(NwTypography.footnote)
@@ -256,6 +316,227 @@ struct NetWorthView: View {
         }
     }
 
+    private var balanceSheet: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Text("Balance Sheet")
+                .font(NwTypography.titleSmall)
+
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    compositionHeader(
+                        "Assets",
+                        total: breakdown.totalAssets,
+                        color: NwAppColors.positive
+                    )
+                    ForEach(assetCategories) { category in
+                        Divider()
+                        categoryLink(category)
+                    }
+
+                    Divider()
+                        .padding(.vertical, NwSpacing.xs)
+
+                    compositionHeader(
+                        "Liabilities",
+                        total: breakdown.totalLiabilities,
+                        color: NwAppColors.liability
+                    )
+                    if liabilityCategories.isEmpty {
+                        Text("No liabilities")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, NwSpacing.md)
+                            .padding(.bottom, NwSpacing.md)
+                    } else {
+                        ForEach(liabilityCategories) { category in
+                            Divider()
+                            categoryLink(category)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func compositionHeader(_ title: String, total: Money, color: Color) -> some View {
+        HStack {
+            Text(title.uppercased())
+                .font(NwTypography.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            NwAmountText(total, variant: .body, showCents: false, color: color)
+        }
+        .padding(NwSpacing.md)
+    }
+
+    private func categoryLink(_ category: NetWorthCategory) -> some View {
+        let entries = entries(for: category)
+        let amount = amount(for: category)
+        return NavigationLink {
+            NetWorthCategoryDetailView(category: category, entries: entries, total: amount)
+        } label: {
+            HStack(spacing: NwSpacing.md) {
+                category.icon.image
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(category.isLiability ? NwAppColors.liability : NwAppColors.primary)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(category.title)
+                        .font(NwTypography.headline)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                    Text(categorySubtitle(category, amount: amount))
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                NwAmountText(
+                    amount,
+                    variant: .body,
+                    showCents: false,
+                    color: category.isLiability ? NwAppColors.liability : nil
+                )
+                NwIcon.chevron.image
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(NwSpacing.md)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var assetCategories: [NetWorthCategory] {
+        [.cash, .investments, .property, .otherAssets]
+            .filter { !amount(for: $0).isZero }
+    }
+
+    private var liabilityCategories: [NetWorthCategory] {
+        [.cards, .loans, .otherLiabilities]
+            .filter { !amount(for: $0).isZero }
+    }
+
+    private func amount(for category: NetWorthCategory) -> Money {
+        switch category {
+        case .cash: return breakdown.cash
+        case .investments: return breakdown.investments
+        case .property: return breakdown.manualAssets
+        case .otherAssets: return breakdown.otherAssets
+        case .cards: return breakdown.creditCardDebt
+        case .loans: return breakdown.loans
+        case .otherLiabilities: return breakdown.otherLiabilities
+        }
+    }
+
+    private func categorySubtitle(
+        _ category: NetWorthCategory,
+        amount: Money
+    ) -> String {
+        let sideTotal = category.isLiability
+            ? breakdown.totalLiabilities
+            : breakdown.totalAssets
+        guard sideTotal > .zero else { return "" }
+        let share = Int((amount.doubleValue / sideTotal.doubleValue * 100).rounded())
+        let side = category.isLiability ? "liabilities" : "assets"
+        return "\(share)% of \(side)"
+    }
+
+    private func entries(for category: NetWorthCategory) -> [NetWorthEntry] {
+        let openAccounts = accounts.filter { !$0.deleted && !$0.closed }
+        let ynabEntries = openAccounts.compactMap { account -> NetWorthEntry? in
+            let matches: Bool
+            switch category {
+            case .cash:
+                matches = account.kind.isCashLike
+            case .investments:
+                matches = account.kind == .investment
+            case .property:
+                matches = false
+            case .otherAssets:
+                matches = account.kind == .otherAsset
+            case .cards:
+                matches = account.kind.isCreditCardLike
+            case .loans:
+                matches = [.mortgage, .autoLoan, .studentLoan, .personalLoan,
+                           .medicalDebt, .otherDebt].contains(account.kind)
+            case .otherLiabilities:
+                matches = account.kind == .otherLiability
+            }
+            guard matches else { return nil }
+            return NetWorthEntry(
+                id: "ynab:\(account.id)",
+                name: account.name,
+                subtitle: accountKindLabel(account.kind),
+                amount: category.isLiability ? account.balance.absolute : account.balance,
+                updatedAt: nil
+            )
+        }
+
+        let durableEntries = manualAssets
+            .filter { !$0.deleted && manualAsset($0, belongsTo: category) }
+            .map { asset in
+                NetWorthEntry(
+                    id: "manual:\(asset.id.uuidString)",
+                    name: asset.name.isEmpty ? "Untitled Asset" : asset.name,
+                    subtitle: asset.kind.displayName,
+                    amount: asset.currentValue,
+                    updatedAt: asset.lastUpdatedAt
+                )
+            }
+
+        var combined = ynabEntries + durableEntries
+        if category == .loans, let loan = container.linkedIBRLoanDocument?.current {
+            combined.append(NetWorthEntry(
+                id: "ibr:primary",
+                name: "Student Loans",
+                subtitle: "Student Loan, linked from IBR",
+                amount: loan.totalBalance,
+                updatedAt: loan.asOf
+            ))
+        }
+
+        return combined.sorted { lhs, rhs in
+            if lhs.amount != rhs.amount { return lhs.amount > rhs.amount }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private func manualAsset(
+        _ asset: DurableManualAsset,
+        belongsTo category: NetWorthCategory
+    ) -> Bool {
+        switch category {
+        case .investments:
+            return [.brokerage, .retirement, .crypto].contains(asset.kind)
+        case .property:
+            return [.realEstate, .vehicle, .collectible].contains(asset.kind)
+        case .otherAssets:
+            return asset.kind == .other
+        case .cash, .cards, .loans, .otherLiabilities:
+            return false
+        }
+    }
+
+    private func accountKindLabel(_ kind: AccountKind) -> String {
+        switch kind {
+        case .checking: return "Checking"
+        case .savings: return "Savings"
+        case .cash: return "Cash"
+        case .creditCard: return "Credit Card"
+        case .lineOfCredit: return "Line of Credit"
+        case .mortgage: return "Mortgage"
+        case .autoLoan: return "Auto Loan"
+        case .studentLoan: return "Student Loan"
+        case .personalLoan: return "Personal Loan"
+        case .medicalDebt: return "Medical Debt"
+        case .otherDebt: return "Other Debt"
+        case .otherAsset: return "Other Asset"
+        case .otherLiability: return "Other Liability"
+        case .investment: return "Investment"
+        case .unknown: return "Other"
+        }
+    }
+
     // MARK: - Data slicing
 
     /// Honors `DurableUserSettings.chartStartDate` if set — anything older is
@@ -266,12 +547,28 @@ struct NetWorthView: View {
         return Calendar(identifier: .gregorian).startOfDay(for: raw)
     }
 
-    private func filteredSnapshots() -> [DurableNetWorthSnapshot] {
+    private var trendPoints: [NetWorthTrendPoint] {
+        let loanDocument = container.linkedIBRLoanDocument
+        let loanHistoryStart = container.effectiveLinkedIBRLoanHistoryStartDate()
+        return snapshots.map { snapshot in
+            let linkedLoanBalance = loanDocument?.balance(
+                on: snapshot.date,
+                historyStartDate: loanHistoryStart
+            ) ?? .zero
+            return NetWorthTrendPoint(
+                date: snapshot.date,
+                assets: snapshot.assets,
+                liabilities: snapshot.liabilities + linkedLoanBalance
+            )
+        }
+    }
+
+    private func filteredSnapshots() -> [NetWorthTrendPoint] {
         let cal = Calendar(identifier: .gregorian)
         let rangeCutoff = cal.date(byAdding: .month, value: -range.months, to: .now)
         let cutoffs = [rangeCutoff, chartFloor].compactMap { $0 }
-        guard let effective = cutoffs.max() else { return snapshots }
-        return snapshots.filter { $0.date >= effective }
+        guard let effective = cutoffs.max() else { return trendPoints }
+        return trendPoints.filter { $0.date >= effective }
     }
 
     private func monthDelta() -> Money? {
@@ -281,13 +578,74 @@ struct NetWorthView: View {
         // the user's reset point would surface the very numbers they asked to
         // hide.
         let floor = chartFloor
-        let priorSnap = snapshots.last { snap in
+        let priorSnap = trendPoints.last { snap in
             guard snap.date <= target else { return false }
             if let floor, snap.date < floor { return false }
             return true
         }
         guard let priorSnap else { return nil }
         return breakdown.netWorth - priorSnap.netWorth
+    }
+}
+
+private struct NetWorthCategoryDetailView: View {
+    let category: NetWorthCategory
+    let entries: [NetWorthEntry]
+    let total: Money
+
+    var body: some View {
+        List {
+            Section {
+                HStack {
+                    Text("Total")
+                        .font(NwTypography.bodyEmphasis)
+                    Spacer()
+                    NwAmountText(
+                        total,
+                        variant: .body,
+                        color: category.isLiability ? NwAppColors.liability : nil
+                    )
+                }
+            }
+
+            Section("Included") {
+                if entries.isEmpty {
+                    Text("No contributing accounts")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(entries) { entry in
+                        HStack(spacing: NwSpacing.md) {
+                            category.icon.image
+                                .foregroundStyle(
+                                    category.isLiability
+                                        ? NwAppColors.liability
+                                        : NwAppColors.primary
+                                )
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.name)
+                                Text(entrySubtitle(entry))
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            NwAmountText(
+                                entry.amount,
+                                variant: .body,
+                                color: category.isLiability ? NwAppColors.liability : nil
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(category.title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func entrySubtitle(_ entry: NetWorthEntry) -> String {
+        guard let updatedAt = entry.updatedAt else { return entry.subtitle }
+        return "\(entry.subtitle), updated \(updatedAt.formatted(.relative(presentation: .named)))"
     }
 }
 

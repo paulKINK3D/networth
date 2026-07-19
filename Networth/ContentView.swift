@@ -54,6 +54,9 @@ struct ContentView: View {
                 showingTutorial = true
             }
         }
+        .task(id: container.unlocked) {
+            if container.unlocked { await container.refreshIfStale() }
+        }
         .sheet(isPresented: $showingTutorial) {
             TutorialView().environment(container)
         }

@@ -24,7 +24,9 @@ public enum ModelContainerFactory {
             DurableCardSettings.self,
             DurableUserSettings.self,
             DurableExcludedSpendCategory.self,
-            DurableIncludedClosedAccount.self
+            DurableExcludedSpendTransaction.self,
+            DurableIncludedClosedAccount.self,
+            DurableProjectionCashAccountOverride.self
         ])
 
         let cacheConfig = ModelConfiguration(
@@ -62,7 +64,9 @@ public enum ModelContainerFactory {
             DurableCardSettings.self,
             DurableUserSettings.self,
             DurableExcludedSpendCategory.self,
-            DurableIncludedClosedAccount.self
+            DurableExcludedSpendTransaction.self,
+            DurableIncludedClosedAccount.self,
+            DurableProjectionCashAccountOverride.self
         ])
         return try ModelContainer(for: unified, configurations: [cacheConfig, durableConfig])
     }

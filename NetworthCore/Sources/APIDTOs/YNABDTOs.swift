@@ -236,6 +236,7 @@ public struct YNABScheduledTransactionDTO: Decodable, Sendable, Identifiable, Ha
         return ScheduledTransactionSummary(
             id: id,
             accountId: account_id,
+            firstDate: YNABTransactionDTO.dateParser.date(from: date_first),
             nextDate: parsed,
             frequency: ScheduleFrequency.fromYNAB(frequency),
             amount: Money(milliunits: amount),

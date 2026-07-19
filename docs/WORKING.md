@@ -1,23 +1,52 @@
 # WORKING
 
-## Current State (2026-06-12)
-All seven phases (0-6) of `docs/PLAN.md` are implemented and validated. Post-phase additions also shipped: in-app tutorial, hidden-category exclusion for the spend projection, variable-spend extension of the CC forecaster, group rename, sticky group headers, Investments tab, app icon.
+## Current State (2026-07-19)
+The app foundation and the Net Worth, Projections, Accounts, Investments, sync, security, persistence, and tutorial workflows are implemented around the product north star in `docs/PLAN.md`: help the user understand upcoming cash obligations before they become a problem, with clear supporting reporting for the broader financial picture.
 
-**Projections tab is intentionally reset (commit `f0b2c06`, 2026-06-12).** The previously shipped CC forecast / cash-position / category screens were removed; `ProjectionsView.swift` is an empty placeholder pending a clean rebuild. The forecaster math in `NetworthCore.Projections` is still present and tested — only the UI was torn out.
+**The current working tree completes the Projections rebuild around cash confidence.** The screen combines a conservative headline, one projected-cash curve, and a chronological event timeline. Each card has a close day, autopay day, and funding account; full-statement payments are simulated across the configured horizon and feed the same cash ledger as scheduled income, bills, and transfers. The chart shows total selected cash after known commitments and the spending reserve, while a separate known-commitment ledger validates that each actual payment account has enough money on the required date.
+
+The main projection also includes a horizon cash-flow bridge: starting cash plus known income and transfers in, less scheduled outflows, card payments, and the unscheduled spending reserve, reconciled to projected ending cash.
+
+Safe to Spend closes the primary decision loop: it reports additional spending capacity now through the lowest point found across the full selected projection horizon. The calculation takes that lowest expected cash balance and subtracts the configured minimum buffer, so ordinary spending, scheduled obligations, and card payments are already reserved. The card names the low-point date as the actionable window and withholds the figure when card setup or spending history is incomplete.
+The card opens a detail sheet whose bridge is computed by `CashPositionProjector` from the same low point: starting cash, inflows, scheduled outflows, card payments, expected ordinary spending, projected low, buffer, and Safe to Spend. It also lists each dated event included through the low point.
+With four or more complete monthly samples, the projector also computes a higher-spending case from the 75th-percentile month. Only the unscheduled daily reserve changes; dated scheduled obligations remain exact. The card shows the resulting downside Safe to Spend amount without adding another chart curve.
+
+Projection Details exposes every complete monthly spending sample used by the median. Each month drills into total, scheduled, and unscheduled amounts plus included category totals; excluded categories are listed alongside the method assumptions.
+
+Monthly category details list their contributing transactions. A swipe excludes or restores one transaction (or one split leg) from the spending baseline. `DurableExcludedSpendTransaction` stores that user decision in the CloudKit durable tier; the Spending Exclusions screen provides a permanent restore path. The schema change is additive with defaulted fields, so existing CloudKit rows remain compatible and no legacy field cleanup is required.
+
+The Net Worth tab is now organized as a long-term scorecard. Its hero reconciles current net worth to total assets and liabilities and reports the 30-day movement. The existing scrub-enabled historical chart and diagnostic sheet remain intact. A new Balance Sheet replaces the static metric grid with tappable asset and liability categories; each category lists the YNAB accounts and manual assets that produce its total. No persistence or snapshot schema changed.
+
+The Accounts tab is now the detailed inventory behind Net Worth. Open YNAB accounts are grouped into Cash, Investments, Credit Cards, Loans, Other Assets, and Other Liabilities with section totals. Liability balances display as positive amounts owed. Account details report balance, cleared and pending amounts, 30-day money in/out (or payments/charges), and recent cached activity. Manual assets now navigate to a value-history screen with per-entry changes and notes plus an explicit Update Value action. No persistence schema changed.
+
+The Investments tab is now a portfolio report instead of a static list. It reconciles investment-typed YNAB accounts with manual brokerage, retirement, and crypto values; reports the total and 30-day movement; provides a scrub-enabled 3-month through 5-year balance trend; and shows allocation by source/type plus holding-level percentages. YNAB holding details include cleared/pending balances, a one-year balance trend, and recent activity. Manual holdings reuse the durable value-history and Update Value workflow. `InvestmentHistoryBuilder` reconstructs YNAB balances and carries each dated manual valuation forward. Generic Other assets are intentionally excluded from Investments. No persistence schema changed.
+
+The primary UI has had a density pass. Net Worth and Investments no longer repeat their navigation titles inside hero cards; low-value counts, single-series legends, duplicate status badges, repeated update labels, and category item counts were removed. Projection chart metadata is one line, Safe to Spend copy is shorter without dropping ordinary-spending and buffer assumptions, and configuration/diagnostic explanations were reduced to concise footnotes. Detailed methodology remains behind the existing info and detail surfaces.
+
+BL IBR can now publish an opt-in student-loan summary through the local App Group `group.com.bluelava.me.financial`. Networth refreshes that read-only document at bootstrap and foreground activation, includes the current balance in Loans and total liabilities, exposes repayment details in Accounts, and deep-links back to IBR. IBR's dated balances are overlaid locally on the Net Worth trend. By default, linked-loan history begins on the earliest cached YNAB transaction date; Accounts → Student Loans provides `Count Loan Starting` only as an override. Date edits stay local until `Apply Start Date`, avoiding repeated five-year chart recalculation while the picker changes. Before IBR's first dated balance, Networth estimates backward using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Accrued interest is floored at zero and capitalization is not inferred. The shared balance, rate, and override are deliberately excluded from `DurableNetWorthSnapshot`, so no IBR loan field, override, or derived balance is copied to CloudKit. Existing YNAB checking transactions remain the cash-flow source for loan payments; Networth does not generate another projected payment from IBR metadata.
 
 - `Networth.xcodeproj` is the source of truth. Add new files via Xcode's UI.
-- App target builds clean on the iPhone 17 / iOS 26.5 simulator.
+- The user confirmed the latest app and copy/layout cleanup run correctly on-device.
 - NetworthCore SPM package: 5 sub-modules plus an umbrella target.
-- App-target unit tests: 8 Swift Testing tests under `xcodebuild test`.
+- App-target unit tests: 16 Swift Testing tests under `xcodebuild test`.
 
 ## What ships
 - Single ModelContainer with two ModelConfigurations:
   - `NetworthLocalCache` (no CloudKit) — `CachedBudget`, `CachedAccount`, `CachedTransaction`, `CachedScheduledTransaction`, `CachedCategory`, `SyncCursor`.
-  - `NetworthDurable` (CloudKit private DB) — `DurableManualAsset`, `DurableManualAssetValue`, `DurableNetWorthSnapshot`, `DurableCardSettings`, `DurableUserSettings`, `DurableExcludedSpendCategory`.
-- `AppContainerController` (`@Observable`, `@MainActor`) owns `SecretStore`, `BiometricGate`, `YNABClient`, `ConnectivityMonitor`, `SnapshotScheduler`, `SyncCoordinator`.
+  - `NetworthDurable` (CloudKit private DB) — `DurableManualAsset`, `DurableManualAssetValue`, `DurableNetWorthSnapshot`, `DurableCardSettings`, `DurableUserSettings`, `DurableExcludedSpendCategory`, `DurableExcludedSpendTransaction`, `DurableProjectionCashAccountOverride`.
+- `AppContainerController` (`@Observable`, `@MainActor`) owns `SecretStore`, `BiometricGate`, `YNABClient`, `ConnectivityMonitor`, `SnapshotScheduler`, `SyncCoordinator`, the read-only `IBRLoanStore`, and the local `IBRLoanHistorySettingsStore` boundary.
 - Every IO boundary is protocol-based with a production and in-memory/scriptable/recorded fake.
 - `Nw*` design system: tokens (spacing, corner radius, typography, colors, shadow, opacity, stroke, icons) + components (card, section header, metric capsule, status badge, empty/loading state, inline notice, banner, modal layout, button styles, amount text).
-- 4 tabs: **Net Worth · Projections · Accounts · Investments**. Settings opens from a sheet behind the Net Worth toolbar. CC payment forecast card with selectable payoff scenarios, cash position chart with dip/overdraft alerts.
+- 4 tabs: **Net Worth · Projections · Accounts · Investments**. Settings opens from a sheet behind the Net Worth toolbar.
+- Investments combines YNAB investment accounts with manual brokerage, retirement, and crypto holdings. It reports portfolio movement, historical balance, allocation, and holding details without claiming market-performance attribution.
+- Net Worth is the default launch tab. Projections remains the daily cash-confidence tool and shows selected cash today, the lowest projected balance and date, the event that causes it, a user-set minimum buffer, and derivation details for assumptions and card payments.
+- Optional IBR linking is local-only and read-only. The current IBR balance contributes to liabilities; dated IBR balances and the local history-start estimate overlay the chart without entering the CloudKit snapshot store.
+- Known Commitments uses dated YNAB scheduled activity plus generated full-statement card autopays. Estimated monthly spending is the median complete month of all external cash and funded-card outflows, including scheduled spending. Expected Spending adds only the median unscheduled remainder because scheduled cash flows are already in the known curve; short histories use an equivalent daily-average fallback. Unscheduled income and refunds are not assumed.
+- Aggregate cash establishes overall capacity, but does not mask account liquidity. Internal scheduled transfers update both account paths without changing the total; when an account runs short despite sufficient total cash, the headline gives the minimum transfer and deadline.
+- Aggregate shortfall headlines report the first day projected cash turns negative; the lowest balance across the full horizon remains supporting context rather than replacing the actionable crossing date.
+- Card-cycle timing treats an ambiguous later-numbered due day fewer than 14 days after close as belonging to the following monthly cycle. Prior statement autopays are netted from a following statement estimate even when that payment lands just after the next close, preventing duplicate same-day autopays.
+- Cards whose configured payment account is excluded from the selected cash pool are called out as incomplete coverage instead of disappearing from the projection.
+- Open on-budget cash accounts default into the outlook. CloudKit-backed account overrides let the user exclude reserves or include off-budget cash explicitly.
 - Read-only YNAB v1 client (delta-sync aware via `last_knowledge_of_server`), Keychain-stored PAT with iCloud sync, Face ID gate on by default when biometrics are available.
 - `safeSave(source:)` posts a notification on failure; container surfaces an alert.
 
@@ -44,10 +73,9 @@ xcodebuild test -project Networth.xcodeproj -scheme Networth \
 ```
 
 ## Known follow-ups
-- **First-build provisioning:** running on a real device (not the simulator) requires the user to set their development team in Xcode signing & capabilities. Use a personal Apple ID in `Xcode → Settings → Accounts`.
-- **CloudKit container:** the entitlement names `iCloud.com.bluelava.me.networth`. The user must create this container in their developer portal once before CloudKit sync starts working on-device.
+- **CloudKit cross-device verification:** not needed for the user's current single-device workflow.
 - **Numeric-first-tap-replaces-value:** the documented input pattern is stubbed in `ManualAssetForm.selectAllOnFirstTap()` — wire a UITextField responder coordinator if/when that polish is desired.
-- **Historical chart math when accounts close:** the 24-month reconstruction excludes closed YNAB accounts, which means transfers from a now-closed account into a still-open one get treated as external income. Walking the open account's balance backwards subtracts those inflows, producing artificially low (sometimes negative) historical values. Deferred — revisit after Plaid integration lands. Options when revisiting: detect YNAB-side transfers via `transfer_account_id` and skip them when the matching account isn't in the contributing set, or include closed accounts in reconstruction with a "closure shouldn't look like a drop" treatment. Diagnostic surface for inspecting the data is the ⓘ button on the Net Worth Trend card → `TrendDetailView`.
+- **Historical transfers from excluded closed accounts — deferred:** the 5-year reconstructor walks open accounts plus user-selected closed accounts. If a closed account remains excluded, its transfer into an included account is still rolled back as if it were external activity, which can understate earlier net worth. Including that closed account mitigates the issue. The user chose to ignore this edge case for now.
 
 ## Recently shipped (2026-06-07)
 - **PAT input cleanup:** `AppContainerController.saveYNABToken` trims whitespace/newlines before storing. `PATEntrySheet` confirm-disabled state uses the trimmed value.

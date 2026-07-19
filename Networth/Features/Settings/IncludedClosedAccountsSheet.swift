@@ -33,11 +33,9 @@ struct IncludedClosedAccountsSheet: View {
             onClose: { dismiss() }
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                NwInlineNotice(
-                    "Bring closed-account history into the chart",
-                    message: "Toggle on the closed accounts whose YNAB transaction history reflects real net worth — brokerage staging accounts, drained savings buckets, etc. Toggling triggers a chart rebuild on the next sync.",
-                    tone: .info
-                )
+                Text("Include closed accounts needed for accurate history. Changes rebuild on the next sync.")
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
 
                 if closedAccounts.isEmpty {
                     NwEmptyState(
