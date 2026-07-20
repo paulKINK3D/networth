@@ -16,6 +16,7 @@ public struct SecretKey: Hashable, Sendable, RawRepresentable {
     public init(rawValue: String) { self.rawValue = rawValue }
 
     public static let ynabPersonalAccessToken = SecretKey(rawValue: "ynab.personal_access_token")
+    public static let plaidBackendBearerToken = SecretKey(rawValue: "plaid.backend_bearer_token")
 }
 
 public enum SecretStoreError: Error, Sendable {

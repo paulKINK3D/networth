@@ -46,6 +46,8 @@
     </array>
     <key>NSFaceIDUsageDescription</key>
     <string>Unlock BlueLava Networth so only you can see your financial picture.</string>
+    <key>PlaidBackendBaseURL</key>
+    <string>https://networth-plaid.bluelava.me</string>
     <key>ITSAppUsesNonExemptEncryption</key>
     <false/>
 </dict>

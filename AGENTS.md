@@ -10,22 +10,23 @@
 - Core domain package: `NetworthCore/` (local SPM package — pure Swift, no UI)
 
 ## Purpose
-Personal financial radar that helps the user understand their real financial position today and see cash problems before they happen. Its primary daily job is near-term cash-flow confidence: explain what money is leaving, when it leaves, and whether upcoming obligations are safely covered. Credit-card statement and autopay forecasting is the core differentiator. Net worth is the supporting long-term scorecard, not a proxy for spendable cash. Keep forecasts conservative, understandable, and explainable. Read-only against YNAB and the optional local BL IBR bridge. See `docs/PLAN.md` for the product north star, full scope, locked decisions, and phase plan.
+Personal financial radar that helps the user understand their real financial position today and see cash problems before they happen. Its primary daily job is near-term cash-flow confidence: explain what money is leaving, when it leaves, and whether upcoming obligations are safely covered. Credit-card statement and autopay forecasting is the core differentiator. Net worth is the supporting long-term scorecard, not a proxy for spendable cash. Keep forecasts conservative, understandable, and explainable. Read-only against YNAB, the optional local BL IBR bridge, and the optional server-mediated Plaid Investments connection. See `docs/PLAN.md` for the product north star, full scope, locked decisions, and phase plan.
 
 ## Repo Layout
 - `Networth/`: app source — models, views, services, design system, app entrypoint
 - `Networth/DesignSystem/`: design tokens (`Nw*`) and shared view components — built first, screens compose from primitives
 - `NetworthTests/`: app-level tests (SwiftData / integration)
 - `NetworthCore/`: SPM package — pure Swift domain logic (models, milliunit math, projection calculators, formatters, API DTOs)
+- `PlaidWorker/`: independently deployed Cloudflare Worker — private Plaid credential/token boundary, encrypted Item registry, and normalized Investments API
 - `Networth.xcodeproj/`: Xcode project and schemes
 - `docs/`: PLAN.md (durable scope), WORKING.md (volatile session state), other long-lived notes
 
 ## Key App Behavior
 - Single-user app gated by a Face ID toggle that defaults ON when the device supports biometrics. A versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows forward so iCloud-restored or cross-device settings never silently leave the user unlocked.
 - YNAB Personal Access Token entered once in Settings, stored in iCloud-synced Keychain so a future device swap is zero-friction.
-- On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, `YNABClient` (actor), `ModelContainer`, `ConnectivityMonitor`, the read-only `IBRLoanStore`, and local `IBRLoanHistorySettingsStore`.
+- On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, `YNABClient` and `PlaidClient` actors, `ModelContainer`, `ConnectivityMonitor`, the read-only `IBRLoanStore`, and local `IBRLoanHistorySettingsStore`.
 - 4-tab structure: Net Worth · Projections · Accounts · Investments. Settings is opened from a sheet behind the Net Worth toolbar (not a tab).
-- Sync strategy: SwiftData local cache for YNAB data (re-fetchable); CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings).
+- Sync strategy: SwiftData local cache for re-fetchable YNAB and Plaid data; CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings, and Plaid account reconciliation decisions).
 - Optional IBR loan sharing uses `group.com.bluelava.me.financial`. The decoded summary stays in memory; its dated balances overlay the chart locally and must never be copied into SwiftData or CloudKit.
 
 ## Startup Checks
@@ -52,6 +53,9 @@ xcodebuild test -scheme Networth -destination 'DESTINATION'
 
 # Run pure-Swift domain tests (fast, no simulator)
 cd NetworthCore && swift test
+
+# Validate the Plaid backend without deploying it
+cd PlaidWorker && npm test && npm run check
 ```
 - Do not assume the unit test target name is the same as the runnable test scheme. Verify actual scheme names before running test commands.
 - Prefer `swift test` on `NetworthCore` for iteration on domain logic — it is dramatically faster than the simulator round-trip.
@@ -65,7 +69,7 @@ cd NetworthCore && swift test
 - Treat code as source of truth if legacy docs conflict.
 - **Design system first.** If a visual pattern appears in 2+ places, promote it into `Networth/DesignSystem/` before the second use. All `Nw*` tokens and components live there.
 - **No view models.** Follow the inventory-app pattern: views read `@Query` directly; logic lives in services and pure helpers (in `NetworthCore` when domain logic, in `Networth/Services/` when SwiftData-coupled).
-- **Protocol-based DI** for any IO boundary: `SecretStore`, `BiometricGate`, `YNABClient`, `SnapshotScheduler`, `IBRLoanStore`, `IBRLoanHistorySettingsStore`. Always ship an in-memory / recorded fake alongside the production implementation.
+- **Protocol-based DI** for any IO boundary: `SecretStore`, `BiometricGate`, `YNABClient`, `PlaidClient`, `SnapshotScheduler`, `IBRLoanStore`, `IBRLoanHistorySettingsStore`. Always ship an in-memory / recorded fake alongside the production implementation.
 - **Actor-isolate the YNAB client** for thread-safe token access and rate-limit bookkeeping.
 - **Milliunit math lives in `NetworthCore.Money`.** Never do `÷1000` in views. Prefer `..._formatted` / `..._currency` fields from YNAB when present.
 - **Delta sync (`last_knowledge_of_server`) on supported endpoints** to stay well under YNAB's 200 req/hour limit.
@@ -93,6 +97,9 @@ cd NetworthCore && swift test
 - **YNAB PAT is high-sensitivity.** Store via the `SecretStore` protocol backed by iCloud-synced Keychain (`kSecAttrAccessibleWhenUnlocked` + `kSecAttrSynchronizable: true`). Never log token values, never write them to SwiftData, never include them in diagnostic exports.
 - **YNAB API is read-only in v1.** This is a security posture: even if the token had write scope, the client must not expose write endpoints. Future write support requires explicit user approval and a separate review.
 - **BL IBR bridge is local-only and read-only.** Networth may decode the opt-in versioned App Group document but must not write to it, upload its fields, or generate a second projected loan payment. YNAB checking activity remains the cash-flow source for payments.
+- **Plaid is investment-only and server-mediated.** The app may receive Link tokens and normalized investment data from the private backend, but Plaid `client_id`, `secret`, and Item `access_token` values must never enter the app, Keychain, logs, fixtures, or repository. Plaid must not feed cash projections or duplicate YNAB transactions.
+- **Plaid Worker secrets never enter git.** Use `.dev.vars` locally and `wrangler secret put` when deployed. Item access tokens must be AES-GCM encrypted before Workers KV persistence; the encryption key is a separate Worker secret.
+- **Plaid balances require reconciliation before inclusion.** A newly linked Plaid account remains excluded from Net Worth until the user confirms that it is not already represented by a YNAB account or manual asset. Account balances reconcile totals; holdings explain their composition and must not be added again.
 - **IBR history overrides are presentation-only.** With no override, linked-loan history begins on the earliest cached YNAB transaction date. A user-selected replacement date stays in local preferences. Before IBR's first dated balance, estimate backward from the earliest snapshot using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Never persist the estimated balances or infer capitalization events.
 
 ## UX And Design Consistency Requirements

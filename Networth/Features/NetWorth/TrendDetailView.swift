@@ -248,12 +248,6 @@ struct TrendDetailView: View {
 
     // MARK: - Derived data: contributions & overlap
 
-    private static let shortDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        return f
-    }()
-
     private struct ManualEntry {
         let id: UUID
         let name: String
@@ -261,7 +255,7 @@ struct TrendDetailView: View {
         let currentValue: Money
         var firstEntryLabel: String {
             guard let date = firstEntryAt else { return "—" }
-            return TrendDetailView.shortDateFormatter.string(from: date)
+            return date.formatted(date: .abbreviated, time: .omitted)
         }
     }
 

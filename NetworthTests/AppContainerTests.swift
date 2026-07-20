@@ -41,6 +41,157 @@ struct AppContainerTests {
         #expect(container.hasYNABToken == false)
     }
 
+    @Test func bootstrapConfiguresPlaidBackendTokenWithoutExposingPlaidSecrets() async {
+        let plaidClient = RecordedPlaidClient()
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(seed: [.plaidBackendBearerToken: "backend-token"]),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            plaidClient: plaidClient,
+            modelContainer: try! ModelContainerFactory.makeContainer(inMemory: true)
+        )
+
+        await container.bootstrap()
+
+        let configuredToken = await plaidClient.configuredBearerToken
+        #expect(container.hasPlaidBackendToken)
+        #expect(configuredToken == "backend-token")
+    }
+
+    @Test func plaidSyncCachesHoldingsAndCreatesPendingReview() async throws {
+        let item = PlaidItemDTO(
+            id: "item-1",
+            institutionName: "First Brokerage",
+            status: "healthy",
+            lastSyncedAt: .now
+        )
+        let account = PlaidAccountDTO(
+            id: "account-1",
+            itemId: item.id,
+            institutionName: item.institutionName,
+            name: "Brokerage",
+            officialName: nil,
+            mask: "1234",
+            subtype: "brokerage",
+            currentBalance: 10_000,
+            availableBalance: nil,
+            isoCurrencyCode: "USD",
+            unofficialCurrencyCode: nil
+        )
+        let holding = PlaidHoldingDTO(
+            accountId: account.id,
+            securityId: "security-1",
+            quantity: 20,
+            institutionValue: 9_500,
+            costBasis: 8_000,
+            asOf: .now
+        )
+        let response = PlaidHoldingsResponseDTO(
+            items: [item],
+            accounts: [account],
+            securities: [PlaidSecurityDTO(
+                id: "security-1",
+                name: "Example Fund",
+                tickerSymbol: "EXMPL",
+                type: "etf",
+                closePrice: 475,
+                closePriceAsOf: .now,
+                isoCurrencyCode: "USD",
+                unofficialCurrencyCode: nil
+            )],
+            holdings: [holding]
+        )
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let coordinator = PlaidSyncCoordinator(
+            client: RecordedPlaidClient(holdings: response),
+            mainContext: modelContainer.mainContext
+        )
+
+        await coordinator.syncAll()
+
+        let accounts = try modelContainer.mainContext.fetch(FetchDescriptor<CachedPlaidAccount>())
+        let holdings = try modelContainer.mainContext.fetch(FetchDescriptor<CachedPlaidHolding>())
+        let treatments = try modelContainer.mainContext.fetch(
+            FetchDescriptor<DurablePlaidAccountTreatment>()
+        )
+        #expect(accounts.first?.currentBalance == Money.dollars(10_000))
+        #expect(holdings.first?.institutionValue == Money.dollars(9_500))
+        #expect(treatments.first?.plaidAccountId == "account-1")
+        #expect(treatments.first?.treatment == .pendingReview)
+        #expect(coordinator.phase == .idle)
+    }
+
+    @Test func plaidConnectionExchangesPublicTokenThroughBackendAndSyncs() async throws {
+        let item = PlaidItemDTO(
+            id: "item-1",
+            institutionName: "First Brokerage",
+            status: "healthy",
+            lastSyncedAt: .now
+        )
+        let account = PlaidAccountDTO(
+            id: "account-1",
+            itemId: item.id,
+            institutionName: item.institutionName,
+            name: "Brokerage",
+            officialName: nil,
+            mask: "1234",
+            subtype: "brokerage",
+            currentBalance: 10_000,
+            availableBalance: nil,
+            isoCurrencyCode: "USD",
+            unofficialCurrencyCode: nil
+        )
+        let client = RecordedPlaidClient(
+            exchange: .init(item: item),
+            holdings: .init(items: [item], accounts: [account], securities: [], holdings: [])
+        )
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            plaidClient: client,
+            modelContainer: try ModelContainerFactory.makeContainer(inMemory: true)
+        )
+
+        let connectedItem = try await container.completePlaidLink(publicToken: "public-token")
+
+        #expect(connectedItem.id == item.id)
+        let exchangedTokens = await client.exchangedPublicTokens
+        #expect(exchangedTokens == ["public-token"])
+        let cachedAccounts = try container.modelContainer.mainContext.fetch(
+            FetchDescriptor<CachedPlaidAccount>()
+        )
+        #expect(cachedAccounts.map(\.id) == [account.id])
+    }
+
+    @Test func plaidBalanceContributesOnlyAfterExplicitInclusion() async throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = modelContainer.mainContext
+        let account = CachedPlaidAccount(
+            id: "account-1",
+            itemId: "item-1",
+            institutionName: "First Brokerage",
+            name: "Brokerage",
+            currentBalanceMilliunits: Money.dollars(25_000).milliunits,
+            isoCurrencyCode: "USD"
+        )
+        let treatment = DurablePlaidAccountTreatment(plaidAccountId: account.id)
+        context.insert(account)
+        context.insert(treatment)
+        try context.save()
+        let scheduler = SnapshotScheduler(mainContext: context)
+
+        #expect(scheduler.computeBreakdown().investments == .zero)
+
+        treatment.treatment = .duplicateYNAB
+        try context.save()
+        #expect(scheduler.computeBreakdown().investments == .zero)
+
+        treatment.treatment = .included
+        try context.save()
+        #expect(scheduler.computeBreakdown().investments == Money.dollars(25_000))
+    }
+
     @Test func bootstrapMigratesProjectionLookback() async throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let settings = DurableUserSettings()

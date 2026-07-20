@@ -45,7 +45,7 @@ The near-term priority is to make Projections the clearest and most trustworthy 
 ## Distribution & Scope
 - iPhone only (no iPad, no Catalyst).
 - Sideload via Xcode / TestFlight. No App Store submission planned.
-- YNAB is the only network data source. An optional local-only App Group bridge reads an aggregate student-loan summary from the sibling BL IBR app. Both integrations are read-only from Networth.
+- YNAB remains the source for cash, transactions, scheduled activity, and credit-card forecasting. An optional local-only App Group bridge reads an aggregate student-loan summary from BL IBR. Optional Plaid Investments data is fetched through a private backend and is limited to investment accounts, holdings, and institution metadata. Every integration is read-only from Networth.
 
 ## Locked Decisions
 
@@ -56,9 +56,9 @@ The near-term priority is to make Projections the clearest and most trustworthy 
 - **Face ID gate enabled by default** when the device supports biometrics; user can disable in Settings. A versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows (from before the default change) to the new default on bootstrap, so iCloud-restored or cross-device settings do not silently leave the user unlocked.
 
 ### Data Model
-- **Net worth =** sum of YNAB account balances (assets − liabilities), plus manual assets, less an optional locally linked IBR student-loan balance.
+- **Net worth =** sum of YNAB account balances (assets − liabilities), plus manual assets and confirmed non-duplicate Plaid investment account balances, less an optional locally linked IBR student-loan balance.
 - Manual asset types: real estate, vehicles, brokerage/retirement balances, crypto, collectibles.
-- Investment accounts handled as **manual balance entries** (no per-symbol positions, no live prices in v1).
+- Investment accounts may come from YNAB balances, manual entries, or optional Plaid holdings. Plaid accounts remain excluded until duplicate reconciliation is complete.
 
 ### Persistence (Hybrid)
 - **SwiftData (local-only):** cache of YNAB data — accounts, transactions, scheduled transactions, categories. Re-fetchable, no CloudKit cost.
@@ -184,10 +184,12 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 - [x] **Phase 6 — Polish:** Face ID toggle, error states, empty states, splash/onboarding, sync indicators.
 - [x] **Phase 7 — Investments tab:** Portfolio summary, reconstructed balance history, allocation, holding details, and manual value-update access.
 - [x] **Phase 8 — Local IBR bridge:** Opt-in App Group student-loan summary, current liability reporting, local chart overlay, Accounts detail, and deep link back to BL IBR.
+- [ ] **Phase 9 — Plaid Investments:** Private backend contract, native Link flow, local investment cache, explicit duplicate reconciliation, holding-level reporting, and reconciled contribution to Net Worth.
 
-The foundational capabilities and four core tab realignment have shipped in the working tree. Projections now serves the cash-confidence north star, while Net Worth, Accounts, and Investments provide the supporting scorecard and drill-down reporting. Plaid integration remains researched but deferred; see `docs/2026-06-06-plaid-integration-research.md`.
+The foundational capabilities and four core tab realignment have shipped. Projections serves the cash-confidence north star, while Net Worth, Accounts, and Investments provide the supporting scorecard and drill-down reporting. Plaid's Sandbox Worker and iOS implementation are complete on `feature/plaid-integration`; Link, account review, inclusion, and holdings were validated on-device. Phase 9 remains open for unlink verification and the Production/Trial switch with one real investment institution.
 
 ## Key Decisions Log
+- **2026-07-19** — Plaid is optional and investment-only. YNAB continues to own cash balances, transactions, scheduled activity, and every projection input. Plaid credentials and Item access tokens stay in a private backend; the app stores only a backend bearer token. A linked Plaid account is excluded from Net Worth until the user resolves possible overlap with YNAB/manual assets. Plaid account balances reconcile totals, while holdings explain composition and are never added a second time.
 - **2026-07-19** — BL IBR is the sole source of truth for student-loan balances because those loans are not represented in YNAB. IBR publishes only a minimal, versioned summary through an explicit local App Group opt-in. Networth reads but never writes it, counts the liability once, overlays dated balances locally instead of persisting them to CloudKit, and continues to rely on YNAB checking activity for actual payment cash flow.
 - **2026-07-19** — Linked IBR history begins automatically on the earliest cached YNAB transaction date unless the user overrides it locally. Before the first dated IBR balance, Networth estimates backward from the earliest snapshot using $0 payments and IBR's shared weighted rate as simple daily interest on principal. It floors accrued interest at zero, does not infer capitalization, and keeps every estimated balance out of CloudKit.
 - **2026-07-19** — Net Worth is the default tab shown after launch and unlock. Projections remains the primary cash-decision workflow but is opened intentionally from the tab bar.

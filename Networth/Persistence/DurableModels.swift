@@ -301,3 +301,34 @@ public final class DurableProjectionCashAccountOverride {
         self.included = included
     }
 }
+
+/// The user's durable decision about whether a Plaid account is additive or
+/// already represented elsewhere. All fields have defaults for additive
+/// CloudKit schema compatibility.
+@Model
+public final class DurablePlaidAccountTreatment {
+    public var id: UUID = UUID()
+    public var plaidAccountId: String = ""
+    public var treatmentRaw: String = PlaidAccountTreatment.pendingReview.rawValue
+    public var duplicateSourceId: String? = nil
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        plaidAccountId: String = "",
+        treatment: PlaidAccountTreatment = .pendingReview,
+        duplicateSourceId: String? = nil,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.plaidAccountId = plaidAccountId
+        self.treatmentRaw = treatment.rawValue
+        self.duplicateSourceId = duplicateSourceId
+        self.updatedAt = updatedAt
+    }
+
+    public var treatment: PlaidAccountTreatment {
+        get { PlaidAccountTreatment(rawValue: treatmentRaw) ?? .pendingReview }
+        set { treatmentRaw = newValue.rawValue }
+    }
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "networth-plaid-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-19",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "networth-plaid.bluelava.me",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "PLAID_ENV": "sandbox",
+    "PLAID_CLIENT_NAME": "BlueLava Networth",
+    "PLAID_COUNTRY_CODES": "US",
+    "APPLE_APP_ID": "VRPA6X5SB2.com.bluelava.me.networth"
+  },
+  "secrets": {
+    "required": [
+      "PLAID_CLIENT_ID",
+      "PLAID_SECRET",
+      "PLAID_REDIRECT_URI",
+      "BACKEND_BEARER_TOKEN",
+      "TOKEN_ENCRYPTION_KEY"
+    ]
+  },
+  "kv_namespaces": [
+    {
+      "binding": "PLAID_STORAGE"
+    }
+  ]
+}

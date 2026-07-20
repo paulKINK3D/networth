@@ -201,3 +201,174 @@ public actor RecordedYNABClient: YNABClient {
     public func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse { transactionsResult }
     public func scheduledTransactions(budgetId: String, lastKnowledge: Int64?) async throws -> YNABScheduledTransactionsResponse { scheduledResult }
 }
+
+// MARK: - Plaid backend client
+
+public enum PlaidClientError: Error, Sendable, Equatable {
+    case missingConfiguration
+    case unauthorized
+    case invalidResponse(statusCode: Int)
+    case decoding
+    case transport
+    case cancelled
+}
+
+/// Talks only to Networth's private backend. Plaid credentials and Item access
+/// tokens are intentionally absent from this interface.
+public protocol PlaidClient: Actor {
+    func configure(baseURL: URL?, bearerToken: String?)
+    func createLinkToken() async throws -> PlaidLinkTokenResponseDTO
+    func exchangePublicToken(_ publicToken: String) async throws -> PlaidExchangeResponseDTO
+    func items() async throws -> PlaidItemsResponseDTO
+    func holdings() async throws -> PlaidHoldingsResponseDTO
+    func removeItem(id: String) async throws
+}
+
+public actor LivePlaidClient: PlaidClient {
+    private let session: URLSession
+    private var baseURL: URL?
+    private var bearerToken: String?
+    private let decoder: JSONDecoder
+    private let encoder: JSONEncoder
+
+    public init(session: URLSession = .shared) {
+        self.session = session
+        self.decoder = JSONDecoder()
+        self.decoder.dateDecodingStrategy = .iso8601
+        self.encoder = JSONEncoder()
+    }
+
+    public func configure(baseURL: URL?, bearerToken: String?) {
+        self.baseURL = baseURL
+        self.bearerToken = bearerToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public func createLinkToken() async throws -> PlaidLinkTokenResponseDTO {
+        try await request(path: "v1/plaid/link-token", method: "POST")
+    }
+
+    public func exchangePublicToken(_ publicToken: String) async throws -> PlaidExchangeResponseDTO {
+        struct Body: Encodable { let publicToken: String }
+        return try await request(
+            path: "v1/plaid/exchange",
+            method: "POST",
+            body: encoder.encode(Body(publicToken: publicToken))
+        )
+    }
+
+    public func items() async throws -> PlaidItemsResponseDTO {
+        try await request(path: "v1/plaid/items", method: "GET")
+    }
+
+    public func holdings() async throws -> PlaidHoldingsResponseDTO {
+        try await request(path: "v1/plaid/investments/holdings", method: "GET")
+    }
+
+    public func removeItem(id: String) async throws {
+        _ = try await send(
+            path: "v1/plaid/items/\(id)",
+            method: "DELETE"
+        )
+    }
+
+    private func request<T: Decodable & Sendable>(
+        path: String,
+        method: String,
+        body: Data? = nil
+    ) async throws -> T {
+        let data = try await send(path: path, method: method, body: body)
+        do { return try decoder.decode(T.self, from: data) }
+        catch { throw PlaidClientError.decoding }
+    }
+
+    private func send(
+        path: String,
+        method: String,
+        body: Data? = nil
+    ) async throws -> Data {
+        guard let baseURL,
+              let bearerToken,
+              !bearerToken.isEmpty else {
+            throw PlaidClientError.missingConfiguration
+        }
+        let url = path.split(separator: "/").reduce(baseURL) {
+            $0.appendingPathComponent(String($1))
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.httpBody = body
+        request.timeoutInterval = 20
+        request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if body != nil {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch is CancellationError {
+            throw PlaidClientError.cancelled
+        } catch {
+            if (error as NSError).code == NSURLErrorCancelled {
+                throw PlaidClientError.cancelled
+            }
+            throw PlaidClientError.transport
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw PlaidClientError.invalidResponse(statusCode: 0)
+        }
+        switch http.statusCode {
+        case 200..<300:
+            return data
+        case 401, 403:
+            throw PlaidClientError.unauthorized
+        default:
+            throw PlaidClientError.invalidResponse(statusCode: http.statusCode)
+        }
+    }
+}
+
+public actor RecordedPlaidClient: PlaidClient {
+    public var linkTokenResult: PlaidLinkTokenResponseDTO
+    public var exchangeResult: PlaidExchangeResponseDTO
+    public var itemsResult: PlaidItemsResponseDTO
+    public var holdingsResult: PlaidHoldingsResponseDTO
+    public private(set) var exchangedPublicTokens: [String] = []
+    public private(set) var removedItemIDs: [String] = []
+    public private(set) var configuredBaseURL: URL?
+    public private(set) var configuredBearerToken: String?
+
+    public init(
+        linkToken: PlaidLinkTokenResponseDTO = .init(linkToken: "recorded-link-token", expiration: nil),
+        exchange: PlaidExchangeResponseDTO = .init(item: .init(
+            id: "recorded-item", institutionName: "Recorded Brokerage",
+            status: "healthy", lastSyncedAt: nil
+        )),
+        items: PlaidItemsResponseDTO = .init(items: []),
+        holdings: PlaidHoldingsResponseDTO = .init(
+            items: [], accounts: [], securities: [], holdings: []
+        )
+    ) {
+        self.linkTokenResult = linkToken
+        self.exchangeResult = exchange
+        self.itemsResult = items
+        self.holdingsResult = holdings
+    }
+
+    public func configure(baseURL: URL?, bearerToken: String?) {
+        configuredBaseURL = baseURL
+        configuredBearerToken = bearerToken
+    }
+
+    public func createLinkToken() async throws -> PlaidLinkTokenResponseDTO { linkTokenResult }
+    public func exchangePublicToken(_ publicToken: String) async throws -> PlaidExchangeResponseDTO {
+        exchangedPublicTokens.append(publicToken)
+        return exchangeResult
+    }
+    public func items() async throws -> PlaidItemsResponseDTO { itemsResult }
+    public func holdings() async throws -> PlaidHoldingsResponseDTO { holdingsResult }
+    public func removeItem(id: String) async throws { removedItemIDs.append(id) }
+}

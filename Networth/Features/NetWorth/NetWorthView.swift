@@ -68,6 +68,8 @@ struct NetWorthView: View {
     @Query(sort: \CachedAccount.balanceMilliunits, order: .reverse) private var accounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
     @Query private var userSettings: [DurableUserSettings]
+    @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
+    @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
 
     @State private var range: Range = .twelveMonths
     @State private var showingTrendDetail = false
@@ -484,7 +486,29 @@ struct NetWorthView: View {
                 )
             }
 
-        var combined = ynabEntries + durableEntries
+        let plaidEntries: [NetWorthEntry]
+        if category == .investments {
+            plaidEntries = plaidAccounts.compactMap { account in
+                guard plaidTreatment(for: account.id) == .included,
+                      account.unofficialCurrencyCode == nil,
+                      account.isoCurrencyCode?.uppercased() == "USD",
+                      let balance = account.currentBalance else {
+                    return nil
+                }
+                let mask = account.mask.map { " •••• \($0)" } ?? ""
+                return NetWorthEntry(
+                    id: "plaid:\(account.id)",
+                    name: account.name,
+                    subtitle: "\(account.institutionName)\(mask)",
+                    amount: balance,
+                    updatedAt: nil
+                )
+            }
+        } else {
+            plaidEntries = []
+        }
+
+        var combined = ynabEntries + durableEntries + plaidEntries
         if category == .loans, let loan = container.linkedIBRLoanDocument?.current {
             combined.append(NetWorthEntry(
                 id: "ibr:primary",
@@ -499,6 +523,11 @@ struct NetWorthView: View {
             if lhs.amount != rhs.amount { return lhs.amount > rhs.amount }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
+    }
+
+    private func plaidTreatment(for accountID: String) -> PlaidAccountTreatment {
+        plaidTreatments.last(where: { $0.plaidAccountId == accountID })?.treatment
+            ?? .pendingReview
     }
 
     private func manualAsset(

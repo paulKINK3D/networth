@@ -625,3 +625,208 @@ public final class SyncCoordinator {
         return try? mainContext.fetch(descriptor).first
     }
 }
+
+// MARK: - Plaid investments
+
+/// Independent Plaid cache path. A Plaid failure never rolls back or changes
+/// the YNAB sync state, and stale rows are removed only after a complete
+/// holdings response has been received.
+@MainActor
+@Observable
+public final class PlaidSyncCoordinator {
+    public enum Phase: Sendable, Equatable {
+        case idle
+        case syncing
+        case error(String)
+    }
+
+    public private(set) var phase: Phase = .idle
+    public private(set) var lastSyncedAt: Date?
+
+    private let client: any PlaidClient
+    private let mainContext: ModelContext
+
+    public init(client: any PlaidClient, mainContext: ModelContext) {
+        self.client = client
+        self.mainContext = mainContext
+    }
+
+    public func syncAll() async {
+        guard phase != .syncing else { return }
+        phase = .syncing
+        do {
+            let snapshot = try await client.holdings().toSnapshot()
+            upsert(snapshot)
+            guard mainContext.safeSave(source: "plaidSync.cache") else {
+                mainContext.rollback()
+                phase = .error("Saving investment data failed. Retry in a moment.")
+                return
+            }
+            lastSyncedAt = .now
+            phase = .idle
+        } catch let error as PlaidClientError {
+            mainContext.rollback()
+            if error == .cancelled {
+                phase = .idle
+            } else {
+                phase = .error(message(for: error))
+            }
+        } catch is CancellationError {
+            mainContext.rollback()
+            phase = .idle
+        } catch {
+            mainContext.rollback()
+            phase = .error("Investment sync failed. Try again.")
+        }
+    }
+
+    private func upsert(_ snapshot: PlaidInvestmentSnapshot) {
+        let existingItems = (try? mainContext.fetch(FetchDescriptor<CachedPlaidItem>())) ?? []
+        let itemsByID = Dictionary(uniqueKeysWithValues: existingItems.map { ($0.id, $0) })
+        for item in snapshot.items {
+            if let row = itemsByID[item.id] {
+                row.institutionName = item.institutionName
+                row.status = item.status
+                row.lastSyncedAt = item.lastSyncedAt
+            } else {
+                mainContext.insert(CachedPlaidItem(
+                    id: item.id,
+                    institutionName: item.institutionName,
+                    status: item.status,
+                    lastSyncedAt: item.lastSyncedAt
+                ))
+            }
+        }
+
+        let existingAccounts = (try? mainContext.fetch(FetchDescriptor<CachedPlaidAccount>())) ?? []
+        let accountsByID = Dictionary(uniqueKeysWithValues: existingAccounts.map { ($0.id, $0) })
+        for account in snapshot.accounts {
+            if let row = accountsByID[account.id] {
+                apply(account, to: row)
+            } else {
+                mainContext.insert(CachedPlaidAccount(
+                    id: account.id,
+                    itemId: account.itemId,
+                    institutionName: account.institutionName,
+                    name: account.name,
+                    officialName: account.officialName,
+                    mask: account.mask,
+                    subtype: account.subtype,
+                    currentBalanceMilliunits: account.currentBalance?.milliunits,
+                    availableBalanceMilliunits: account.availableBalance?.milliunits,
+                    isoCurrencyCode: account.isoCurrencyCode,
+                    unofficialCurrencyCode: account.unofficialCurrencyCode
+                ))
+            }
+        }
+
+        let existingSecurities = (try? mainContext.fetch(FetchDescriptor<CachedPlaidSecurity>())) ?? []
+        let securitiesByID = Dictionary(uniqueKeysWithValues: existingSecurities.map { ($0.id, $0) })
+        for security in snapshot.securities {
+            if let row = securitiesByID[security.id] {
+                apply(security, to: row)
+            } else {
+                mainContext.insert(CachedPlaidSecurity(
+                    id: security.id,
+                    name: security.name,
+                    tickerSymbol: security.tickerSymbol,
+                    typeRaw: security.type,
+                    closePriceMilliunits: security.closePrice?.milliunits,
+                    closePriceAsOf: security.closePriceAsOf,
+                    isoCurrencyCode: security.isoCurrencyCode,
+                    unofficialCurrencyCode: security.unofficialCurrencyCode
+                ))
+            }
+        }
+
+        let existingHoldings = (try? mainContext.fetch(FetchDescriptor<CachedPlaidHolding>())) ?? []
+        let holdingsByID = Dictionary(uniqueKeysWithValues: existingHoldings.map { ($0.id, $0) })
+        for holding in snapshot.holdings {
+            let quantity = NSDecimalNumber(decimal: holding.quantity).stringValue
+            if let row = holdingsByID[holding.id] {
+                row.accountId = holding.accountId
+                row.securityId = holding.securityId
+                row.quantityDecimalString = quantity
+                row.institutionValueMilliunits = holding.institutionValue.milliunits
+                row.costBasisMilliunits = holding.costBasis?.milliunits
+                row.asOf = holding.asOf
+            } else {
+                mainContext.insert(CachedPlaidHolding(
+                    id: holding.id,
+                    accountId: holding.accountId,
+                    securityId: holding.securityId,
+                    quantityDecimalString: quantity,
+                    institutionValueMilliunits: holding.institutionValue.milliunits,
+                    costBasisMilliunits: holding.costBasis?.milliunits,
+                    asOf: holding.asOf
+                ))
+            }
+        }
+
+        let itemIDs = Set(snapshot.items.map(\.id))
+        for row in existingItems where !itemIDs.contains(row.id) {
+            mainContext.delete(row)
+        }
+        let accountIDs = Set(snapshot.accounts.map(\.id))
+        for row in existingAccounts where !accountIDs.contains(row.id) {
+            mainContext.delete(row)
+        }
+        let securityIDs = Set(snapshot.securities.map(\.id))
+        for row in existingSecurities where !securityIDs.contains(row.id) {
+            mainContext.delete(row)
+        }
+        let holdingIDs = Set(snapshot.holdings.map(\.id))
+        for row in existingHoldings where !holdingIDs.contains(row.id) {
+            mainContext.delete(row)
+        }
+        ensurePendingTreatments(for: snapshot.accounts)
+    }
+
+    private func apply(_ account: PlaidInvestmentAccount, to row: CachedPlaidAccount) {
+        row.itemId = account.itemId
+        row.institutionName = account.institutionName
+        row.name = account.name
+        row.officialName = account.officialName
+        row.mask = account.mask
+        row.subtype = account.subtype
+        row.currentBalanceMilliunits = account.currentBalance?.milliunits
+        row.availableBalanceMilliunits = account.availableBalance?.milliunits
+        row.isoCurrencyCode = account.isoCurrencyCode
+        row.unofficialCurrencyCode = account.unofficialCurrencyCode
+    }
+
+    private func apply(_ security: PlaidSecurity, to row: CachedPlaidSecurity) {
+        row.name = security.name
+        row.tickerSymbol = security.tickerSymbol
+        row.typeRaw = security.type
+        row.closePriceMilliunits = security.closePrice?.milliunits
+        row.closePriceAsOf = security.closePriceAsOf
+        row.isoCurrencyCode = security.isoCurrencyCode
+        row.unofficialCurrencyCode = security.unofficialCurrencyCode
+    }
+
+    private func ensurePendingTreatments(for accounts: [PlaidInvestmentAccount]) {
+        let existing = (try? mainContext.fetch(FetchDescriptor<DurablePlaidAccountTreatment>())) ?? []
+        let existingIDs = Set(existing.map(\.plaidAccountId))
+        for account in accounts where !existingIDs.contains(account.id) {
+            mainContext.insert(DurablePlaidAccountTreatment(plaidAccountId: account.id))
+        }
+    }
+
+    private func message(for error: PlaidClientError) -> String {
+        switch error {
+        case .missingConfiguration:
+            return "Plaid backend setup is incomplete."
+        case .unauthorized:
+            return "The Plaid backend token was rejected."
+        case .invalidResponse:
+            return "The investment service returned an error."
+        case .decoding:
+            return "The investment response could not be read."
+        case .transport:
+            return "The investment service could not be reached."
+        case .cancelled:
+            return ""
+        }
+    }
+}

@@ -38,6 +38,7 @@
 		96C93BE57140EAAA73D0A9F2 /* NwMetricCapsule.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1494F096231BE331CA16038 /* NwMetricCapsule.swift */; };
 		9DBC96FBA2CA0EFA7C9987CC /* NwTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52297C05613F92A328100ACC /* NwTypography.swift */; };
 		A61516407D4F5591B96530C7 /* NetworthCore in Frameworks */ = {isa = PBXBuildFile; productRef = 90B6A5EFA590658111D459BC /* NetworthCore */; };
+		A8C204F21D7E40A900000001 /* LinkKit in Frameworks */ = {isa = PBXBuildFile; productRef = A8C204F21D7E40A900000003 /* LinkKit */; };
 		A807F6A4038F08B94D24CA02 /* NwSpacing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300932C2BAB1914688FD35B9 /* NwSpacing.swift */; };
 		B270E19D380583D0CEE0AFB1 /* NwButtonStyles.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0640132B868410EFCA27FBB /* NwButtonStyles.swift */; };
 		BF56FBD17B7F2C2013E565D5 /* SyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E43EE440948B853BE872B43 /* SyncCoordinator.swift */; };
@@ -131,6 +132,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A8C204F21D7E40A900000001 /* LinkKit in Frameworks */,
 				A61516407D4F5591B96530C7 /* NetworthCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -362,6 +364,7 @@
 			name = Networth;
 			packageProductDependencies = (
 				90B6A5EFA590658111D459BC /* NetworthCore */,
+				A8C204F21D7E40A900000003 /* LinkKit */,
 			);
 			productName = Networth;
 			productReference = 00DEA1EA6C6514069921CC1B /* Networth.app */;
@@ -392,6 +395,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				7B1CF522A355BAB75CE5055A /* XCLocalSwiftPackageReference "NetworthCore" */,
+				A8C204F21D7E40A900000002 /* XCRemoteSwiftPackageReference "plaid-link-ios-spm" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2FCC4CBC6D57B617EA08C6DE /* Products */;
@@ -747,10 +751,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		A8C204F21D7E40A900000002 /* XCRemoteSwiftPackageReference "plaid-link-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/plaid/plaid-link-ios-spm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.0.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		90B6A5EFA590658111D459BC /* NetworthCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = NetworthCore;
+		};
+		A8C204F21D7E40A900000003 /* LinkKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A8C204F21D7E40A900000002 /* XCRemoteSwiftPackageReference "plaid-link-ios-spm" */;
+			productName = LinkKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

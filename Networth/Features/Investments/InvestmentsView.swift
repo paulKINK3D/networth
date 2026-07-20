@@ -33,11 +33,13 @@ private struct InvestmentAllocation: Identifiable {
 private enum InvestmentHolding: Identifiable {
     case ynab(CachedAccount)
     case manual(DurableManualAsset)
+    case plaid(CachedPlaidAccount)
 
     var id: String {
         switch self {
         case .ynab(let account): return "ynab:\(account.id)"
         case .manual(let asset): return "manual:\(asset.id.uuidString)"
+        case .plaid(let account): return "plaid:\(account.id)"
         }
     }
 
@@ -45,6 +47,7 @@ private enum InvestmentHolding: Identifiable {
         switch self {
         case .ynab(let account): return account.name
         case .manual(let asset): return asset.name.isEmpty ? "Untitled Asset" : asset.name
+        case .plaid(let account): return account.name
         }
     }
 
@@ -52,6 +55,9 @@ private enum InvestmentHolding: Identifiable {
         switch self {
         case .ynab: return "YNAB Investment"
         case .manual(let asset): return asset.kind.displayName
+        case .plaid(let account):
+            return account.mask.map { "\(account.institutionName) •••• \($0)" }
+                ?? account.institutionName
         }
     }
 
@@ -65,6 +71,8 @@ private enum InvestmentHolding: Identifiable {
             case .crypto: return .crypto
             default: return .otherAsset
             }
+        case .plaid:
+            return .brokerage
         }
     }
 
@@ -72,6 +80,7 @@ private enum InvestmentHolding: Identifiable {
         switch self {
         case .ynab(let account): return account.balance
         case .manual(let asset): return asset.currentValue
+        case .plaid(let account): return account.currentBalance ?? .zero
         }
     }
 }
@@ -84,9 +93,13 @@ struct InvestmentsView: View {
     @Query(sort: \CachedTransaction.date) private var transactions: [CachedTransaction]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
     @Query private var userSettings: [DurableUserSettings]
+    @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
+    @Query private var plaidItems: [CachedPlaidItem]
+    @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
 
     @State private var range: InvestmentRange = .oneYear
     @State private var scrubbedDate: Date?
+    @State private var showingPlaidReview = false
 
     private static let investmentManualKinds: Set<ManualAssetKind> = [
         .brokerage, .retirement, .crypto
@@ -107,12 +120,15 @@ struct InvestmentsView: View {
     }
 
     private var totalValue: Money {
-        ynabInvestments.map(\.balance).sum() + manualInvestments.map(\.currentValue).sum()
+        ynabInvestments.map(\.balance).sum()
+            + manualInvestments.map(\.currentValue).sum()
+            + includedPlaidAccounts.compactMap(\.currentBalance).sum()
     }
 
     private var holdings: [InvestmentHolding] {
         let values = ynabInvestments.map(InvestmentHolding.ynab)
             + manualInvestments.map(InvestmentHolding.manual)
+            + includedPlaidAccounts.map(InvestmentHolding.plaid)
         return values.sorted {
             if $0.value != $1.value { return $0.value > $1.value }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -126,6 +142,24 @@ struct InvestmentsView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                    if pendingPlaidReviewCount > 0 {
+                        NwBanner(
+                            "Review connected accounts",
+                            message: "Choose which balances are separate before they count.",
+                            tone: .caution,
+                            actionTitle: "Review",
+                            action: { showingPlaidReview = true }
+                        )
+                    } else if case .error(let message) = container.plaidSyncCoordinator.phase {
+                        NwBanner(
+                            "Investment sync issue",
+                            message: message,
+                            tone: .caution,
+                            actionTitle: "Retry",
+                            action: { Task { await container.syncPlaidInvestments() } }
+                        )
+                    }
+
                     if isEmpty {
                         NwEmptyState(
                             title: "No investments yet",
@@ -145,6 +179,9 @@ struct InvestmentsView: View {
             }
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Investments")
+            .sheet(isPresented: $showingPlaidReview) {
+                PlaidAccountReviewSheet().environment(container)
+            }
         }
     }
 
@@ -342,6 +379,8 @@ struct InvestmentsView: View {
         case .manual(let asset):
             ManualAssetDetailView(asset: asset)
                 .environment(container)
+        case .plaid(let account):
+            PlaidInvestmentAccountDetailView(account: account)
         }
     }
 
@@ -354,6 +393,16 @@ struct InvestmentsView: View {
                 title: "YNAB Investments",
                 icon: .investment,
                 amount: ynabTotal
+            ))
+        }
+
+        let plaidTotal = includedPlaidAccounts.compactMap(\.currentBalance).sum()
+        if !plaidTotal.isZero {
+            result.append(InvestmentAllocation(
+                id: "plaid",
+                title: "Connected Investments",
+                icon: .brokerage,
+                amount: plaidTotal
             ))
         }
 
@@ -447,10 +496,29 @@ struct InvestmentsView: View {
 
     private var lastUpdatedText: String {
         var dates = ynabInvestments.map(\.updatedAt) + manualInvestments.map(\.lastUpdatedAt)
+        dates += plaidItems.compactMap(\.lastSyncedAt)
         if let syncDate = userSettings.first?.lastSyncedAt {
             dates.append(syncDate)
         }
         return dates.max()?.formatted(.relative(presentation: .named)) ?? "never"
+    }
+
+    private var includedPlaidAccounts: [CachedPlaidAccount] {
+        plaidAccounts.filter { account in
+            plaidTreatment(for: account.id) == .included
+                && account.unofficialCurrencyCode == nil
+                && account.isoCurrencyCode?.uppercased() == "USD"
+                && account.currentBalance != nil
+        }
+    }
+
+    private var pendingPlaidReviewCount: Int {
+        plaidAccounts.filter { plaidTreatment(for: $0.id) == .pendingReview }.count
+    }
+
+    private func plaidTreatment(for accountID: String) -> PlaidAccountTreatment {
+        plaidTreatments.last(where: { $0.plaidAccountId == accountID })?.treatment
+            ?? .pendingReview
     }
 }
 
@@ -621,5 +689,128 @@ private struct InvestmentAccountDetailView: View {
             return nil
         }
         return account.balance - prior.value
+    }
+}
+
+private struct PlaidInvestmentAccountDetailView: View {
+    let account: CachedPlaidAccount
+    @Query private var holdings: [CachedPlaidHolding]
+    @Query private var securities: [CachedPlaidSecurity]
+    @Query private var items: [CachedPlaidItem]
+
+    init(account: CachedPlaidAccount) {
+        self.account = account
+        let accountID = account.id
+        _holdings = Query(
+            filter: #Predicate<CachedPlaidHolding> { $0.accountId == accountID },
+            sort: [SortDescriptor(\.institutionValueMilliunits, order: .reverse)]
+        )
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                NwCard(style: .primary) {
+                    VStack(alignment: .leading, spacing: NwSpacing.md) {
+                        Text("BALANCE")
+                            .font(NwTypography.caption)
+                            .foregroundStyle(.secondary)
+                        NwAmountText(account.currentBalance ?? .zero, variant: .large)
+                        HStack(spacing: NwSpacing.xl) {
+                            balanceMetric("Holdings", holdingsTotal)
+                            if !reconciliationDifference.isZero {
+                                balanceMetric("Other", reconciliationDifference)
+                            }
+                        }
+                        if let updated = items.first(where: { $0.id == account.itemId })?.lastSyncedAt {
+                            Text("Updated \(updated.formatted(.relative(presentation: .named)))")
+                                .font(NwTypography.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if !holdings.isEmpty {
+                    VStack(alignment: .leading, spacing: NwSpacing.md) {
+                        Text("Holdings")
+                            .font(NwTypography.titleSmall)
+                        NwCard(style: .primary, padding: 0) {
+                            VStack(spacing: 0) {
+                                ForEach(Array(holdings.enumerated()), id: \.element.id) { index, holding in
+                                    holdingRow(holding)
+                                    if index < holdings.count - 1 {
+                                        Divider().padding(.leading, NwSpacing.md)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, NwSpacing.screenPadding)
+            .padding(.vertical, NwSpacing.lg)
+        }
+        .background(NwAppColors.background.ignoresSafeArea())
+        .navigationTitle(account.name)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var securityByID: [String: CachedPlaidSecurity] {
+        Dictionary(uniqueKeysWithValues: securities.map { ($0.id, $0) })
+    }
+
+    private var holdingsTotal: Money {
+        holdings.map(\.institutionValue).sum()
+    }
+
+    private var reconciliationDifference: Money {
+        (account.currentBalance ?? .zero) - holdingsTotal
+    }
+
+    private func balanceMetric(_ title: String, _ value: Money) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased())
+                .font(NwTypography.caption)
+                .foregroundStyle(.secondary)
+            NwAmountText(value, variant: .body, showCents: false)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func holdingRow(_ holding: CachedPlaidHolding) -> some View {
+        let security = securityByID[holding.securityId]
+        return HStack(alignment: .firstTextBaseline, spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(security?.name ?? security?.tickerSymbol ?? "Holding")
+                    .font(NwTypography.bodyEmphasis)
+                Text(holdingSubtitle(holding, security: security))
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                NwAmountText(holding.institutionValue, variant: .body, showCents: false)
+                if let costBasis = holding.costBasisMilliunits.map(Money.init(milliunits:)) {
+                    Text("Cost \(CurrencyFormatter.compact(costBasis))")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(NwSpacing.md)
+    }
+
+    private func holdingSubtitle(
+        _ holding: CachedPlaidHolding,
+        security: CachedPlaidSecurity?
+    ) -> String {
+        var values: [String] = []
+        if let ticker = security?.tickerSymbol, !ticker.isEmpty {
+            values.append(ticker)
+        }
+        if let quantity = holding.quantity {
+            values.append("\(NSDecimalNumber(decimal: quantity).stringValue) shares")
+        }
+        return values.isEmpty ? "Position" : values.joined(separator: " · ")
     }
 }

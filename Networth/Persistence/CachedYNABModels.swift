@@ -217,3 +217,138 @@ public final class SyncCursor {
         self.updatedAt = updatedAt
     }
 }
+
+// MARK: - Plaid investment cache
+
+/// Disposable Plaid rows. The private backend remains authoritative and no
+/// Item access token is ever persisted in the app.
+@Model
+public final class CachedPlaidItem {
+    @Attribute(.unique) public var id: String
+    public var institutionName: String
+    public var status: String
+    public var lastSyncedAt: Date?
+
+    public init(
+        id: String,
+        institutionName: String,
+        status: String,
+        lastSyncedAt: Date? = nil
+    ) {
+        self.id = id
+        self.institutionName = institutionName
+        self.status = status
+        self.lastSyncedAt = lastSyncedAt
+    }
+}
+
+@Model
+public final class CachedPlaidAccount {
+    @Attribute(.unique) public var id: String
+    public var itemId: String
+    public var institutionName: String
+    public var name: String
+    public var officialName: String?
+    public var mask: String?
+    public var subtype: String?
+    public var currentBalanceMilliunits: Int64?
+    public var availableBalanceMilliunits: Int64?
+    public var isoCurrencyCode: String?
+    public var unofficialCurrencyCode: String?
+
+    public init(
+        id: String,
+        itemId: String,
+        institutionName: String,
+        name: String,
+        officialName: String? = nil,
+        mask: String? = nil,
+        subtype: String? = nil,
+        currentBalanceMilliunits: Int64? = nil,
+        availableBalanceMilliunits: Int64? = nil,
+        isoCurrencyCode: String? = nil,
+        unofficialCurrencyCode: String? = nil
+    ) {
+        self.id = id
+        self.itemId = itemId
+        self.institutionName = institutionName
+        self.name = name
+        self.officialName = officialName
+        self.mask = mask
+        self.subtype = subtype
+        self.currentBalanceMilliunits = currentBalanceMilliunits
+        self.availableBalanceMilliunits = availableBalanceMilliunits
+        self.isoCurrencyCode = isoCurrencyCode
+        self.unofficialCurrencyCode = unofficialCurrencyCode
+    }
+
+    public var currentBalance: Money? {
+        currentBalanceMilliunits.map(Money.init(milliunits:))
+    }
+}
+
+@Model
+public final class CachedPlaidSecurity {
+    @Attribute(.unique) public var id: String
+    public var name: String?
+    public var tickerSymbol: String?
+    public var typeRaw: String?
+    public var closePriceMilliunits: Int64?
+    public var closePriceAsOf: Date?
+    public var isoCurrencyCode: String?
+    public var unofficialCurrencyCode: String?
+
+    public init(
+        id: String,
+        name: String? = nil,
+        tickerSymbol: String? = nil,
+        typeRaw: String? = nil,
+        closePriceMilliunits: Int64? = nil,
+        closePriceAsOf: Date? = nil,
+        isoCurrencyCode: String? = nil,
+        unofficialCurrencyCode: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.tickerSymbol = tickerSymbol
+        self.typeRaw = typeRaw
+        self.closePriceMilliunits = closePriceMilliunits
+        self.closePriceAsOf = closePriceAsOf
+        self.isoCurrencyCode = isoCurrencyCode
+        self.unofficialCurrencyCode = unofficialCurrencyCode
+    }
+}
+
+@Model
+public final class CachedPlaidHolding {
+    @Attribute(.unique) public var id: String
+    public var accountId: String
+    public var securityId: String
+    /// Decimal is serialized as text to preserve quantity precision across
+    /// SwiftData implementations without converting through Double.
+    public var quantityDecimalString: String
+    public var institutionValueMilliunits: Int64
+    public var costBasisMilliunits: Int64?
+    public var asOf: Date?
+
+    public init(
+        id: String,
+        accountId: String,
+        securityId: String,
+        quantityDecimalString: String,
+        institutionValueMilliunits: Int64,
+        costBasisMilliunits: Int64? = nil,
+        asOf: Date? = nil
+    ) {
+        self.id = id
+        self.accountId = accountId
+        self.securityId = securityId
+        self.quantityDecimalString = quantityDecimalString
+        self.institutionValueMilliunits = institutionValueMilliunits
+        self.costBasisMilliunits = costBasisMilliunits
+        self.asOf = asOf
+    }
+
+    public var quantity: Decimal? { Decimal(string: quantityDecimalString) }
+    public var institutionValue: Money { Money(milliunits: institutionValueMilliunits) }
+}

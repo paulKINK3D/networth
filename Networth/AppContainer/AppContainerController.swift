@@ -12,16 +12,20 @@ public final class AppContainerController {
     public let secretStore: any SecretStore
     public let biometricGate: any BiometricGate
     public let ynabClient: any YNABClient
+    public let plaidClient: any PlaidClient
     public let modelContainer: ModelContainer
     public let connectivity: ConnectivityMonitor
     public let snapshotScheduler: SnapshotScheduler
     public let syncCoordinator: SyncCoordinator
+    public let plaidSyncCoordinator: PlaidSyncCoordinator
     public let ibrLoanStore: any IBRLoanStore
     public let ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore
 
     public var unlocked: Bool = false
     public var bootstrapped: Bool = false
     public var hasYNABToken: Bool = false
+    public var hasPlaidBackendToken: Bool = false
+    public private(set) var plaidBackendBaseURL: URL?
     public var selectedBudgetId: String?
     public var lastPersistenceError: PersistenceFailure?
     public private(set) var linkedIBRLoanDocument: SharedIBRLoanDocument?
@@ -33,6 +37,7 @@ public final class AppContainerController {
         secretStore: any SecretStore,
         biometricGate: any BiometricGate,
         ynabClient: any YNABClient,
+        plaidClient: any PlaidClient = RecordedPlaidClient(),
         modelContainer: ModelContainer,
         ibrLoanStore: any IBRLoanStore = AppGroupIBRLoanStore(),
         ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore = InMemoryIBRLoanHistorySettingsStore()
@@ -40,6 +45,7 @@ public final class AppContainerController {
         self.secretStore = secretStore
         self.biometricGate = biometricGate
         self.ynabClient = ynabClient
+        self.plaidClient = plaidClient
         self.modelContainer = modelContainer
         self.ibrLoanStore = ibrLoanStore
         self.ibrLoanHistorySettingsStore = ibrLoanHistorySettingsStore
@@ -48,6 +54,7 @@ public final class AppContainerController {
         let ctx = modelContainer.mainContext
         self.snapshotScheduler = SnapshotScheduler(mainContext: ctx)
         self.syncCoordinator = SyncCoordinator(client: ynabClient, mainContext: ctx)
+        self.plaidSyncCoordinator = PlaidSyncCoordinator(client: plaidClient, mainContext: ctx)
 
         observePersistenceFailures()
     }
@@ -57,14 +64,27 @@ public final class AppContainerController {
     /// flips `bootstrapped = true` so ContentView can render the right state.
     public func bootstrap() async {
         refreshLinkedIBRLoan()
-        let token: String?
-        do { token = try secretStore.load(.ynabPersonalAccessToken) }
+        let ynabToken: String?
+        do { ynabToken = try secretStore.load(.ynabPersonalAccessToken) }
         catch {
-            logger.error("secret load failed: \(error.localizedDescription, privacy: .public)")
-            token = nil
+            logger.error("YNAB secret load failed: \(error.localizedDescription, privacy: .public)")
+            ynabToken = nil
         }
-        await ynabClient.setToken(token)
-        hasYNABToken = (token?.isEmpty == false)
+        await ynabClient.setToken(ynabToken)
+        hasYNABToken = (ynabToken?.isEmpty == false)
+
+        let plaidToken: String?
+        do { plaidToken = try secretStore.load(.plaidBackendBearerToken) }
+        catch {
+            logger.error("Plaid backend secret load failed: \(error.localizedDescription, privacy: .public)")
+            plaidToken = nil
+        }
+        plaidBackendBaseURL = Self.configuredPlaidBackendBaseURL
+        await plaidClient.configure(
+            baseURL: plaidBackendBaseURL,
+            bearerToken: plaidToken
+        )
+        hasPlaidBackendToken = (plaidToken?.isEmpty == false)
 
         let descriptor = FetchDescriptor<DurableUserSettings>()
         let ctx = modelContainer.mainContext
@@ -149,6 +169,45 @@ public final class AppContainerController {
         hasYNABToken = false
     }
 
+    public func savePlaidBackendToken(_ token: String) async throws {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        try secretStore.save(trimmed, for: .plaidBackendBearerToken)
+        await plaidClient.configure(
+            baseURL: plaidBackendBaseURL,
+            bearerToken: trimmed
+        )
+        hasPlaidBackendToken = !trimmed.isEmpty
+    }
+
+    public func clearPlaidBackendToken() async throws {
+        try secretStore.delete(.plaidBackendBearerToken)
+        await plaidClient.configure(baseURL: plaidBackendBaseURL, bearerToken: nil)
+        hasPlaidBackendToken = false
+    }
+
+    public func syncPlaidInvestments() async {
+        guard hasPlaidBackendToken, plaidBackendBaseURL != nil else { return }
+        await plaidSyncCoordinator.syncAll()
+    }
+
+    public func createPlaidLinkToken() async throws -> String {
+        try await plaidClient.createLinkToken().linkToken
+    }
+
+    @discardableResult
+    public func completePlaidLink(publicToken: String) async throws -> PlaidItemDTO {
+        let result = try await plaidClient.exchangePublicToken(publicToken)
+        await plaidSyncCoordinator.syncAll()
+        recordDailySnapshot()
+        return result.item
+    }
+
+    public func removePlaidItem(id: String) async throws {
+        try await plaidClient.removeItem(id: id)
+        await plaidSyncCoordinator.syncAll()
+        recordDailySnapshot()
+    }
+
     public func recordDailySnapshot() {
         snapshotScheduler.recordIfNeeded()
     }
@@ -216,6 +275,9 @@ public final class AppContainerController {
 
     public func syncNow() async {
         await syncCoordinator.syncAll(budgetId: selectedBudgetId)
+        if hasPlaidBackendToken, plaidBackendBaseURL != nil {
+            await plaidSyncCoordinator.syncAll()
+        }
         recordDailySnapshot()
         let descriptor = FetchDescriptor<DurableUserSettings>()
         if let settings = try? modelContainer.mainContext.fetch(descriptor).first {
@@ -294,16 +356,27 @@ public final class AppContainerController {
 
     // MARK: - Factories
 
+    private static var configuredPlaidBackendBaseURL: URL? {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "PlaidBackendBaseURL") as? String else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(string: trimmed)
+    }
+
     /// Production wiring.
     public static func makeProduction() throws -> AppContainerController {
         let secretStore = KeychainSecretStore()
         let biometric = LocalAuthBiometricGate()
         let client = LiveYNABClient()
+        let plaidClient = LivePlaidClient()
         let container = try ModelContainerFactory.makeContainer()
         return AppContainerController(
             secretStore: secretStore,
             biometricGate: biometric,
             ynabClient: client,
+            plaidClient: plaidClient,
             modelContainer: container,
             ibrLoanStore: AppGroupIBRLoanStore(),
             ibrLoanHistorySettingsStore: UserDefaultsIBRLoanHistorySettingsStore()
@@ -317,6 +390,7 @@ public final class AppContainerController {
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(),
             ynabClient: RecordedYNABClient(),
+            plaidClient: RecordedPlaidClient(),
             modelContainer: container,
             ibrLoanStore: InMemoryIBRLoanStore(),
             ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore()

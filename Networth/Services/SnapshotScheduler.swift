@@ -285,6 +285,18 @@ public final class SnapshotScheduler {
         if let count = try? mainContext.fetchCount(manualDescriptor), count > 0 {
             return true
         }
+        let treatments = (try? mainContext.fetch(FetchDescriptor<DurablePlaidAccountTreatment>())) ?? []
+        let includedIDs = Set(treatments.compactMap {
+            $0.treatment == .included ? $0.plaidAccountId : nil
+        })
+        if !includedIDs.isEmpty {
+            let plaidAccounts = (try? mainContext.fetch(FetchDescriptor<CachedPlaidAccount>())) ?? []
+            if plaidAccounts.contains(where: {
+                includedIDs.contains($0.id) && plaidAccountCanContribute($0)
+            }) {
+                return true
+            }
+        }
         return false
     }
 
@@ -344,6 +356,20 @@ public final class SnapshotScheduler {
             }
         }
 
+        let treatments = (try? mainContext.fetch(FetchDescriptor<DurablePlaidAccountTreatment>())) ?? []
+        let includedIDs = Set(treatments.compactMap {
+            $0.treatment == .included ? $0.plaidAccountId : nil
+        })
+        if !includedIDs.isEmpty {
+            let plaidAccounts = (try? mainContext.fetch(FetchDescriptor<CachedPlaidAccount>())) ?? []
+            investments += plaidAccounts.compactMap { account in
+                guard includedIDs.contains(account.id), plaidAccountCanContribute(account) else {
+                    return nil
+                }
+                return account.currentBalance
+            }.sum()
+        }
+
         if let linkedIBRLoan {
             loans += linkedIBRLoan.totalBalance
         }
@@ -357,5 +383,11 @@ public final class SnapshotScheduler {
             loans: loans,
             otherLiabilities: otherLiabs
         )
+    }
+
+    private func plaidAccountCanContribute(_ account: CachedPlaidAccount) -> Bool {
+        account.unofficialCurrencyCode == nil
+            && account.isoCurrencyCode?.uppercased() == "USD"
+            && account.currentBalance != nil
     }
 }

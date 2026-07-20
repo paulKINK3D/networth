@@ -1,8 +1,11 @@
 # Plaid Integration — Plan
 
+The concrete iOS/backend JSON boundary is documented in
+[`PLAID_BACKEND_CONTRACT.md`](PLAID_BACKEND_CONTRACT.md).
+
 ## Context
 
-The Networth iOS app reads from YNAB via a Personal Access Token. YNAB does not expose per-security investment holdings, so the Investments tab today only summarizes account balances and manual entries.
+The Networth iOS app reads cash and transaction data from YNAB via a Personal Access Token. Its Investments tab already reports YNAB investment accounts and manual investments, but YNAB does not expose per-security holdings.
 
 Researched Monarch Money, Copilot Money, and Plaid as data sources to fill that gap:
 
@@ -10,9 +13,9 @@ Researched Monarch Money, Copilot Money, and Plaid as data sources to fill that 
 - **Copilot:** no public API; MCP beta is for AI agents, not iOS apps. Off the table.
 - **Plaid:** real, official, well-documented. Trial plan (April 2026) is free, returns real production data, 10 connected institutions, no KYB. Native iOS Link SDK. Requires a small backend to hold secrets and exchange tokens. Investment holdings exposed at the security level (ticker, CUSIP, cost basis, market value).
 
-**Decided direction:** add Plaid alongside YNAB, with a small Cloudflare Worker backend doing the secret-side work. YNAB stays as the primary source for everyday cash + transactions; Plaid drives the Investments tab and contributes its accounts to the net-worth total.
+**Decided direction:** add Plaid alongside YNAB, with a small private backend doing the secret-side work. YNAB remains authoritative for cash, transactions, scheduled activity, and projections. Plaid adds optional investment-account and holding detail.
 
-Current user-data assumption for the first pass: YNAB has no investment accounts, and existing manual assets do not include brokerage / retirement / crypto assets that Plaid would replace. Under that assumption Plaid investment balances can be added directly to net worth without reconciliation. If YNAB investment accounts or manual investment assets are added later, add a durable duplicate-prevention/mapping layer before counting both sources.
+Do not assume linked accounts are unique. A new Plaid account is cached and shown as needing review, but remains excluded from Net Worth until the user marks it as a new source or maps it as a duplicate of a YNAB account/manual asset. Plaid account balances reconcile the portfolio total; holdings explain the account composition and are never summed on top of that balance.
 
 ## Architecture
 
@@ -21,30 +24,28 @@ Networth iOS app  ──TLS──▶  Cloudflare Worker (Plaid proxy)
                                   │
                                   └──▶  Plaid API
                                         (token exchange, accounts, holdings,
-                                         investment txns, transactions/sync,
-                                         webhooks)
+                                         Item management)
 ```
 
-- iOS app holds: a per-user bearer token (random UUID) in Keychain for talking to the Worker. Never sees the Plaid `access_token`.
-- Worker holds: Plaid `client_id` + `secret` in environment, plus a per-user collection of linked Plaid Items keyed by the bearer token. Each Item stores its own `item_id`, `access_token`, institution metadata, product set, per-product cursors, sync timestamps, and optional removal/tombstone state.
+- iOS app holds: a pre-provisioned, high-entropy backend bearer token in Keychain. It never sees a Plaid `client_id`, `secret`, or Item `access_token`.
+- Worker holds: Plaid `client_id` + `secret` as Worker secrets and a single-user collection of linked Plaid Items in Workers KV. Each Item stores its `item_id`, institution metadata, sync state, and an access token encrypted with a separate AES-256-GCM key before persistence.
 
-## Backend (Cloudflare Worker, separate repo / project)
+The backend must validate the bearer token against a provisioned secret. It must not accept arbitrary client-generated UUIDs as authorization; doing so would expose billable Plaid endpoints to anyone who discovers the Worker URL.
 
-Built outside this repo. TypeScript, deployed via `wrangler`.
+## Backend (`PlaidWorker/`)
+
+Built as an independently deployed TypeScript package inside this repository.
 
 Endpoints:
 
-- `POST /plaid/link-token` — create a Link token for the iOS SDK.
-- `POST /plaid/exchange` — body `{ public_token }`, exchange + append/update the returned Item and `access_token` in KV.
-- `GET  /plaid/accounts` — return all accounts under the linked Items.
-- `GET  /plaid/investments/holdings` — holdings + securities for the linked Items.
-- `POST /plaid/transactions/sync` — forwards to Plaid `/transactions/sync` for each active Item with that Item's stored cursor; persists the new per-Item cursor.
-- `DELETE /plaid/items/:item_id` — calls Plaid `/item/remove`, removes/tombstones the stored `access_token`, and allows iOS to clear cached data for that Item.
-- `POST /plaid/webhook` — Plaid webhook receiver. No-op handler initially (logged only).
+- `POST /v1/plaid/link-token` — create a Link token for the iOS SDK.
+- `POST /v1/plaid/exchange` — body `{ publicToken }`, exchange + append/update the returned Item and `access_token` server-side.
+- `GET  /v1/plaid/items` — return linked Item metadata without access tokens.
+- `GET  /v1/plaid/investments/holdings` — return a complete normalized Item/account/security/holding snapshot.
+- `DELETE /v1/plaid/items/:item_id` — calls Plaid `/item/remove`, removes/tombstones the stored `access_token`, and allows iOS to clear cached data for that Item.
+Secrets: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_REDIRECT_URI`, `BACKEND_BEARER_TOKEN`, and `TOKEN_ENCRYPTION_KEY`. `PLAID_ENV` is a non-secret Worker variable and is `sandbox` initially.
 
-Secrets: `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_ENV=production` (or `sandbox` initially) set via `wrangler secret put`.
-
-Auth: every request from iOS includes `Authorization: Bearer <token>`. The Worker uses that token as the KV key under which Plaid Item records are stored. Tokens are minted by the iOS app on first launch and saved to Keychain (iCloud-synced like the YNAB PAT).
+Auth: every request from iOS includes `Authorization: Bearer <token>`. The token is generated outside the app, installed as a backend secret, and entered once into Networth's Keychain-backed settings. Even for this single-user app, the Worker rejects unknown tokens before calling Plaid.
 
 iOS Link setup: use a stable HTTPS domain for the Worker before production linking. Configure the Plaid Dashboard redirect URI, add the app Associated Domains entitlement (`applinks:<worker-domain>`), serve an Apple App Site Association file from `/.well-known/apple-app-site-association`, and pass the configured `redirect_uri` when creating Link tokens.
 
@@ -61,27 +62,27 @@ iOS Link setup: use a stable HTTPS domain for the Worker before production linki
   - `HoldingSummary { id, accountId, securityId, quantity, costBasis, institutionValue, asOf }`
 
 ### New cache models (`Networth/Persistence/CachedPlaidModels.swift`)
-- `CachedPlaidItem(id, institutionName, lastSyncedAt, cursor)`
+- `CachedPlaidItem(id, institutionName, status, lastSyncedAt)`
 - `CachedPlaidAccount(id, itemId, name, kindRaw, currentBalanceMU, availableBalanceMU)`
 - `CachedPlaidSecurity(id, ticker, cusip, isin, name, typeRaw, lastPriceMU, lastPriceAsOf)`
 - `CachedPlaidHolding(id, accountId, securityId, quantity, costBasisMU, institutionValueMU, asOf)`
 - Register all in `ModelContainerFactory` cache schema (local-only, no CloudKit).
 - Store `isoCurrencyCode` on Plaid account/holding/security rows where Plaid provides it. Parse Plaid monetary values as `Decimal`, convert major units to milliunits with a documented rounding rule, and do not use `Double` for persisted money conversion. First pass is USD-only for net-worth totals; cache but exclude non-USD/unofficial-currency rows and surface an unsupported-currency notice.
 
-### New service (`Networth/Services/PlaidClient.swift`)
-- Protocol `PlaidClient: Actor` with: `setBackendToken(_:)`, `createLinkToken()`, `exchangePublicToken(_:)`, `accounts()`, `holdings() -> ([CachedPlaidAccount-like], [CachedPlaidSecurity-like], [CachedPlaidHolding-like])`, `transactionsSync() -> SyncResult`, `rateLimit()`.
+### New service boundary
+- Protocol `PlaidClient: Actor` with: `configure(baseURL:bearerToken:)`, `createLinkToken()`, `exchangePublicToken(_:)`, `items()`, `holdings()`, and `removeItem(id:)`.
 - `LivePlaidClient` actor: talks to the Worker over `URLSession`, bearer-token auth. Same shape as `LiveYNABClient`.
 - `RecordedPlaidClient` actor fake for tests/previews.
 
 ### Sync (`Networth/Services/SyncCoordinator.swift`)
 - Keep one user-facing "Sync Now" affordance, but split YNAB and Plaid into independent sync paths/statuses so a Plaid institution/API failure does not poison a successful YNAB sync.
-- Plaid sync path: fetch accounts → fetch holdings → fetch investment transactions → upsert into the new cache models → save per-Item cursors.
+- Plaid sync path: fetch Items, accounts, securities, and holdings; upsert the local cache; remove rows no longer returned; save each successful source independently from YNAB.
 - Track separate phase/error/last-sync state for YNAB and Plaid. Save successful results from either source even if the other source fails.
 - Same `safeSave` + phase-reporting pattern as YNAB.
 
 ### Secret storage (`Networth/Services/SecretStore.swift`)
-- New key `.plaidBackendToken`. Mints UUID on first launch if absent. iCloud-synced like the YNAB PAT.
-- New key `.plaidBackendBaseURL` (defaults to the deployed Worker URL; configurable for sandbox testing).
+- New key `.plaidBackendBearerToken`. Entered once after being provisioned on the backend; iCloud-synced like the YNAB PAT.
+- The non-secret backend URL comes from the app target's `PlaidBackendBaseURL` Info.plist key.
 
 ### Settings (`Networth/Features/Settings/SettingsView.swift`)
 - New "Connect a Bank" section. Tap a button → open Plaid Link via the SDK (`LinkController`) using the link token from the backend → on success, send `public_token` to the backend → mark the new `CachedPlaidItem` as linked.
@@ -92,11 +93,10 @@ iOS Link setup: use a stable HTTPS domain for the Worker before production linki
   1. **Brokerage / Retirement** — Plaid holdings grouped by account, each row shows ticker + name + quantity + market value + day-change colored.
   2. **YNAB investment-type accounts** — future fallback only if any ever exist; current user data has none.
   3. **Manual** — existing manual assets of brokerage/retirement/crypto kinds.
-- Hero card total backed by Plaid `institutionValue` sums where available.
+- Each Plaid account row reconciles its account balance to the sum of holdings and reports residual cash/difference rather than hiding it. The hero uses included account balances, not a second sum of holdings.
 
 ### Net Worth tab
-- Net-worth calculation pulls Plaid account balances into the asset side (investment-type) in addition to YNAB cash + manual assets. Adjust `SnapshotScheduler.computeBreakdown()` to include Plaid balances.
-- For the first pass this relies on the explicit assumption that there are no YNAB investment accounts and no existing manual investment assets representing the same Plaid accounts. Revisit before adding YNAB/manual investment overlap.
+- Net-worth calculation pulls only user-confirmed, non-duplicate Plaid account balances into the asset side. Duplicate mappings remain visible in Investments but contribute zero incremental value.
 
 ### Tutorial
 - Add a step explaining that Plaid is optional and only needed for per-security investments.
@@ -107,38 +107,37 @@ iOS Link setup: use a stable HTTPS domain for the Worker before production linki
 
 ## Implementation Phasing
 
-1. **Phase 1 — Backend (~half day)**: scaffold the Worker, model multiple Items per bearer token, deploy to `sandbox`, smoke-test link-token + exchange against the Plaid sandbox.
-2. **Phase 2 — iOS scaffolding (~half day)**: add the SPM dep via Xcode, create the cache models + core models, register in `ModelContainerFactory`, stub `PlaidClient`.
-3. **Phase 3 — Link flow (~half day)**: configure redirect URI + Universal Links, implement Settings → Connect a Bank, run a live link against the Plaid sandbox institution `ins_109508`, confirm exchange persists an Item server-side.
-4. **Phase 4 — Holdings sync (~half day)**: fetch and persist accounts + holdings + securities, rewrite InvestmentsView.
-5. **Phase 5 — Unlink + transactions sync + webhook (~half day)**: working Item removal, investment transactions, and a webhook receiver.
-6. **Phase 6 — Production flip**: switch Worker env to `production`, link a real institution from the Trial plan.
+1. **Phase 1 — Backend foundation:** complete and deployed in Sandbox at `networth-plaid.bluelava.me`; authenticated Link/exchange/Items/holdings/unlink routes, encrypted KV persistence, AASA/OAuth routes, tests, and smoke checks pass.
+2. **Phase 2 — iOS scaffolding:** complete; core/cache models, reconciliation rules, backend client, independent sync path, Keychain token storage, and tests are implemented.
+3. **Phase 3 — Link flow:** complete and validated on-device with LinkKit 7.0.3, the registered custom-domain redirect, public-token exchange, and immediate holdings sync.
+4. **Phase 4 — Holdings reporting:** complete and validated on-device; a Sandbox account moved from Needs Review to Separate Account and its security-level holdings rendered in Investments.
+5. **Phase 5 — Reconciliation + unlink:** reconciliation is validated; unlink is implemented but still needs one on-device cleanup check. Webhooks and investment transactions remain later enhancements.
+6. **Phase 6 — Production flip:** after unlink verification, switch the Worker environment and secret to `production` deliberately, then use one Trial Production Item addition for a real institution.
 
-## Critical Files (will be modified or created)
+## Critical Files
 
 - `Networth/Services/YNABClient.swift` — reference pattern for `PlaidClient`.
-- `Networth/Services/PlaidClient.swift` — **new**.
+- `Networth/Services/YNABClient.swift` — currently hosts the Plaid backend boundary so the app target remains buildable without hand-editing the Xcode project; split it into `PlaidClient.swift` through Xcode when LinkKit is added.
 - `Networth/Services/SyncCoordinator.swift` — add independent Plaid sync path/status alongside YNAB.
-- `Networth/Services/SecretStore.swift` — add `.plaidBackendToken`, `.plaidBackendBaseURL`.
-- `Networth/Persistence/CachedYNABModels.swift` — reference pattern.
-- `Networth/Persistence/CachedPlaidModels.swift` — **new**.
-- `Networth/Persistence/ModelContainerFactory.swift` — register new models.
-- `NetworthCore/Sources/Models/Holding.swift` — **new**.
-- `Networth/Features/Investments/InvestmentsView.swift` — rewrite around holdings.
-- `Networth/Features/Settings/SettingsView.swift` — Connect a Bank section.
-- `Networth/Features/Tutorial/TutorialStep.swift` — extra step.
-- `Networth.xcodeproj` — add Plaid SPM package + `LinkKit` dependency via Xcode's package dialog.
+- `Networth/Services/SecretStore.swift` — `.plaidBackendBearerToken` Keychain key.
+- `Networth/Persistence/CachedYNABModels.swift` — currently hosts local Plaid cache models.
+- `Networth/Persistence/DurableModels.swift` — durable per-account treatment decisions.
+- `Networth/Persistence/ModelContainerFactory.swift` — registers Plaid cache and durable models.
+- `NetworthCore/Sources/Models/PlaidInvestments.swift` — normalized investment and reconciliation models.
+- `Networth/Features/Investments/InvestmentsView.swift` — combined portfolio and Plaid holding detail.
+- `Networth/Features/Settings/SettingsView.swift` — native Link and account-review flows.
+- `Networth.xcodeproj` — LinkKit 7.0.3 package dependency.
 
 ## Verification
 
 - **Backend smoke test**: `curl -X POST $WORKER/plaid/link-token -H 'Authorization: Bearer $TOK'` returns a valid `link_token`.
 - **Universal Links**: `https://<worker-domain>/.well-known/apple-app-site-association` serves the expected app association, and Plaid Link succeeds with the configured redirect URI.
-- **Link flow**: Settings → Connect a Bank → use Plaid sandbox creds (`user_good` / `pass_good`) → exchange returns a `CachedPlaidItem` row.
+- **Link flow — passed 2026-07-19**: Settings → Connect Investment Account → Sandbox phone/credentials → exchange produced a cached Item and account in Needs Review.
 - **Multi-Item**: link two sandbox institutions, confirm both Items persist independently and holdings/accounts from both render.
 - **Unlink**: unlink one Item, confirm Plaid `/item/remove` succeeds, server token is removed/tombstoned, and iOS cache rows for that Item disappear.
-- **Holdings**: Investments tab shows at least one holding from the sandbox institution with ticker + market value.
+- **Holdings — passed 2026-07-19**: after choosing Separate Account, Investments displayed holdings from the Sandbox institution.
 - **Currency conversion**: Decimal-to-milliunit conversion is covered by tests; non-USD/unofficial-currency rows do not enter net-worth totals.
-- **Transactions sync idempotency**: trigger sync twice in a row, confirm no duplicates and cursor advances.
+- **Sync idempotency**: trigger holdings sync twice in a row, confirm no duplicate Items/accounts/securities/holdings and stale rows are removed only after a successful complete response.
 - **Partial failure**: simulate Plaid failure after a successful YNAB response and confirm YNAB cache/last-sync still updates; simulate YNAB failure and confirm cached Plaid holdings still render.
 - **Off-network**: airplane mode → Investments tab still renders cached holdings.
 - **Net Worth**: confirm hero total reflects Plaid balances in addition to YNAB + manual.
@@ -147,5 +146,7 @@ iOS Link setup: use a stable HTTPS domain for the Worker before production linki
 ## Out of Scope (for this pass)
 
 - Liabilities, mortgages, student loans via Plaid (could come later).
+- Ordinary bank transactions and `/transactions/sync`; YNAB remains authoritative.
+- Investment transactions and performance attribution; holdings are the first release.
 - Push notifications from the webhook to the device.
 - Multi-user support — design assumes a single user (the developer themselves).
