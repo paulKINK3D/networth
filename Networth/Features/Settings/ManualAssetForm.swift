@@ -230,9 +230,10 @@ struct ManualAssetForm: View {
         amountText = String(describing: asset.currentValue.decimalValue)
         note = asset.notes ?? ""
         groupName = asset.groupName ?? ""
-        if let latest = asset.sortedValues.last {
-            recordedAt = latest.recordedAt
-        }
+        // A new balance edit should default to today. Reusing the latest
+        // entry's date made Update Total look like an edit of that historical
+        // point instead of a new valuation.
+        recordedAt = .now
     }
 
     private func selectAllOnFirstTap() {
@@ -279,27 +280,18 @@ struct ManualAssetForm: View {
         working.groupName = trimmedGroup.isEmpty ? nil : trimmedGroup
         working.lastUpdatedAt = .now
 
-        // Editing: update the existing latest value entry in-place. Creating
-        // a new entry on every Save would litter the History list with
-        // duplicates of the same current value. For genuinely adding a
-        // historical point or a transaction-style adjustment, the user goes
-        // through ManualAssetUpdateSheet from the Investments tab.
+        // Every changed balance is a new durable historical point. If the user
+        // only edits metadata while leaving today's value unchanged, avoid a
+        // duplicate entry.
         var insertedEntry: DurableManualAssetValue?
-        var editedEntry: DurableManualAssetValue?
-        var priorRecordedAt: Date = .now
-        var priorAmount: Int64 = 0
-        var priorNote: String? = nil
-        if !isNew, let latest = working.sortedValues.last {
-            priorRecordedAt = latest.recordedAt
-            priorAmount = latest.amountMilliunits
-            priorNote = latest.note
-            latest.recordedAt = recordedAt
-            latest.amountMilliunits = amount.milliunits
-            latest.note = note.isEmpty ? nil : note
-            editedEntry = latest
-        } else {
+        let latest = working.sortedValues.last
+        let unchangedSameDay = latest.map {
+            $0.amountMilliunits == amount.milliunits
+                && Calendar.current.isDate($0.recordedAt, inSameDayAs: recordedAt)
+        } ?? false
+        if isNew || !unchangedSameDay {
             let entry = DurableManualAssetValue(
-                recordedAt: recordedAt,
+                recordedAt: nextHistoryTimestamp(for: working),
                 amountMilliunits: amount.milliunits,
                 note: note.isEmpty ? nil : note,
                 asset: working
@@ -316,11 +308,6 @@ struct ManualAssetForm: View {
         let succeeded = ctx.safeSave(source: "manualAsset.save")
         guard succeeded else {
             if let inserted = insertedEntry { ctx.delete(inserted) }
-            if let edited = editedEntry {
-                edited.recordedAt = priorRecordedAt
-                edited.amountMilliunits = priorAmount
-                edited.note = priorNote
-            }
             if isNew {
                 ctx.delete(working)
             } else {
@@ -339,5 +326,17 @@ struct ManualAssetForm: View {
         // asset's new/changed value entry. Doesn't hit YNAB.
         Task { await container.rebuildChartHistory() }
         dismiss()
+    }
+
+    private func nextHistoryTimestamp(for asset: DurableManualAsset) -> Date {
+        let calendar = Calendar.current
+        let selectedDay = calendar.startOfDay(for: recordedAt)
+        let base = calendar.isDateInToday(recordedAt) ? Date.now : recordedAt
+        let latestOnSelectedDay = asset.sortedValues
+            .filter { calendar.startOfDay(for: $0.recordedAt) == selectedDay }
+            .map(\.recordedAt)
+            .max()
+        guard let latestOnSelectedDay, latestOnSelectedDay >= base else { return base }
+        return latestOnSelectedDay.addingTimeInterval(0.001)
     }
 }

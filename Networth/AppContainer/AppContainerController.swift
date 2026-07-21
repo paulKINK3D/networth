@@ -187,7 +187,10 @@ public final class AppContainerController {
 
     public func syncPlaidInvestments() async {
         guard hasPlaidBackendToken, plaidBackendBaseURL != nil else { return }
-        await plaidSyncCoordinator.syncAll()
+        if await plaidSyncCoordinator.syncAll() {
+            recordPlaidBalanceSnapshot()
+            recordDailySnapshot()
+        }
     }
 
     public func createPlaidLinkToken() async throws -> String {
@@ -197,15 +200,23 @@ public final class AppContainerController {
     @discardableResult
     public func completePlaidLink(publicToken: String) async throws -> PlaidItemDTO {
         let result = try await plaidClient.exchangePublicToken(publicToken)
-        await plaidSyncCoordinator.syncAll()
-        recordDailySnapshot()
+        if await plaidSyncCoordinator.syncAll() {
+            recordPlaidBalanceSnapshot()
+            recordDailySnapshot()
+        }
         return result.item
     }
 
     public func removePlaidItem(id: String) async throws {
         try await plaidClient.removeItem(id: id)
-        await plaidSyncCoordinator.syncAll()
-        recordDailySnapshot()
+        if await plaidSyncCoordinator.syncAll() {
+            recordPlaidBalanceSnapshot()
+            recordDailySnapshot()
+        }
+    }
+
+    public func recordPlaidBalanceSnapshot() {
+        snapshotScheduler.recordPlaidBalancesIfNeeded()
     }
 
     public func recordDailySnapshot() {
@@ -276,7 +287,9 @@ public final class AppContainerController {
     public func syncNow() async {
         await syncCoordinator.syncAll(budgetId: selectedBudgetId)
         if hasPlaidBackendToken, plaidBackendBaseURL != nil {
-            await plaidSyncCoordinator.syncAll()
+            if await plaidSyncCoordinator.syncAll() {
+                recordPlaidBalanceSnapshot()
+            }
         }
         recordDailySnapshot()
         let descriptor = FetchDescriptor<DurableUserSettings>()

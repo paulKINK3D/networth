@@ -6,6 +6,9 @@ struct AccountsView: View {
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
+    @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
+    @Query private var plaidItems: [CachedPlaidItem]
+    @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
 
     @State private var showingNewAsset = false
 
@@ -102,7 +105,7 @@ struct AccountsView: View {
                     container.linkedIBRLoanDocument == nil {
                     NwEmptyState(
                         title: "No accounts yet",
-                        message: "Add your YNAB token to import accounts, or add a manual asset in Settings.",
+                        message: "Connect YNAB or add an asset manually.",
                         icon: .accounts
                     )
                     .listRowBackground(Color.clear)
@@ -235,9 +238,15 @@ struct AccountsView: View {
         var id: String { title }
         let displayHeader: String?
         let assets: [DurableManualAsset]
-        var total: Money {
-            Money(milliunits: assets.reduce(Int64(0)) { $0 + $1.currentValueMilliunits })
-        }
+        let total: Money
+    }
+
+    private var plaidResolver: PlaidContributionResolver {
+        PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualAssets
+        )
     }
 
     private func manualGroups(from assets: [DurableManualAsset]) -> [ManualGroup] {
@@ -249,7 +258,8 @@ struct AccountsView: View {
             return ManualGroup(
                 title: key.isEmpty ? "" : key,
                 displayHeader: key.isEmpty ? nil : key,
-                assets: sorted
+                assets: sorted,
+                total: sorted.map { plaidResolver.effectiveValue(for: $0) }.sum()
             )
         }
         .sorted { lhs, rhs in
@@ -275,6 +285,12 @@ struct AccountsView: View {
             }
         }
         ForEach(group.assets) { asset in
+            let replacementAccounts = plaidResolver.replacementAccounts(for: asset)
+            let updatedAt = effectiveManualAssetUpdatedAt(
+                asset,
+                replacementAccounts: replacementAccounts,
+                plaidItems: plaidItems
+            )
             NavigationLink {
                 ManualAssetDetailView(asset: asset)
                     .environment(container)
@@ -284,14 +300,19 @@ struct AccountsView: View {
                         .foregroundStyle(NwAppColors.primary)
                         .frame(width: 28)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(asset.name.isEmpty ? "Untitled Asset" : asset.name)
-                            .font(NwTypography.body)
-                        Text("\(asset.kind.displayName), updated \(asset.lastUpdatedAt.formatted(.relative(presentation: .named)))")
+                        HStack(spacing: NwSpacing.xs) {
+                            Text(asset.name.isEmpty ? "Untitled Asset" : asset.name)
+                                .font(NwTypography.body)
+                            if !replacementAccounts.isEmpty {
+                                NwConnectionIndicator()
+                            }
+                        }
+                        Text("Updated \(updatedAt.formatted(.relative(presentation: .named)))")
                             .font(NwTypography.footnote)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    NwAmountText(asset.currentValue, variant: .body)
+                    NwAmountText(plaidResolver.effectiveValue(for: asset), variant: .body)
                 }
                     .padding(.leading, isGrouped ? NwSpacing.md : 0)
                     .contentShape(Rectangle())
@@ -300,7 +321,9 @@ struct AccountsView: View {
     }
 
     private var manualAssetTotal: Money {
-        manualAssets.filter { !$0.deleted }.map(\.currentValue).sum()
+        manualAssets.filter { !$0.deleted }
+            .map { plaidResolver.effectiveValue(for: $0) }
+            .sum()
     }
 
     private func manualIcon(for kind: ManualAssetKind) -> NwIcon {
@@ -610,7 +633,7 @@ private struct AccountDetailView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         let visible = allTransactions.prefix(40)
                         if visible.isEmpty {
-                            Text("No recent transactions in cache.")
+                            Text("No recent activity.")
                                 .foregroundStyle(.secondary)
                                 .padding(NwSpacing.md)
                         } else {
@@ -709,15 +732,20 @@ private struct AccountDetailView: View {
 
 struct ManualAssetDetailView: View {
     @Environment(AppContainerController.self) private var container
+    @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
+    @Query private var plaidItems: [CachedPlaidItem]
+    @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
+    @Query(sort: \DurablePlaidBalanceSnapshot.date) private var plaidBalanceSnapshots: [DurablePlaidBalanceSnapshot]
     let asset: DurableManualAsset
     @State private var showingUpdate = false
 
     private struct HistoryRow: Identifiable {
-        let id: UUID
+        let id: String
         let date: Date
         let value: Money
         let delta: Money?
         let note: String?
+        let connected: Bool
     }
 
     var body: some View {
@@ -725,23 +753,26 @@ struct ManualAssetDetailView: View {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
                 NwCard(style: .primary) {
                     VStack(alignment: .leading, spacing: NwSpacing.md) {
-                        Text(asset.kind.displayName)
-                            .font(NwTypography.caption)
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-                        NwAmountText(asset.currentValue, variant: .large)
-                        Text("Updated \(asset.lastUpdatedAt.formatted(.relative(presentation: .named)))")
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
+                        NwAmountText(effectiveValue, variant: .large)
+                        HStack(spacing: NwSpacing.xs) {
+                            if !replacementAccounts.isEmpty {
+                                NwConnectionIndicator()
+                            }
+                            Text("Updated \(updatedAt.formatted(.relative(presentation: .named)))")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
-                Button {
-                    showingUpdate = true
-                } label: {
-                    Label("Update Value", systemImage: NwIcon.edit.rawValue)
+                if replacementAccounts.isEmpty {
+                    Button {
+                        showingUpdate = true
+                    } label: {
+                        Label("Update Value", systemImage: NwIcon.edit.rawValue)
+                    }
+                    .buttonStyle(NwPrimaryButtonStyle())
                 }
-                .buttonStyle(NwPrimaryButtonStyle())
 
                 if !historyRows.isEmpty {
                     NwSectionHeader("Value History").padding(.horizontal, 0)
@@ -750,8 +781,13 @@ struct ManualAssetDetailView: View {
                             ForEach(historyRows) { entry in
                                 HStack(spacing: NwSpacing.md) {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(DateDisplay.shortDate(entry.date))
-                                            .font(NwTypography.body)
+                                        HStack(spacing: NwSpacing.xs) {
+                                            Text(DateDisplay.shortDate(entry.date))
+                                                .font(NwTypography.body)
+                                            if entry.connected {
+                                                NwConnectionIndicator()
+                                            }
+                                        }
                                         if let note = entry.note, !note.isEmpty {
                                             Text(note)
                                                 .font(NwTypography.footnote)
@@ -784,7 +820,7 @@ struct ManualAssetDetailView: View {
                 } else {
                     NwEmptyState(
                         title: "No value history",
-                        message: "Update this asset to record its first value.",
+                        message: "Add an update to start history.",
                         icon: .empty
                     )
                     .frame(minHeight: 180)
@@ -802,21 +838,59 @@ struct ManualAssetDetailView: View {
         }
     }
 
+    private var plaidResolver: PlaidContributionResolver {
+        PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: [asset]
+        )
+    }
+
+    private var replacementAccounts: [CachedPlaidAccount] {
+        plaidResolver.replacementAccounts(for: asset)
+    }
+
+    private var effectiveValue: Money {
+        plaidResolver.effectiveValue(for: asset)
+    }
+
+    private var updatedAt: Date {
+        effectiveManualAssetUpdatedAt(
+            asset,
+            replacementAccounts: replacementAccounts,
+            plaidItems: plaidItems
+        )
+    }
+
     private var historyRows: [HistoryRow] {
-        let sorted = asset.sortedValues
-        let rows = sorted.enumerated().map { index, entry in
-            let value = Money(milliunits: entry.amountMilliunits)
-            let prior = index > 0
-                ? Money(milliunits: sorted[index - 1].amountMilliunits)
-                : nil
+        let points = ManualAssetHistoryBuilder().build(
+            manualAsset: asset.toSnapshot(),
+            plaidSnapshots: plaidBalanceSnapshots.map { $0.toHistorySnapshot() }
+        )
+        let rows = points.enumerated().map { index, point in
+            let prior = index > 0 ? points[index - 1].value : nil
             return HistoryRow(
-                id: entry.id,
-                date: entry.recordedAt,
-                value: value,
-                delta: prior.map { value - $0 },
-                note: entry.note
+                id: "\(point.source)-\(point.date.timeIntervalSinceReferenceDate)-\(index)",
+                date: point.date,
+                value: point.value,
+                delta: prior.map { point.value - $0 },
+                note: point.note,
+                connected: point.source == .plaid
             )
         }
         return Array(rows.reversed())
     }
+}
+
+private func effectiveManualAssetUpdatedAt(
+    _ asset: DurableManualAsset,
+    replacementAccounts: [CachedPlaidAccount],
+    plaidItems: [CachedPlaidItem]
+) -> Date {
+    guard !replacementAccounts.isEmpty else { return asset.lastUpdatedAt }
+    let itemIDs = Set(replacementAccounts.map(\.itemId))
+    return plaidItems
+        .filter { itemIDs.contains($0.id) }
+        .compactMap(\.lastSyncedAt)
+        .max() ?? asset.lastUpdatedAt
 }

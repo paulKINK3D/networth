@@ -651,8 +651,9 @@ public final class PlaidSyncCoordinator {
         self.mainContext = mainContext
     }
 
-    public func syncAll() async {
-        guard phase != .syncing else { return }
+    @discardableResult
+    public func syncAll() async -> Bool {
+        guard phase != .syncing else { return false }
         phase = .syncing
         do {
             let snapshot = try await client.holdings().toSnapshot()
@@ -660,10 +661,11 @@ public final class PlaidSyncCoordinator {
             guard mainContext.safeSave(source: "plaidSync.cache") else {
                 mainContext.rollback()
                 phase = .error("Saving investment data failed. Retry in a moment.")
-                return
+                return false
             }
             lastSyncedAt = .now
             phase = .idle
+            return true
         } catch let error as PlaidClientError {
             mainContext.rollback()
             if error == .cancelled {
@@ -671,12 +673,15 @@ public final class PlaidSyncCoordinator {
             } else {
                 phase = .error(message(for: error))
             }
+            return false
         } catch is CancellationError {
             mainContext.rollback()
             phase = .idle
+            return false
         } catch {
             mainContext.rollback()
             phase = .error("Investment sync failed. Try again.")
+            return false
         }
     }
 

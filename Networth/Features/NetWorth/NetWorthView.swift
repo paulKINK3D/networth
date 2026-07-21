@@ -178,6 +178,14 @@ struct NetWorthView: View {
         )
     }
 
+    private var plaidResolver: PlaidContributionResolver {
+        PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualAssets
+        )
+    }
+
     private var heroCard: some View {
         let total = breakdown.netWorth
         let delta = monthDelta()
@@ -199,7 +207,7 @@ struct NetWorthView: View {
                     }
                     .foregroundStyle(delta.isNegative ? NwAppColors.liability : NwAppColors.positive)
                 } else {
-                    Text("A 30-day comparison will appear as history builds.")
+                    Text("More history needed for a 30-day change.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -282,7 +290,7 @@ struct NetWorthView: View {
                 .pickerStyle(.segmented)
 
                 if visible.count < 2 {
-                    Text("Waiting for enough history to draw the trend.")
+                    Text("More history needed.")
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                         .font(NwTypography.footnote)
@@ -475,23 +483,25 @@ struct NetWorthView: View {
         }
 
         let durableEntries = manualAssets
-            .filter { !$0.deleted && manualAsset($0, belongsTo: category) }
+            .filter {
+                !$0.deleted
+                    && manualAsset($0, belongsTo: category)
+            }
             .map { asset in
                 NetWorthEntry(
                     id: "manual:\(asset.id.uuidString)",
                     name: asset.name.isEmpty ? "Untitled Asset" : asset.name,
                     subtitle: asset.kind.displayName,
-                    amount: asset.currentValue,
+                    amount: plaidResolver.effectiveValue(for: asset),
                     updatedAt: asset.lastUpdatedAt
                 )
             }
 
         let plaidEntries: [NetWorthEntry]
         if category == .investments {
+            let contributingIDs = Set(plaidResolver.standalonePlaidAccounts.map(\.id))
             plaidEntries = plaidAccounts.compactMap { account in
-                guard plaidTreatment(for: account.id) == .included,
-                      account.unofficialCurrencyCode == nil,
-                      account.isoCurrencyCode?.uppercased() == "USD",
+                guard contributingIDs.contains(account.id),
                       let balance = account.currentBalance else {
                     return nil
                 }
@@ -523,11 +533,6 @@ struct NetWorthView: View {
             if lhs.amount != rhs.amount { return lhs.amount > rhs.amount }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
-    }
-
-    private func plaidTreatment(for accountID: String) -> PlaidAccountTreatment {
-        plaidTreatments.last(where: { $0.plaidAccountId == accountID })?.treatment
-            ?? .pendingReview
     }
 
     private func manualAsset(

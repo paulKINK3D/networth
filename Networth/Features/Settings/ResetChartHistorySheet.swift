@@ -25,8 +25,8 @@ struct ResetChartHistorySheet: View {
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
                 NwInlineNotice(
-                    "Start the trend chart from a fresh date",
-                    message: "Deletes older chart snapshots and rebuilds from the selected date. Accounts, assets, and settings stay intact.",
+                    "Choose a new start date",
+                    message: "Older snapshots are deleted. Accounts, assets, and settings stay intact.",
                     tone: .warning
                 )
 

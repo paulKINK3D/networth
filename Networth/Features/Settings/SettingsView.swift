@@ -33,6 +33,7 @@ struct SettingsView: View {
     @State private var showingPlaidConnection = false
     @State private var showingPlaidReview = false
     @State private var plaidItemToRemove: CachedPlaidItem?
+    @State private var plaidManagedManualAsset: DurableManualAsset?
     @State private var showingRemovePlaidConfirm = false
     @State private var plaidActionError: String?
 
@@ -82,8 +83,6 @@ struct SettingsView: View {
                     .disabled(!container.biometricGate.isAvailable || !(settings?.faceIDEnabled ?? false))
                 } header: {
                     Text("Authentication")
-                } footer: {
-                    Text("YNAB access is read-only. Re-lock after sets the background grace period.")
                 }
 
                 Section {
@@ -147,8 +146,6 @@ struct SettingsView: View {
                     .disabled(isSyncing)
                 } header: {
                     Text("Sync")
-                } footer: {
-                    Text("Full resync rebuilds chart data. Reset history changes the chart's start date.")
                 }
 
                 Section {
@@ -225,7 +222,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Investment Connections")
                 } footer: {
-                    Text("Plaid is read-only. Connected accounts do not count until reviewed.")
+                    Text("Read-only · Review before inclusion")
                 }
 
                 Section {
@@ -293,26 +290,43 @@ struct SettingsView: View {
                         Label("Add Manual Asset", systemImage: "plus")
                     }
                     ForEach(manualAssets.filter { !$0.deleted }) { asset in
+                        let replacementAccounts = plaidResolver.replacementAccounts(for: asset)
                         Button {
-                            showingAssetForm = asset
+                            if replacementAccounts.isEmpty {
+                                showingAssetForm = asset
+                            } else {
+                                plaidManagedManualAsset = asset
+                            }
                         } label: {
                             HStack {
                                 Label {
-                                    Text(asset.name.isEmpty ? "Untitled" : asset.name)
-                                        .foregroundStyle(NwAppColors.textPrimary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(asset.name.isEmpty ? "Untitled" : asset.name)
+                                            .foregroundStyle(NwAppColors.textPrimary)
+                                        if !replacementAccounts.isEmpty {
+                                            Text("Live from Plaid")
+                                                .font(NwTypography.footnote)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
                                 } icon: {
                                     icon(for: asset.kind).image.foregroundStyle(NwAppColors.accent)
                                 }
                                 Spacer()
-                                NwAmountText(asset.currentValue, variant: .body)
+                                NwAmountText(
+                                    plaidResolver.effectiveValue(for: asset),
+                                    variant: .body
+                                )
                             }
                         }
                         .swipeActions(allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                asset.deleted = true
-                                container.modelContainer.mainContext.safeSave(source: "settings.deleteAsset")
-                            } label: {
-                                Label("Delete", systemImage: "trash")
+                            if replacementAccounts.isEmpty {
+                                Button(role: .destructive) {
+                                    asset.deleted = true
+                                    container.modelContainer.mainContext.safeSave(source: "settings.deleteAsset")
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
                     }
@@ -342,7 +356,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Credit Card Statements")
                 } footer: {
-                    Text("Projections assumes full-statement autopay.")
+                    Text("Full-statement autopay assumed.")
                 }
 
                 Section {
@@ -403,7 +417,7 @@ struct SettingsView: View {
                     Task { await container.forceFullResync() }
                 }
             } message: {
-                Text("This deletes every daily net-worth snapshot from iCloud and rebuilds the chart from scratch by re-fetching YNAB. Manual assets and settings are preserved.")
+                Text("Deletes and rebuilds all chart snapshots from YNAB. Assets and settings stay intact.")
             }
             .alert("Remove Connection?", isPresented: $showingRemovePlaidConfirm, presenting: plaidItemToRemove) { item in
                 Button("Cancel", role: .cancel) {}
@@ -419,7 +433,19 @@ struct SettingsView: View {
                     }
                 }
             } message: { item in
-                Text("This disconnects \(item.institutionName) from Networth. It does not change the institution account.")
+                Text("Disconnects \(item.institutionName) from Networth only.")
+            }
+            .alert(
+                "Live Value Managed by Plaid",
+                isPresented: Binding(
+                    get: { plaidManagedManualAsset != nil },
+                    set: { if !$0 { plaidManagedManualAsset = nil } }
+                ),
+                presenting: plaidManagedManualAsset
+            ) { _ in
+                Button("OK") { plaidManagedManualAsset = nil }
+            } message: { asset in
+                Text("Plaid supplies the current value for \(asset.name.isEmpty ? "this asset" : asset.name). Change its match before editing or deleting; manual history stays intact.")
             }
         }
     }
@@ -427,6 +453,14 @@ struct SettingsView: View {
     private var isSyncing: Bool {
         if case .syncing = container.syncCoordinator.phase { return true }
         return false
+    }
+
+    private var plaidResolver: PlaidContributionResolver {
+        PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualAssets
+        )
     }
 
     private var syncPhaseLabel: String? {
@@ -559,7 +593,7 @@ private struct ProjectionCashAccountsSheet: View {
     var body: some View {
         NwModalLayout(title: "Cash Accounts", onClose: { dismiss() }) {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                Text("Select cash available for projections. On-budget accounts start included.")
+                Text("Choose cash available for projections.")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
                 if cashAccounts.isEmpty {
@@ -633,7 +667,7 @@ private struct MinimumCashBufferSheet: View {
                 if let saveError {
                     NwInlineNotice("Couldn't save", message: saveError, tone: .warning)
                 }
-                Text("Cash below this amount is marked tight.")
+                Text("Balances below this are marked tight.")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
                 TextField("500", text: $amountText)
@@ -701,7 +735,7 @@ private struct PlaidConnectionSheet: View {
                     } header: {
                         Text("Backend Access")
                     } footer: {
-                        Text("Paste the private token generated with the Networth backend.")
+                        Text("Your Networth backend token.")
                     }
                 }
 
@@ -895,6 +929,7 @@ struct PlaidAccountReviewSheet: View {
     @Query(sort: \CachedAccount.name) private var ynabAccounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
     @Query private var treatments: [DurablePlaidAccountTreatment]
+    @State private var matchRequest: PlaidMatchRequest?
 
     var body: some View {
         NavigationStack {
@@ -930,18 +965,9 @@ struct PlaidAccountReviewSheet: View {
                         }
 
                         if treatment(for: account).treatment == .duplicateYNAB {
-                            Picker("Matches", selection: duplicateSourceBinding(for: account)) {
-                                ForEach(eligibleYNABAccounts) { source in
-                                    Text(source.name).tag(source.id)
-                                }
-                            }
+                            matchSourceRow(for: account, sourceKind: .ynab)
                         } else if treatment(for: account).treatment == .duplicateManualAsset {
-                            Picker("Matches", selection: duplicateSourceBinding(for: account)) {
-                                ForEach(eligibleManualAssets) { source in
-                                    Text(source.name.isEmpty ? "Untitled Asset" : source.name)
-                                        .tag(source.id.uuidString)
-                                }
-                            }
+                            matchSourceRow(for: account, sourceKind: .manualAsset)
                         }
                     } header: {
                         Text(account.institutionName)
@@ -959,6 +985,21 @@ struct PlaidAccountReviewSheet: View {
                     .accessibilityLabel("Done")
                 }
             }
+            .sheet(item: $matchRequest) { request in
+                PlaidMatchSourceSheet(
+                    title: request.sourceKind.title,
+                    options: matchOptions(for: request.sourceKind),
+                    selectedSourceID: plaidAccounts
+                        .first(where: { $0.id == request.plaidAccountID })
+                        .flatMap { treatment(for: $0).duplicateSourceId },
+                    onSelect: { sourceID in
+                        guard let account = plaidAccounts.first(where: {
+                            $0.id == request.plaidAccountID
+                        }) else { return }
+                        setDuplicateSource(sourceID, for: account)
+                    }
+                )
+            }
         }
     }
 
@@ -967,9 +1008,7 @@ struct PlaidAccountReviewSheet: View {
     }
 
     private var eligibleManualAssets: [DurableManualAsset] {
-        manualAssets.filter {
-            !$0.deleted && [.brokerage, .retirement, .crypto].contains($0.kind)
-        }
+        manualAssets.filter { !$0.deleted }
     }
 
     private func treatment(for account: CachedPlaidAccount) -> DurablePlaidAccountTreatment {
@@ -984,23 +1023,27 @@ struct PlaidAccountReviewSheet: View {
         )
     }
 
-    private func duplicateSourceBinding(for account: CachedPlaidAccount) -> Binding<String> {
-        Binding(
-            get: {
-                treatment(for: account).duplicateSourceId
-                    ?? defaultSourceID(for: treatment(for: account).treatment)
-                    ?? ""
-            },
-            set: { setDuplicateSource($0, for: account) }
-        )
-    }
-
     private func setTreatment(_ value: PlaidAccountTreatment, for account: CachedPlaidAccount) {
         let row = persistedTreatment(for: account)
         row.treatment = value
-        row.duplicateSourceId = defaultSourceID(for: value)
+        row.duplicateSourceId = nil
         row.updatedAt = .now
         saveReviewChange(source: "settings.plaidTreatment")
+
+        switch value {
+        case .duplicateYNAB:
+            matchRequest = PlaidMatchRequest(
+                plaidAccountID: account.id,
+                sourceKind: .ynab
+            )
+        case .duplicateManualAsset:
+            matchRequest = PlaidMatchRequest(
+                plaidAccountID: account.id,
+                sourceKind: .manualAsset
+            )
+        case .pendingReview, .included, .excluded:
+            break
+        }
     }
 
     private func setDuplicateSource(_ sourceID: String, for account: CachedPlaidAccount) {
@@ -1019,20 +1062,10 @@ struct PlaidAccountReviewSheet: View {
         return row
     }
 
-    private func defaultSourceID(for treatment: PlaidAccountTreatment) -> String? {
-        switch treatment {
-        case .duplicateYNAB:
-            return eligibleYNABAccounts.first?.id
-        case .duplicateManualAsset:
-            return eligibleManualAssets.first?.id.uuidString
-        case .pendingReview, .included, .excluded:
-            return nil
-        }
-    }
-
     private func saveReviewChange(source: String) {
         let context = container.modelContainer.mainContext
         if context.safeSave(source: source) {
+            container.recordPlaidBalanceSnapshot()
             container.recordDailySnapshot()
         } else {
             context.rollback()
@@ -1057,6 +1090,150 @@ struct PlaidAccountReviewSheet: View {
             values.append("Unsupported balance")
         }
         return values.joined(separator: " · ")
+    }
+
+    private func matchOptions(for sourceKind: PlaidMatchSourceKind) -> [PlaidMatchOption] {
+        switch sourceKind {
+        case .ynab:
+            return eligibleYNABAccounts.map { source in
+                PlaidMatchOption(
+                    id: source.id,
+                    name: source.name,
+                    sourceDescription: source.onBudget
+                        ? "YNAB · Budget account"
+                        : "YNAB · Tracking account",
+                    balance: source.balance
+                )
+            }
+        case .manualAsset:
+            return eligibleManualAssets.map { source in
+                let group = source.groupName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let description = ["Manual Asset", source.kind.displayName, group]
+                    .compactMap { value in
+                        guard let value, !value.isEmpty else { return nil }
+                        return value
+                    }
+                    .joined(separator: " · ")
+                return PlaidMatchOption(
+                    id: source.id.uuidString,
+                    name: source.name.isEmpty ? "Untitled Asset" : source.name,
+                    sourceDescription: description,
+                    balance: source.currentValue
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func matchSourceRow(
+        for account: CachedPlaidAccount,
+        sourceKind: PlaidMatchSourceKind
+    ) -> some View {
+        let options = matchOptions(for: sourceKind)
+        let selected = options.first { $0.id == treatment(for: account).duplicateSourceId }
+
+        Button {
+            matchRequest = PlaidMatchRequest(
+                plaidAccountID: account.id,
+                sourceKind: sourceKind
+            )
+        } label: {
+            HStack(spacing: NwSpacing.md) {
+                Text("Matches")
+                    .foregroundStyle(NwAppColors.textPrimary)
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(selected?.name ?? "Select Account")
+                        .foregroundStyle(selected == nil ? NwAppColors.primary : .secondary)
+                    if let selected {
+                        Text(selected.sourceDescription)
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                NwIcon.chevron.image
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+    }
+}
+
+private enum PlaidMatchSourceKind: String {
+    case ynab
+    case manualAsset
+
+    var title: String {
+        switch self {
+        case .ynab: return "Match YNAB Account"
+        case .manualAsset: return "Match Manual Asset"
+        }
+    }
+}
+
+private struct PlaidMatchRequest: Identifiable {
+    let plaidAccountID: String
+    let sourceKind: PlaidMatchSourceKind
+
+    var id: String { "\(plaidAccountID):\(sourceKind.rawValue)" }
+}
+
+private struct PlaidMatchOption: Identifiable {
+    let id: String
+    let name: String
+    let sourceDescription: String
+    let balance: Money
+}
+
+private struct PlaidMatchSourceSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+
+    let title: String
+    let options: [PlaidMatchOption]
+    let selectedSourceID: String?
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List(options) { option in
+                Button {
+                    onSelect(option.id)
+                    dismiss()
+                } label: {
+                    HStack(spacing: NwSpacing.md) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.name)
+                                .font(NwTypography.bodyEmphasis)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                            Text(option.sourceDescription)
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        NwAmountText(option.balance, variant: .body, showCents: false)
+                        if option.id == selectedSourceID {
+                            NwIcon.confirm.image
+                                .foregroundStyle(NwAppColors.positive)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        NwIcon.close.image
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 

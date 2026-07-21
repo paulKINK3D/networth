@@ -239,6 +239,115 @@ public final class SnapshotScheduler {
         return snap
     }
 
+    /// Persists at most one Plaid observation per account for the current day.
+    /// Accounts that were previously contributing but no longer are receive an
+    /// inactive end marker. Earlier observations are never removed, so unlinking
+    /// an Item cannot erase the chart's historical values.
+    @discardableResult
+    public func recordPlaidBalancesIfNeeded(now referenceDate: Date = .now) -> Bool {
+        let day = calendar.startOfDay(for: referenceDate)
+
+        do {
+            let accounts = try mainContext.fetch(FetchDescriptor<CachedPlaidAccount>())
+            let treatments = try mainContext.fetch(
+                FetchDescriptor<DurablePlaidAccountTreatment>()
+            )
+            let manualAssets = try mainContext.fetch(FetchDescriptor<DurableManualAsset>())
+            let existing = try mainContext.fetch(
+                FetchDescriptor<DurablePlaidBalanceSnapshot>()
+            )
+            let resolver = PlaidContributionResolver(
+                plaidAccounts: accounts,
+                treatments: treatments,
+                manualAssets: manualAssets
+            )
+            let contributors = resolver.contributingPlaidAccounts
+            let activeAccountIDs = Set(contributors.map(\.id))
+
+            var rowsByAccountAndDay: [String: [DurablePlaidBalanceSnapshot]] = [:]
+            var latestByAccountID: [String: DurablePlaidBalanceSnapshot] = [:]
+            for row in existing {
+                if calendar.startOfDay(for: row.date) == day {
+                    rowsByAccountAndDay[row.plaidAccountId, default: []].append(row)
+                }
+                if let latest = latestByAccountID[row.plaidAccountId] {
+                    if row.date > latest.date
+                        || (row.date == latest.date && row.recordedAt > latest.recordedAt) {
+                        latestByAccountID[row.plaidAccountId] = row
+                    }
+                } else {
+                    latestByAccountID[row.plaidAccountId] = row
+                }
+            }
+
+            for account in contributors {
+                guard let balance = account.currentBalance else { continue }
+                let row = freshestRow(
+                    from: rowsByAccountAndDay[account.id] ?? [],
+                    deletingDuplicates: true
+                ) ?? {
+                    let inserted = DurablePlaidBalanceSnapshot(
+                        plaidAccountId: account.id,
+                        date: day
+                    )
+                    mainContext.insert(inserted)
+                    return inserted
+                }()
+                row.matchedManualAssetId = resolver.matchedManualAssetID(for: account)
+                row.date = day
+                row.balanceMilliunits = balance.milliunits
+                row.active = true
+                row.recordedAt = referenceDate
+            }
+
+            for (accountID, latest) in latestByAccountID
+            where !activeAccountIDs.contains(accountID) && latest.active {
+                let row = freshestRow(
+                    from: rowsByAccountAndDay[accountID] ?? [],
+                    deletingDuplicates: true
+                ) ?? {
+                    let inserted = DurablePlaidBalanceSnapshot(
+                        plaidAccountId: accountID,
+                        date: day
+                    )
+                    mainContext.insert(inserted)
+                    return inserted
+                }()
+                row.matchedManualAssetId = latest.matchedManualAssetId
+                row.date = day
+                row.balanceMilliunits = latest.balanceMilliunits
+                row.active = false
+                row.recordedAt = referenceDate
+            }
+
+            guard mainContext.safeSave(source: "snapshot.plaid.daily") else {
+                mainContext.rollback()
+                return false
+            }
+            return true
+        } catch {
+            logger.error("Plaid balance history could not be prepared: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    private func freshestRow(
+        from rows: [DurablePlaidBalanceSnapshot],
+        deletingDuplicates: Bool
+    ) -> DurablePlaidBalanceSnapshot? {
+        let sorted = rows.sorted { lhs, rhs in
+            if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt > rhs.recordedAt }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        guard let survivor = sorted.first else { return nil }
+        if deletingDuplicates {
+            for duplicate in sorted.dropFirst() {
+                mainContext.delete(duplicate)
+            }
+        }
+        return survivor
+    }
+
     /// Collapses multiple snapshots sharing the same start-of-day. Tiebreak:
     /// `.live` always wins over `.backfill` (live includes manual assets);
     /// then highest `createdAt` (freshest write); then lexically-lowest UUID
@@ -339,9 +448,22 @@ public final class SnapshotScheduler {
             predicate: #Predicate { $0.deleted == false }
         )
         let manual = (try? mainContext.fetch(manualDescriptor)) ?? []
+        let treatments = (try? mainContext.fetch(
+            FetchDescriptor<DurablePlaidAccountTreatment>()
+        )) ?? []
+        let plaidAccounts = (try? mainContext.fetch(
+            FetchDescriptor<CachedPlaidAccount>()
+        )) ?? []
+        let plaidResolver = PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: treatments,
+            manualAssets: manual
+        )
         var manualAssets = Money.zero
         for asset in manual {
-            let value = Money(milliunits: asset.currentValueMilliunits)
+            // A matched manual asset keeps its user-selected classification;
+            // Plaid supplies only the effective live value.
+            let value = plaidResolver.effectiveValue(for: asset)
             switch asset.kind {
             case .brokerage, .retirement, .crypto:
                 // Investment-style manual assets contribute to the Investments
@@ -356,19 +478,9 @@ public final class SnapshotScheduler {
             }
         }
 
-        let treatments = (try? mainContext.fetch(FetchDescriptor<DurablePlaidAccountTreatment>())) ?? []
-        let includedIDs = Set(treatments.compactMap {
-            $0.treatment == .included ? $0.plaidAccountId : nil
-        })
-        if !includedIDs.isEmpty {
-            let plaidAccounts = (try? mainContext.fetch(FetchDescriptor<CachedPlaidAccount>())) ?? []
-            investments += plaidAccounts.compactMap { account in
-                guard includedIDs.contains(account.id), plaidAccountCanContribute(account) else {
-                    return nil
-                }
-                return account.currentBalance
-            }.sum()
-        }
+        investments += plaidResolver.standalonePlaidAccounts
+            .compactMap(\.currentBalance)
+            .sum()
 
         if let linkedIBRLoan {
             loans += linkedIBRLoan.totalBalance

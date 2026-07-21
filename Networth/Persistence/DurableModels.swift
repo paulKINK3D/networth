@@ -332,3 +332,142 @@ public final class DurablePlaidAccountTreatment {
         set { treatmentRaw = newValue.rawValue }
     }
 }
+
+/// One durable, per-account Plaid balance observation for a calendar day.
+/// This is additive private-CloudKit data and is intentionally separate from
+/// the disposable Plaid cache. An inactive row ends the account's contribution
+/// without deleting its earlier history. Every stored property has a default
+/// for CloudKit schema compatibility.
+@Model
+public final class DurablePlaidBalanceSnapshot {
+    public var id: UUID = UUID()
+    public var plaidAccountId: String = ""
+    public var matchedManualAssetId: UUID? = nil
+    public var date: Date = Date.now
+    public var balanceMilliunits: Int64 = 0
+    public var active: Bool = true
+    public var recordedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        plaidAccountId: String = "",
+        matchedManualAssetId: UUID? = nil,
+        date: Date = .now,
+        balanceMilliunits: Int64 = 0,
+        active: Bool = true,
+        recordedAt: Date = .now
+    ) {
+        self.id = id
+        self.plaidAccountId = plaidAccountId
+        self.matchedManualAssetId = matchedManualAssetId
+        self.date = date
+        self.balanceMilliunits = balanceMilliunits
+        self.active = active
+        self.recordedAt = recordedAt
+    }
+
+    public var balance: Money { Money(milliunits: balanceMilliunits) }
+
+    public func toHistorySnapshot() -> InvestmentHistoryBuilder.PlaidBalanceSnapshot {
+        InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+            accountID: plaidAccountId,
+            matchedManualAssetID: matchedManualAssetId,
+            date: date,
+            balance: balance,
+            isActive: active,
+            recordedAt: recordedAt
+        )
+    }
+}
+
+/// Resolves which current investment balances come from Plaid without
+/// double-counting a matched manual asset. Manual model values remain intact;
+/// a valid match overlays them only while the Plaid cache has a supported
+/// current balance. Multiple Plaid accounts may replace one aggregate manual
+/// asset, in which case their balances are summed.
+struct PlaidContributionResolver {
+    let standalonePlaidAccounts: [CachedPlaidAccount]
+    private let replacementAccountsByManualAssetID: [UUID: [CachedPlaidAccount]]
+    private let matchedManualAssetIDByPlaidAccountID: [String: UUID]
+
+    init(
+        plaidAccounts: [CachedPlaidAccount],
+        treatments: [DurablePlaidAccountTreatment],
+        manualAssets: [DurableManualAsset]
+    ) {
+        var treatmentByAccountID: [String: DurablePlaidAccountTreatment] = [:]
+        for treatment in treatments {
+            treatmentByAccountID[treatment.plaidAccountId] = treatment
+        }
+
+        standalonePlaidAccounts = plaidAccounts.filter { account in
+            treatmentByAccountID[account.id]?.treatment == .included
+                && Self.canContribute(account)
+        }
+
+        // Reconciliation is about identity, not Plaid's account taxonomy.
+        // Some institutions expose cash-like accounts through Investments, so
+        // the matched manual asset remains authoritative for classification.
+        let eligibleManualIDs = Set(manualAssets.compactMap { asset in
+            asset.deleted ? nil : asset.id
+        })
+
+        var candidates: [UUID: [CachedPlaidAccount]] = [:]
+        for account in plaidAccounts {
+            guard let treatment = treatmentByAccountID[account.id],
+                  treatment.treatment == .duplicateManualAsset,
+                  let sourceID = treatment.duplicateSourceId,
+                  let manualAssetID = UUID(uuidString: sourceID),
+                  eligibleManualIDs.contains(manualAssetID) else {
+                continue
+            }
+            candidates[manualAssetID, default: []].append(account)
+        }
+
+        replacementAccountsByManualAssetID = candidates.filter { _, accounts in
+            !accounts.isEmpty && accounts.allSatisfy(Self.canContribute)
+        }
+        matchedManualAssetIDByPlaidAccountID = Dictionary(
+            uniqueKeysWithValues: replacementAccountsByManualAssetID.flatMap { manualID, accounts in
+                accounts.map { ($0.id, manualID) }
+            }
+        )
+    }
+
+    var contributingPlaidAccounts: [CachedPlaidAccount] {
+        standalonePlaidAccounts
+            + replacementAccountsByManualAssetID.values.flatMap { $0 }
+    }
+
+    var contributingPlaidAccountIDs: Set<String> {
+        Set(contributingPlaidAccounts.map(\.id))
+    }
+
+    func replacementAccounts(for asset: DurableManualAsset) -> [CachedPlaidAccount] {
+        replacementAccountsByManualAssetID[asset.id] ?? []
+    }
+
+    func matchedManualAssetID(for account: CachedPlaidAccount) -> UUID? {
+        matchedManualAssetIDByPlaidAccountID[account.id]
+    }
+
+    func replacementBalance(for asset: DurableManualAsset) -> Money? {
+        let accounts = replacementAccounts(for: asset)
+        guard !accounts.isEmpty else { return nil }
+        return accounts.compactMap(\.currentBalance).sum()
+    }
+
+    func effectiveValue(for asset: DurableManualAsset) -> Money {
+        replacementBalance(for: asset) ?? asset.currentValue
+    }
+
+    func isReplacing(_ asset: DurableManualAsset) -> Bool {
+        replacementAccountsByManualAssetID[asset.id] != nil
+    }
+
+    private static func canContribute(_ account: CachedPlaidAccount) -> Bool {
+        account.unofficialCurrencyCode == nil
+            && account.isoCurrencyCode?.uppercased() == "USD"
+            && account.currentBalance != nil
+    }
+}

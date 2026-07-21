@@ -38,7 +38,7 @@ struct ExcludedCategoriesSheet: View {
             onClose: { dismiss() }
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
-                Text("Tap categories to exclude them. Tap one-time transactions to restore them.")
+                Text("Tap to exclude. Restore one-time exclusions below.")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
 
@@ -86,7 +86,7 @@ struct ExcludedCategoriesSheet: View {
                 if grouped.isEmpty {
                     NwEmptyState(
                         title: "No categories yet",
-                        message: "Run Sync Now from Settings — categories arrive with your YNAB sync.",
+                        message: "Sync YNAB to load categories.",
                         icon: .empty
                     )
                 } else {

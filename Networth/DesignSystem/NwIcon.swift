@@ -43,12 +43,25 @@ public enum NwIcon: String, Sendable {
     case faceID       = "faceid"
     case keychain     = "key.fill"
     case cloud        = "icloud"
+    case connected    = "link.circle.fill"
     case chevron      = "chevron.right"
     case arrowUp      = "arrow.up.right"
     case arrowDown    = "arrow.down.right"
     case empty        = "tray"
 
     public var image: Image { Image(systemName: rawValue) }
+}
+
+/// Compact status mark for values maintained by a live external connection.
+public struct NwConnectionIndicator: View {
+    public init() {}
+
+    public var body: some View {
+        NwIcon.connected.image
+            .font(.caption)
+            .foregroundStyle(NwAppColors.positive)
+            .accessibilityLabel("Connected")
+    }
 }
 
 extension NwIcon {

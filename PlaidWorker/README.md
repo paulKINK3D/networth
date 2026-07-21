@@ -4,9 +4,9 @@ Private, single-user Cloudflare Worker for the optional Plaid Investments
 connection. It is part of the Networth repository but deploys independently
 from the iOS app.
 
-The Sandbox deployment is `networth-plaid-worker` in the personal BlueLava
-Cloudflare account. Its stable URL is `https://networth-plaid.bluelava.me`, and
-the registered OAuth redirect is
+The Production Trial deployment is `networth-plaid-worker` in the personal
+BlueLava Cloudflare account. Its stable URL is
+`https://networth-plaid.bluelava.me`, and the registered OAuth redirect is
 `https://networth-plaid.bluelava.me/plaid/oauth`.
 
 ## Security Boundary
@@ -57,6 +57,6 @@ npx wrangler secret put TOKEN_ENCRYPTION_KEY
 npx wrangler deploy
 ```
 
-Before switching to Production, update `PLAID_ENV` and the matching Plaid secret
-deliberately, redeploy, and verify the health, AASA, and Link-token routes before
-using one of the limited Production Item additions.
+The checked-in deployment targets Plaid Production. Keep `PLAID_SECRET` matched
+to that environment, and verify the health, AASA, and Link-token routes after
+each deployment before using one of the limited Trial Item additions.

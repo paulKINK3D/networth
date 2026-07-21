@@ -11,7 +11,7 @@
     }
   ],
   "vars": {
-    "PLAID_ENV": "sandbox",
+    "PLAID_ENV": "production",
     "PLAID_CLIENT_NAME": "BlueLava Networth",
     "PLAID_COUNTRY_CODES": "US",
     "APPLE_APP_ID": "VRPA6X5SB2.com.bluelava.me.networth"

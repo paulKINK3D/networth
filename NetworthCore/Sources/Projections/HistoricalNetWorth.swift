@@ -145,6 +145,35 @@ public struct InvestmentHistoryBuilder: Sendable {
         }
     }
 
+    /// One durable daily balance observation for a Plaid investment account.
+    /// `matchedManualAssetID == nil` means the account was counted as a
+    /// standalone investment on that day. Inactive observations end a Plaid
+    /// contribution so the history can return to the preserved manual value.
+    public struct PlaidBalanceSnapshot: Sendable, Hashable {
+        public let accountID: String
+        public let matchedManualAssetID: UUID?
+        public let date: Date
+        public let balance: Money
+        public let isActive: Bool
+        public let recordedAt: Date
+
+        public init(
+            accountID: String,
+            matchedManualAssetID: UUID? = nil,
+            date: Date,
+            balance: Money,
+            isActive: Bool = true,
+            recordedAt: Date? = nil
+        ) {
+            self.accountID = accountID
+            self.matchedManualAssetID = matchedManualAssetID
+            self.date = date
+            self.balance = balance
+            self.isActive = isActive
+            self.recordedAt = recordedAt ?? date
+        }
+    }
+
     public let calendar: Calendar
 
     public init(calendar: Calendar = Calendar(identifier: .gregorian)) {
@@ -154,6 +183,7 @@ public struct InvestmentHistoryBuilder: Sendable {
     public func build(
         accounts: [Account],
         manualAssets: [ManualAssetSnapshot],
+        plaidSnapshots: [PlaidBalanceSnapshot] = [],
         from start: Date,
         to end: Date
     ) -> [Point] {
@@ -173,6 +203,12 @@ public struct InvestmentHistoryBuilder: Sendable {
         let manualSeries = manualAssets.map { asset in
             asset.history.sorted { $0.recordedAt < $1.recordedAt }
         }
+        let sortedPlaidSnapshots = plaidSnapshots.sorted { lhs, rhs in
+            if lhs.date != rhs.date { return lhs.date < rhs.date }
+            if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt < rhs.recordedAt }
+            return lhs.accountID < rhs.accountID
+        }
+        let manualAssetIDs = manualAssets.map(\.id)
 
         var points: [Point] = []
         var day = firstDay
@@ -180,6 +216,8 @@ public struct InvestmentHistoryBuilder: Sendable {
         var accountValues = Array(repeating: Money.zero, count: accountSeries.count)
         var manualIndexes = Array(repeating: 0, count: manualSeries.count)
         var manualValues = Array(repeating: Money.zero, count: manualSeries.count)
+        var plaidIndex = 0
+        var currentPlaidByAccountID: [String: PlaidBalanceSnapshot] = [:]
 
         while day <= lastDay {
             for index in accountSeries.indices {
@@ -200,14 +238,146 @@ public struct InvestmentHistoryBuilder: Sendable {
                 }
             }
 
+            while plaidIndex < sortedPlaidSnapshots.count,
+                  calendar.startOfDay(for: sortedPlaidSnapshots[plaidIndex].date) <= day {
+                let snapshot = sortedPlaidSnapshots[plaidIndex]
+                currentPlaidByAccountID[snapshot.accountID] = snapshot
+                plaidIndex += 1
+            }
+
+            var matchedPlaidTotals: [UUID: Money] = [:]
+            var standalonePlaidTotal = Money.zero
+            for snapshot in currentPlaidByAccountID.values where snapshot.isActive {
+                if let manualAssetID = snapshot.matchedManualAssetID {
+                    matchedPlaidTotals[manualAssetID, default: .zero] += snapshot.balance
+                } else {
+                    standalonePlaidTotal += snapshot.balance
+                }
+            }
+
+            var effectiveManualTotal = Money.zero
+            for index in manualValues.indices {
+                effectiveManualTotal += matchedPlaidTotals[manualAssetIDs[index]]
+                    ?? manualValues[index]
+            }
+
             let accountTotal = accountValues.reduce(Money.zero, +)
-            let manualTotal = manualValues.reduce(Money.zero, +)
-            points.append(Point(date: day, value: accountTotal + manualTotal))
+            points.append(Point(
+                date: day,
+                value: accountTotal + effectiveManualTotal + standalonePlaidTotal
+            ))
 
             guard let nextDay = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             day = nextDay
         }
 
         return points
+    }
+}
+
+/// Builds the event list shown for one manual asset by combining its original
+/// valuations with durable Plaid observations. Unlike the daily chart builder,
+/// this preserves multiple manual entries on the same day and emits Plaid rows
+/// only on days that were actually observed.
+public struct ManualAssetHistoryBuilder: Sendable {
+    public enum Source: Sendable, Hashable {
+        case manual
+        case plaid
+        case manualFallback
+    }
+
+    public struct Point: Sendable, Hashable {
+        public let date: Date
+        public let value: Money
+        public let note: String?
+        public let source: Source
+
+        public init(date: Date, value: Money, note: String?, source: Source) {
+            self.date = date
+            self.value = value
+            self.note = note
+            self.source = source
+        }
+    }
+
+    public let calendar: Calendar
+
+    public init(calendar: Calendar = Calendar(identifier: .gregorian)) {
+        self.calendar = calendar
+    }
+
+    public func build(
+        manualAsset: ManualAssetSnapshot,
+        plaidSnapshots: [InvestmentHistoryBuilder.PlaidBalanceSnapshot]
+    ) -> [Point] {
+        var points = manualAsset.history.map {
+            Point(date: $0.recordedAt, value: $0.value, note: $0.note, source: .manual)
+        }
+
+        let snapshotsByDay = Dictionary(grouping: plaidSnapshots) {
+            calendar.startOfDay(for: $0.date)
+        }
+        var currentByAccountID: [String: InvestmentHistoryBuilder.PlaidBalanceSnapshot] = [:]
+        var previouslyActiveAccountIDs: Set<String> = []
+
+        for day in snapshotsByDay.keys.sorted() {
+            let observations = (snapshotsByDay[day] ?? []).sorted { lhs, rhs in
+                if lhs.recordedAt != rhs.recordedAt { return lhs.recordedAt < rhs.recordedAt }
+                return lhs.accountID < rhs.accountID
+            }
+            let touchedAccountIDs = Set(observations.map(\.accountID))
+            for observation in observations {
+                currentByAccountID[observation.accountID] = observation
+            }
+
+            let activeForAsset = currentByAccountID.values.filter {
+                $0.isActive && $0.matchedManualAssetID == manualAsset.id
+            }
+            let directlyReferencesAsset = observations.contains {
+                $0.matchedManualAssetID == manualAsset.id
+            }
+            let endsPreviousContribution = !previouslyActiveAccountIDs.isDisjoint(
+                with: touchedAccountIDs
+            )
+
+            if !activeForAsset.isEmpty {
+                points.append(Point(
+                    date: day,
+                    value: activeForAsset.map(\.balance).reduce(.zero, +),
+                    note: "Plaid balance",
+                    source: .plaid
+                ))
+            } else if directlyReferencesAsset || endsPreviousContribution {
+                points.append(Point(
+                    date: day,
+                    value: manualValue(for: manualAsset, on: day),
+                    note: "Manual value resumed",
+                    source: .manualFallback
+                ))
+            }
+
+            previouslyActiveAccountIDs = Set(activeForAsset.map(\.accountID))
+        }
+
+        return points.sorted { lhs, rhs in
+            if lhs.date != rhs.date { return lhs.date < rhs.date }
+            return sourceOrder(lhs.source) < sourceOrder(rhs.source)
+        }
+    }
+
+    private func manualValue(for asset: ManualAssetSnapshot, on date: Date) -> Money {
+        let day = calendar.startOfDay(for: date)
+        return asset.history
+            .filter { calendar.startOfDay(for: $0.recordedAt) <= day }
+            .max { $0.recordedAt < $1.recordedAt }?
+            .value ?? .zero
+    }
+
+    private func sourceOrder(_ source: Source) -> Int {
+        switch source {
+        case .manual: return 0
+        case .manualFallback: return 1
+        case .plaid: return 2
+        }
     }
 }

@@ -42,6 +42,8 @@ struct TrendDetailView: View {
     @Query(sort: \DurableManualAsset.name)
     private var manualAssets: [DurableManualAsset]
     @Query private var includedClosed: [DurableIncludedClosedAccount]
+    @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
+    @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
 
     private let calendar = Calendar(identifier: .gregorian)
     private static let monthFormatter: DateFormatter = {
@@ -55,7 +57,7 @@ struct TrendDetailView: View {
             List {
                 if contributingAccounts.isEmpty {
                     Section {
-                        Text("No accounts in the current budget. Sync to populate.")
+                        Text("No accounts. Sync to populate.")
                             .foregroundStyle(.secondary)
                     }
                 } else {
@@ -71,13 +73,13 @@ struct TrendDetailView: View {
                     } header: {
                         Text("Contributing Accounts (\(contributingAccounts.count))")
                     } footer: {
-                        Text("Closed and deleted accounts are excluded from the chart. Open YNAB to change account state.")
+                        Text("Closed and deleted accounts are excluded.")
                     }
                 }
 
                 Section {
                     if monthlyBuckets.isEmpty {
-                        Text("No snapshots yet.")
+                        Text("No snapshots.")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(monthlyBuckets, id: \.monthStart) { bucket in
@@ -96,7 +98,7 @@ struct TrendDetailView: View {
                 } header: {
                     Text("Monthly Net Worth (\(monthlyBuckets.count) months)")
                 } footer: {
-                    Text("Last recorded value in each month.")
+                    Text("Month-end values.")
                 }
 
                 if !overlapHints.isEmpty {
@@ -114,7 +116,7 @@ struct TrendDetailView: View {
                     } header: {
                         Text("Possible Double-Count")
                     } footer: {
-                        Text("Possible overlap between manual assets and included closed accounts.")
+                        Text("Manual assets may overlap with included closed accounts.")
                     }
                 }
 
@@ -138,7 +140,7 @@ struct TrendDetailView: View {
                     } header: {
                         Text("Manual Asset Contributions")
                     } footer: {
-                        Text("Values begin on each asset's first entry.")
+                        Text("Starts with each asset's first entry.")
                     }
                 }
 
@@ -167,7 +169,7 @@ struct TrendDetailView: View {
                     } header: {
                         Text("Local IBR Contribution")
                     } footer: {
-                        Text("Earlier values are estimated locally and excluded from CloudKit.")
+                        Text("Earlier values are local estimates.")
                     }
                 }
 
@@ -188,7 +190,7 @@ struct TrendDetailView: View {
                     } header: {
                         Text("Included Closed Accounts")
                     } footer: {
-                        Text("Included accounts contribute through closure.")
+                        Text("Included through closure.")
                     }
                 }
 
@@ -213,7 +215,7 @@ struct TrendDetailView: View {
                 } header: {
                     Text("Snapshot Store")
                 } footer: {
-                    Text("Recorded and reconstructed points. Full resync rebuilds both.")
+                    Text("Recorded and reconstructed points.")
                 }
 
             }
@@ -277,10 +279,18 @@ struct TrendDetailView: View {
                 id: asset.id,
                 name: asset.name.isEmpty ? "Untitled" : asset.name,
                 firstEntryAt: asset.sortedValues.first?.recordedAt,
-                currentValue: asset.currentValue
+                currentValue: plaidResolver.effectiveValue(for: asset)
             )
         }
         .sorted { ($0.firstEntryAt ?? .distantPast) < ($1.firstEntryAt ?? .distantPast) }
+    }
+
+    private var plaidResolver: PlaidContributionResolver {
+        PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualAssets
+        )
     }
 
     private var includedClosedContributions: [ClosedEntry] {
@@ -447,7 +457,7 @@ struct AccountTrendDetailView: View {
                 } header: {
                     Text("Month-End Balance (reconstructed)")
                 } footer: {
-                    Text("Reconstructed backward from the current balance and cached transactions.")
+                    Text("Reconstructed from the current balance and cached activity.")
                 }
             } else {
                 Text("Account not found.").foregroundStyle(.secondary)

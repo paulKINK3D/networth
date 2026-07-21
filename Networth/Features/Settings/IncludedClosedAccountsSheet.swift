@@ -33,14 +33,14 @@ struct IncludedClosedAccountsSheet: View {
             onClose: { dismiss() }
         ) {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                Text("Include closed accounts needed for accurate history. Changes rebuild on the next sync.")
+                Text("Selected accounts return to chart history after the next sync.")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
 
                 if closedAccounts.isEmpty {
                     NwEmptyState(
                         title: "No closed accounts",
-                        message: "Nothing to include yet. Close an account in YNAB and sync.",
+                        message: "Close an account in YNAB, then sync.",
                         icon: .empty
                     )
                 } else {

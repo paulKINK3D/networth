@@ -61,9 +61,6 @@ struct CardSettingsForm: View {
                     }
                     .pickerStyle(.menu)
                     .tint(NwAppColors.textPrimary)
-                    Text("Account used for full-statement autopay.")
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
                 }
             }
         }

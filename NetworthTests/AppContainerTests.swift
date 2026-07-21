@@ -192,6 +192,168 @@ struct AppContainerTests {
         #expect(scheduler.computeBreakdown().investments == Money.dollars(25_000))
     }
 
+    @Test func plaidManualMatchReplacesCurrentValueWithoutDoubleCounting() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = modelContainer.mainContext
+        let manual = DurableManualAsset(name: "Brokerage", kind: .brokerage)
+        let manualValue = DurableManualAssetValue(
+            amountMilliunits: Money.dollars(10_000).milliunits,
+            asset: manual
+        )
+        manual.values = [manualValue]
+        context.insert(manual)
+        context.insert(manualValue)
+
+        let first = CachedPlaidAccount(
+            id: "plaid-1",
+            itemId: "item-1",
+            institutionName: "Brokerage",
+            name: "Taxable",
+            currentBalanceMilliunits: Money.dollars(6_000).milliunits,
+            isoCurrencyCode: "USD"
+        )
+        let second = CachedPlaidAccount(
+            id: "plaid-2",
+            itemId: "item-1",
+            institutionName: "Brokerage",
+            name: "IRA",
+            currentBalanceMilliunits: Money.dollars(5_000).milliunits,
+            isoCurrencyCode: "USD"
+        )
+        context.insert(first)
+        context.insert(second)
+        context.insert(DurablePlaidAccountTreatment(
+            plaidAccountId: first.id,
+            treatment: .duplicateManualAsset,
+            duplicateSourceId: manual.id.uuidString
+        ))
+        context.insert(DurablePlaidAccountTreatment(
+            plaidAccountId: second.id,
+            treatment: .duplicateManualAsset,
+            duplicateSourceId: manual.id.uuidString
+        ))
+        try context.save()
+
+        let resolver = PlaidContributionResolver(
+            plaidAccounts: [first, second],
+            treatments: try context.fetch(FetchDescriptor<DurablePlaidAccountTreatment>()),
+            manualAssets: [manual]
+        )
+        #expect(resolver.effectiveValue(for: manual) == Money.dollars(11_000))
+        #expect(resolver.contributingPlaidAccountIDs == Set([first.id, second.id]))
+
+        let breakdown = SnapshotScheduler(mainContext: context).computeBreakdown()
+        #expect(breakdown.investments == Money.dollars(11_000))
+        #expect(breakdown.netWorth == Money.dollars(11_000))
+        #expect(manual.currentValue == Money.dollars(10_000))
+
+        second.currentBalanceMilliunits = nil
+        try context.save()
+        let fallbackResolver = PlaidContributionResolver(
+            plaidAccounts: [first, second],
+            treatments: try context.fetch(FetchDescriptor<DurablePlaidAccountTreatment>()),
+            manualAssets: [manual]
+        )
+        #expect(fallbackResolver.effectiveValue(for: manual) == Money.dollars(10_000))
+        #expect(fallbackResolver.contributingPlaidAccountIDs.isEmpty)
+        #expect(SnapshotScheduler(mainContext: context).computeBreakdown().investments
+            == Money.dollars(10_000))
+    }
+
+    @Test func plaidBalanceHistoryRecordsDailyValuesAndPreservesAnUnlinkBoundary() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        func day(_ value: Int) -> Date {
+            calendar.date(from: DateComponents(year: 2026, month: 7, day: value))!
+        }
+
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = modelContainer.mainContext
+        let manual = DurableManualAsset(name: "Robinhood", kind: .brokerage)
+        let manualValue = DurableManualAssetValue(
+            recordedAt: day(1),
+            amountMilliunits: Money.dollars(10_000).milliunits,
+            asset: manual
+        )
+        manual.values = [manualValue]
+        let account = CachedPlaidAccount(
+            id: "plaid-history",
+            itemId: "item-history",
+            institutionName: "Robinhood",
+            name: "Brokerage",
+            currentBalanceMilliunits: Money.dollars(11_000).milliunits,
+            isoCurrencyCode: "USD"
+        )
+        let treatment = DurablePlaidAccountTreatment(
+            plaidAccountId: account.id,
+            treatment: .duplicateManualAsset,
+            duplicateSourceId: manual.id.uuidString
+        )
+        context.insert(manual)
+        context.insert(manualValue)
+        context.insert(account)
+        context.insert(treatment)
+        try context.save()
+
+        let scheduler = SnapshotScheduler(mainContext: context, calendar: calendar)
+        #expect(scheduler.recordPlaidBalancesIfNeeded(now: day(2)))
+
+        account.currentBalanceMilliunits = Money.dollars(12_000).milliunits
+        try context.save()
+        #expect(scheduler.recordPlaidBalancesIfNeeded(now: day(3)))
+
+        treatment.treatment = .excluded
+        try context.save()
+        #expect(scheduler.recordPlaidBalancesIfNeeded(now: day(4)))
+        #expect(scheduler.recordPlaidBalancesIfNeeded(now: day(4)))
+
+        let rows = try context.fetch(FetchDescriptor<DurablePlaidBalanceSnapshot>())
+            .sorted { $0.date < $1.date }
+        #expect(rows.count == 3)
+        #expect(rows.map(\.active) == [true, true, false])
+        #expect(rows.map(\.balance) == [
+            Money.dollars(11_000),
+            Money.dollars(12_000),
+            Money.dollars(12_000)
+        ])
+        #expect(rows.allSatisfy { $0.matchedManualAssetId == manual.id })
+    }
+
+    @Test func plaidMatchKeepsOtherManualAssetClassification() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = modelContainer.mainContext
+        let manual = DurableManualAsset(name: "Vanguard Cash", kind: .other)
+        let manualValue = DurableManualAssetValue(
+            amountMilliunits: Money.dollars(8_000).milliunits,
+            asset: manual
+        )
+        manual.values = [manualValue]
+        let plaid = CachedPlaidAccount(
+            id: "vanguard-cash",
+            itemId: "vanguard-item",
+            institutionName: "Vanguard",
+            name: "Cash Plus",
+            currentBalanceMilliunits: Money.dollars(8_500).milliunits,
+            isoCurrencyCode: "USD"
+        )
+        context.insert(manual)
+        context.insert(manualValue)
+        context.insert(plaid)
+        context.insert(DurablePlaidAccountTreatment(
+            plaidAccountId: plaid.id,
+            treatment: .duplicateManualAsset,
+            duplicateSourceId: manual.id.uuidString
+        ))
+        try context.save()
+
+        let breakdown = SnapshotScheduler(mainContext: context).computeBreakdown()
+
+        #expect(breakdown.otherAssets == Money.dollars(8_500))
+        #expect(breakdown.investments == .zero)
+        #expect(breakdown.totalAssets == Money.dollars(8_500))
+        #expect(manual.currentValue == Money.dollars(8_000))
+    }
+
     @Test func bootstrapMigratesProjectionLookback() async throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let settings = DurableUserSettings()

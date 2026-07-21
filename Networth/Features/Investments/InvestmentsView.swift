@@ -96,6 +96,7 @@ struct InvestmentsView: View {
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidItems: [CachedPlaidItem]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
+    @Query(sort: \DurablePlaidBalanceSnapshot.date) private var plaidBalanceSnapshots: [DurablePlaidBalanceSnapshot]
 
     @State private var range: InvestmentRange = .oneYear
     @State private var scrubbedDate: Date?
@@ -119,16 +120,28 @@ struct InvestmentsView: View {
         }
     }
 
+    private var plaidResolver: PlaidContributionResolver {
+        PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualInvestments
+        )
+    }
+
+    private var unreplacedManualInvestments: [DurableManualAsset] {
+        manualInvestments.filter { !plaidResolver.isReplacing($0) }
+    }
+
     private var totalValue: Money {
         ynabInvestments.map(\.balance).sum()
-            + manualInvestments.map(\.currentValue).sum()
-            + includedPlaidAccounts.compactMap(\.currentBalance).sum()
+            + unreplacedManualInvestments.map(\.currentValue).sum()
+            + plaidResolver.contributingPlaidAccounts.compactMap(\.currentBalance).sum()
     }
 
     private var holdings: [InvestmentHolding] {
         let values = ynabInvestments.map(InvestmentHolding.ynab)
-            + manualInvestments.map(InvestmentHolding.manual)
-            + includedPlaidAccounts.map(InvestmentHolding.plaid)
+            + unreplacedManualInvestments.map(InvestmentHolding.manual)
+            + plaidResolver.contributingPlaidAccounts.map(InvestmentHolding.plaid)
         return values.sorted {
             if $0.value != $1.value { return $0.value > $1.value }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -145,7 +158,7 @@ struct InvestmentsView: View {
                     if pendingPlaidReviewCount > 0 {
                         NwBanner(
                             "Review connected accounts",
-                            message: "Choose which balances are separate before they count.",
+                            message: "Review balances before inclusion.",
                             tone: .caution,
                             actionTitle: "Review",
                             action: { showingPlaidReview = true }
@@ -163,7 +176,7 @@ struct InvestmentsView: View {
                     if isEmpty {
                         NwEmptyState(
                             title: "No investments yet",
-                            message: "Add an investment account in YNAB or a brokerage, retirement, or crypto asset in Settings.",
+                            message: "Connect an investment account or add one manually.",
                             icon: .investment
                         )
                         .frame(minHeight: 320)
@@ -243,7 +256,7 @@ struct InvestmentsView: View {
                 }
 
                 if points.count < 2 {
-                    Text("Waiting for enough history to draw the trend.")
+                    Text("More history needed.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 180, alignment: .center)
@@ -396,7 +409,9 @@ struct InvestmentsView: View {
             ))
         }
 
-        let plaidTotal = includedPlaidAccounts.compactMap(\.currentBalance).sum()
+        let plaidTotal = plaidResolver.contributingPlaidAccounts
+            .compactMap(\.currentBalance)
+            .sum()
         if !plaidTotal.isZero {
             result.append(InvestmentAllocation(
                 id: "plaid",
@@ -412,7 +427,7 @@ struct InvestmentsView: View {
             (.crypto, "Crypto", .crypto)
         ]
         for (kind, title, icon) in kinds {
-            let amount = manualInvestments
+            let amount = unreplacedManualInvestments
                 .filter { $0.kind == kind }
                 .map(\.currentValue)
                 .sum()
@@ -455,6 +470,7 @@ struct InvestmentsView: View {
         return InvestmentHistoryBuilder(calendar: calendar).build(
             accounts: inputs,
             manualAssets: manualInvestments.map { $0.toSnapshot() },
+            plaidSnapshots: plaidBalanceSnapshots.map { $0.toHistorySnapshot() },
             from: start,
             to: .now
         )
@@ -501,15 +517,6 @@ struct InvestmentsView: View {
             dates.append(syncDate)
         }
         return dates.max()?.formatted(.relative(presentation: .named)) ?? "never"
-    }
-
-    private var includedPlaidAccounts: [CachedPlaidAccount] {
-        plaidAccounts.filter { account in
-            plaidTreatment(for: account.id) == .included
-                && account.unofficialCurrencyCode == nil
-                && account.isoCurrencyCode?.uppercased() == "USD"
-                && account.currentBalance != nil
-        }
     }
 
     private var pendingPlaidReviewCount: Int {
@@ -583,7 +590,7 @@ private struct InvestmentAccountDetailView: View {
                         Text("Balance Trend")
                             .font(NwTypography.headline)
                         if points.count < 2 {
-                            Text("Waiting for enough history to draw the trend.")
+                            Text("More history needed.")
                                 .font(NwTypography.footnote)
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, minHeight: 160, alignment: .center)

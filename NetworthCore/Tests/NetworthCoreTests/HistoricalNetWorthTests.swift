@@ -189,6 +189,175 @@ struct HistoricalNetWorthTests {
         #expect(points.isEmpty)
     }
 
+    @Test func investmentHistoryUsesPlaidOnlyWhileMatchIsActive() {
+        let manualID = UUID()
+        let manual = ManualAssetSnapshot(
+            id: manualID,
+            name: "401k",
+            kind: .retirement,
+            currentValue: Money.dollars(2_500),
+            lastUpdatedAt: day(2026, 3, 1),
+            history: [
+                ManualAssetValueEntry(
+                    recordedAt: day(2026, 3, 1),
+                    value: Money.dollars(2_500)
+                )
+            ]
+        )
+        let plaid = [
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "ROBINHOOD-IRA",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 3),
+                balance: Money.dollars(2_700)
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "ROBINHOOD-BROKERAGE",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 3),
+                balance: Money.dollars(300)
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "ROBINHOOD-IRA",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 4),
+                balance: Money.dollars(2_800)
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "ROBINHOOD-IRA",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 5),
+                balance: Money.dollars(2_800),
+                isActive: false
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "ROBINHOOD-BROKERAGE",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 5),
+                balance: Money.dollars(300),
+                isActive: false
+            )
+        ]
+
+        let points = InvestmentHistoryBuilder(calendar: utc).build(
+            accounts: [],
+            manualAssets: [manual],
+            plaidSnapshots: plaid,
+            from: day(2026, 3, 1),
+            to: day(2026, 3, 6)
+        )
+        let byDay = Dictionary(uniqueKeysWithValues: points.map { ($0.date, $0.value) })
+
+        #expect(byDay[day(2026, 3, 2)] == Money.dollars(2_500))
+        #expect(byDay[day(2026, 3, 3)] == Money.dollars(3_000))
+        #expect(byDay[day(2026, 3, 4)] == Money.dollars(3_100))
+        #expect(byDay[day(2026, 3, 5)] == Money.dollars(2_500))
+        #expect(byDay[day(2026, 3, 6)] == Money.dollars(2_500))
+    }
+
+    @Test func investmentHistoryStopsStandalonePlaidAfterInactiveSnapshot() {
+        let plaid = [
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "STANDALONE",
+                date: day(2026, 3, 2),
+                balance: Money.dollars(900)
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "STANDALONE",
+                date: day(2026, 3, 4),
+                balance: Money.dollars(900),
+                isActive: false
+            )
+        ]
+
+        let points = InvestmentHistoryBuilder(calendar: utc).build(
+            accounts: [],
+            manualAssets: [],
+            plaidSnapshots: plaid,
+            from: day(2026, 3, 1),
+            to: day(2026, 3, 5)
+        )
+        let byDay = Dictionary(uniqueKeysWithValues: points.map { ($0.date, $0.value) })
+
+        #expect(byDay[day(2026, 3, 1)] == .zero)
+        #expect(byDay[day(2026, 3, 2)] == Money.dollars(900))
+        #expect(byDay[day(2026, 3, 3)] == Money.dollars(900))
+        #expect(byDay[day(2026, 3, 4)] == .zero)
+        #expect(byDay[day(2026, 3, 5)] == .zero)
+    }
+
+    @Test func manualAssetDetailHistoryCombinesManualPlaidAndFallbackEvents() {
+        let manualID = UUID()
+        let manual = ManualAssetSnapshot(
+            id: manualID,
+            name: "Vanguard",
+            kind: .other,
+            currentValue: Money.dollars(10_000),
+            lastUpdatedAt: day(2026, 3, 2),
+            history: [
+                ManualAssetValueEntry(
+                    recordedAt: day(2026, 3, 1),
+                    value: Money.dollars(9_000),
+                    note: "Original"
+                ),
+                ManualAssetValueEntry(
+                    recordedAt: day(2026, 3, 2),
+                    value: Money.dollars(10_000)
+                )
+            ]
+        )
+        let plaid = [
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "one",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 3),
+                balance: Money.dollars(6_000)
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "two",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 3),
+                balance: Money.dollars(5_000)
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "one",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 4),
+                balance: Money.dollars(6_500)
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "two",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 4),
+                balance: Money.dollars(5_000),
+                isActive: false
+            ),
+            InvestmentHistoryBuilder.PlaidBalanceSnapshot(
+                accountID: "one",
+                matchedManualAssetID: manualID,
+                date: day(2026, 3, 5),
+                balance: Money.dollars(6_500),
+                isActive: false
+            )
+        ]
+
+        let points = ManualAssetHistoryBuilder(calendar: utc).build(
+            manualAsset: manual,
+            plaidSnapshots: plaid
+        )
+
+        #expect(points.map(\.source) == [
+            .manual, .manual, .plaid, .plaid, .manualFallback
+        ])
+        #expect(points.map(\.value) == [
+            Money.dollars(9_000),
+            Money.dollars(10_000),
+            Money.dollars(11_000),
+            Money.dollars(6_500),
+            Money.dollars(10_000)
+        ])
+    }
+
     @Test func investmentHistoryKeepsTransfersBetweenOpenAndClosedAccountsFlat() {
         let oldId = "OLD_BROKERAGE"
         let newId = "NEW_BROKERAGE"
