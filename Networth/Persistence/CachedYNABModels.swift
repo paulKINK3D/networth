@@ -77,10 +77,13 @@ public final class CachedTransaction {
     public var amountMilliunits: Int64
     public var cleared: Bool
     public var approved: Bool
+    public var payeeId: String? = nil
     public var payeeName: String?
     public var categoryId: String?
     public var categoryName: String?
     public var transferAccountId: String?
+    public var transferTransactionId: String? = nil
+    public var importId: String? = nil
     public var memo: String?
     public var deleted: Bool
     /// JSON-encoded `[SubTransactionSummary]`. Nil/empty when not a split.
@@ -90,7 +93,11 @@ public final class CachedTransaction {
         id: String, budgetId: String, accountId: String, date: Date, amountMilliunits: Int64,
         cleared: Bool, approved: Bool, payeeName: String?,
         categoryId: String? = nil, categoryName: String?,
-        transferAccountId: String? = nil, memo: String?, deleted: Bool,
+        payeeId: String? = nil,
+        transferAccountId: String? = nil,
+        transferTransactionId: String? = nil,
+        importId: String? = nil,
+        memo: String?, deleted: Bool,
         subtransactionsData: Data? = nil
     ) {
         self.id = id
@@ -100,10 +107,13 @@ public final class CachedTransaction {
         self.amountMilliunits = amountMilliunits
         self.cleared = cleared
         self.approved = approved
+        self.payeeId = payeeId
         self.payeeName = payeeName
         self.categoryId = categoryId
         self.categoryName = categoryName
         self.transferAccountId = transferAccountId
+        self.transferTransactionId = transferTransactionId
+        self.importId = importId
         self.memo = memo
         self.deleted = deleted
         self.subtransactionsData = subtransactionsData
@@ -228,17 +238,24 @@ public final class CachedPlaidItem {
     public var institutionName: String
     public var status: String
     public var lastSyncedAt: Date?
+    public var productsRaw: String = "investments"
 
     public init(
         id: String,
         institutionName: String,
         status: String,
-        lastSyncedAt: Date? = nil
+        lastSyncedAt: Date? = nil,
+        products: [String] = ["investments"]
     ) {
         self.id = id
         self.institutionName = institutionName
         self.status = status
         self.lastSyncedAt = lastSyncedAt
+        self.productsRaw = products.sorted().joined(separator: ",")
+    }
+
+    public var products: Set<String> {
+        Set(productsRaw.split(separator: ",").map(String.init))
     }
 }
 
@@ -250,9 +267,11 @@ public final class CachedPlaidAccount {
     public var name: String
     public var officialName: String?
     public var mask: String?
+    public var typeRaw: String? = nil
     public var subtype: String?
     public var currentBalanceMilliunits: Int64?
     public var availableBalanceMilliunits: Int64?
+    public var limitMilliunits: Int64? = nil
     public var isoCurrencyCode: String?
     public var unofficialCurrencyCode: String?
 
@@ -263,9 +282,11 @@ public final class CachedPlaidAccount {
         name: String,
         officialName: String? = nil,
         mask: String? = nil,
+        typeRaw: String? = nil,
         subtype: String? = nil,
         currentBalanceMilliunits: Int64? = nil,
         availableBalanceMilliunits: Int64? = nil,
+        limitMilliunits: Int64? = nil,
         isoCurrencyCode: String? = nil,
         unofficialCurrencyCode: String? = nil
     ) {
@@ -275,9 +296,11 @@ public final class CachedPlaidAccount {
         self.name = name
         self.officialName = officialName
         self.mask = mask
+        self.typeRaw = typeRaw
         self.subtype = subtype
         self.currentBalanceMilliunits = currentBalanceMilliunits
         self.availableBalanceMilliunits = availableBalanceMilliunits
+        self.limitMilliunits = limitMilliunits
         self.isoCurrencyCode = isoCurrencyCode
         self.unofficialCurrencyCode = unofficialCurrencyCode
     }
@@ -351,4 +374,391 @@ public final class CachedPlaidHolding {
 
     public var quantity: Decimal? { Decimal(string: quantityDecimalString) }
     public var institutionValue: Money { Money(milliunits: institutionValueMilliunits) }
+}
+
+// MARK: - Source-neutral financial cache
+
+/// Disposable normalized account data. `canonicalAccountId` is app-owned and
+/// remains stable while provider-specific IDs are stored separately.
+@Model
+public final class CachedFinancialAccount {
+    @Attribute(.unique) public var canonicalAccountId: String
+    public var externalId: String
+    public var itemId: String?
+    public var sourceRaw: String
+    public var institutionName: String?
+    public var name: String
+    public var officialName: String?
+    public var mask: String?
+    public var typeRaw: String
+    public var subtype: String?
+    public var currentBalanceMilliunits: Int64?
+    public var availableBalanceMilliunits: Int64?
+    public var creditLimitMilliunits: Int64?
+    public var isoCurrencyCode: String?
+    public var deleted: Bool
+    public var updatedAt: Date
+
+    public init(
+        canonicalAccountId: String,
+        externalId: String,
+        itemId: String?,
+        source: FinancialDataSource,
+        institutionName: String?,
+        name: String,
+        officialName: String?,
+        mask: String?,
+        type: FinancialAccountType,
+        subtype: String?,
+        currentBalanceMilliunits: Int64?,
+        availableBalanceMilliunits: Int64?,
+        creditLimitMilliunits: Int64?,
+        isoCurrencyCode: String?,
+        deleted: Bool = false,
+        updatedAt: Date = .now
+    ) {
+        self.canonicalAccountId = canonicalAccountId
+        self.externalId = externalId
+        self.itemId = itemId
+        self.sourceRaw = source.rawValue
+        self.institutionName = institutionName
+        self.name = name
+        self.officialName = officialName
+        self.mask = mask
+        self.typeRaw = type.rawValue
+        self.subtype = subtype
+        self.currentBalanceMilliunits = currentBalanceMilliunits
+        self.availableBalanceMilliunits = availableBalanceMilliunits
+        self.creditLimitMilliunits = creditLimitMilliunits
+        self.isoCurrencyCode = isoCurrencyCode
+        self.deleted = deleted
+        self.updatedAt = updatedAt
+    }
+
+    public var source: FinancialDataSource {
+        FinancialDataSource(rawValue: sourceRaw) ?? .plaid
+    }
+
+    public var type: FinancialAccountType {
+        FinancialAccountType(rawValue: typeRaw) ?? .other
+    }
+
+    public var kind: AccountKind {
+        switch type {
+        case .checking: .checking
+        case .savings: .savings
+        case .creditCard: .creditCard
+        case .cash: .cash
+        case .investment: .investment
+        case .loan: .otherDebt
+        case .other: .unknown
+        }
+    }
+
+    public var balance: Money {
+        Money(milliunits: currentBalanceMilliunits ?? 0)
+    }
+
+    public func toAccountSnapshot() -> AccountSnapshot {
+        AccountSnapshot(
+            id: canonicalAccountId,
+            name: name,
+            kind: kind,
+            balance: balance,
+            clearedBalance: balance,
+            unclearedBalance: .zero,
+            onBudget: type.isCashLike || type == .creditCard,
+            closed: false,
+            deleted: deleted
+        )
+    }
+
+    public func toSummary() -> FinancialAccountSummary {
+        FinancialAccountSummary(
+            id: canonicalAccountId,
+            externalId: externalId,
+            itemId: itemId,
+            source: source,
+            institutionName: institutionName,
+            name: name,
+            officialName: officialName,
+            mask: mask,
+            type: type,
+            subtype: subtype,
+            currentBalance: currentBalanceMilliunits.map(Money.init(milliunits:)),
+            availableBalance: availableBalanceMilliunits.map(Money.init(milliunits:)),
+            creditLimit: creditLimitMilliunits.map(Money.init(milliunits:)),
+            isoCurrencyCode: isoCurrencyCode
+        )
+    }
+}
+
+@Model
+public final class CachedFinancialTransaction {
+    #Index<CachedFinancialTransaction>(
+        [\.canonicalAccountId, \.deleted, \.pending, \.postedDate]
+    )
+
+    @Attribute(.unique) public var id: String
+    public var externalId: String
+    public var sourceRaw: String
+    public var canonicalAccountId: String
+    public var postedDate: Date
+    public var authorizedDate: Date?
+    public var amountMilliunits: Int64
+    public var pending: Bool
+    public var pendingTransactionId: String?
+    public var rawDescription: String
+    public var originalDescription: String?
+    public var providerMerchantName: String?
+    public var merchantEntityId: String?
+    public var counterpartyName: String?
+    public var counterpartyType: String?
+    public var counterpartyEntityId: String?
+    public var counterpartyConfidence: String?
+    public var paymentChannel: String?
+    public var providerCategoryPrimary: String?
+    public var providerCategoryDetailed: String?
+    public var providerCategoryConfidence: String?
+    public var transactionCode: String?
+    public var displayName: String
+    public var payeeCanonicalId: String? = nil
+    public var nativeCategoryRaw: String
+    public var categoryCanonicalId: String? = nil
+    public var categoryName: String? = nil
+    public var forecastTreatmentRaw: String
+    public var subtransactionsData: Data? = nil
+    public var classificationConfidenceRaw: String
+    public var classificationProvenanceRaw: String
+    public var requiresReview: Bool
+    /// Name review is independent from transaction/category review. The
+    /// default keeps already-imported rows from reopening during migration.
+    public var requiresNameReview: Bool = false
+    /// `historical` for the initial Plaid import; `new` thereafter.
+    public var reviewOriginRaw: String = "historical"
+    public var deleted: Bool
+    public var updatedAt: Date
+
+    public init(
+        summary: FinancialTransactionSummary,
+        classification: TransactionClassification,
+        subtransactionsData: Data? = nil,
+        requiresNameReview: Bool? = nil,
+        reviewOriginRaw: String = "historical",
+        deleted: Bool = false,
+        updatedAt: Date = .now
+    ) {
+        id = summary.id
+        externalId = summary.externalId
+        sourceRaw = summary.source.rawValue
+        canonicalAccountId = summary.accountId
+        postedDate = summary.postedDate
+        authorizedDate = summary.authorizedDate
+        amountMilliunits = summary.amount.milliunits
+        pending = summary.pending
+        pendingTransactionId = summary.pendingTransactionId
+        rawDescription = summary.rawDescription
+        originalDescription = summary.originalDescription
+        providerMerchantName = summary.providerMerchantName
+        merchantEntityId = summary.merchantEntityId
+        counterpartyName = summary.counterpartyName
+        counterpartyType = summary.counterpartyType
+        counterpartyEntityId = summary.counterpartyEntityId
+        counterpartyConfidence = summary.counterpartyConfidence
+        paymentChannel = summary.paymentChannel
+        providerCategoryPrimary = summary.providerCategoryPrimary
+        providerCategoryDetailed = summary.providerCategoryDetailed
+        providerCategoryConfidence = summary.providerCategoryConfidence
+        transactionCode = summary.transactionCode
+        displayName = classification.displayName
+        nativeCategoryRaw = classification.category.rawValue
+        categoryName = classification.categoryName
+        forecastTreatmentRaw = classification.treatment.rawValue
+        self.subtransactionsData = subtransactionsData
+        classificationConfidenceRaw = classification.confidence.rawValue
+        classificationProvenanceRaw = classification.provenance.rawValue
+        requiresReview = classification.requiresReview
+        self.requiresNameReview = requiresNameReview
+            ?? (!summary.pending && classification.requiresReview)
+        self.reviewOriginRaw = reviewOriginRaw
+        self.deleted = deleted
+        self.updatedAt = updatedAt
+    }
+
+    public var category: NativeTransactionCategory {
+        NativeTransactionCategory(rawValue: nativeCategoryRaw) ?? .other
+    }
+
+    public var categoryDisplayName: String {
+        if isSplit { return "Split" }
+        let trimmed = categoryName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? category.displayName : trimmed
+    }
+
+    /// Name review follows the user-facing local name once it is specific
+    /// enough to identify a contact. Plaid fingerprints remain the fallback
+    /// for generic labels so unrelated "Payment" or "Transfer" rows do not
+    /// collapse into one decision.
+    public var nameReviewGroupKey: String {
+        let normalizedName =
+            FinancialTransactionSummary.normalizedDescription(displayName)
+        let genericNames: Set<String> = [
+            "", "unknown", "transaction", "payment", "transfer",
+            "purchase", "debit", "credit"
+        ]
+        if !genericNames.contains(normalizedName) {
+            return "local-name:\(normalizedName)"
+        }
+        return toSummary().merchantFingerprint
+    }
+
+    public var forecastTreatment: ForecastTreatment {
+        ForecastTreatment(rawValue: forecastTreatmentRaw) ?? .ordinarySpending
+    }
+
+    public var subtransactions: [SubTransactionSummary] {
+        guard let subtransactionsData, !subtransactionsData.isEmpty else {
+            return []
+        }
+        return (try? JSONDecoder().decode(
+            [SubTransactionSummary].self,
+            from: subtransactionsData
+        )) ?? []
+    }
+
+    public var isSplit: Bool { !subtransactions.isEmpty }
+
+    public var classificationDecisionKey: String {
+        if isSplit {
+            let legs = subtransactions.map {
+                "\(($0.categoryName ?? "").lowercased()):"
+                    + "\($0.forecastTreatment?.rawValue ?? ""):"
+                    + "\($0.amount.milliunits)"
+            }.joined(separator: ",")
+            return "split|\(legs)"
+        }
+        return "\(categoryDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())|\(forecastTreatment.rawValue)"
+    }
+
+    public var reviewDecisionKey: String {
+        "\(toSummary().merchantFingerprint)|\(classificationDecisionKey)"
+    }
+
+    public func toSummary() -> FinancialTransactionSummary {
+        FinancialTransactionSummary(
+            id: id,
+            externalId: externalId,
+            source: FinancialDataSource(rawValue: sourceRaw) ?? .plaid,
+            accountId: canonicalAccountId,
+            postedDate: postedDate,
+            authorizedDate: authorizedDate,
+            amount: Money(milliunits: amountMilliunits),
+            pending: pending,
+            pendingTransactionId: pendingTransactionId,
+            rawDescription: rawDescription,
+            originalDescription: originalDescription,
+            providerMerchantName: providerMerchantName,
+            merchantEntityId: merchantEntityId,
+            counterpartyName: counterpartyName,
+            counterpartyType: counterpartyType,
+            counterpartyEntityId: counterpartyEntityId,
+            counterpartyConfidence: counterpartyConfidence,
+            paymentChannel: paymentChannel,
+            providerCategoryPrimary: providerCategoryPrimary,
+            providerCategoryDetailed: providerCategoryDetailed,
+            providerCategoryConfidence: providerCategoryConfidence,
+            transactionCode: transactionCode
+        )
+    }
+
+    public func toProjectionSummary() -> TransactionSummary? {
+        guard !deleted, !pending, !requiresReview,
+              forecastTreatment != .excluded,
+              forecastTreatment != .internalTransfer,
+              forecastTreatment != .cardPayment else {
+            return nil
+        }
+        return TransactionSummary(
+            id: id,
+            accountId: canonicalAccountId,
+            date: postedDate,
+            amount: Money(milliunits: amountMilliunits),
+            cleared: true,
+            approved: !requiresReview,
+            payeeName: displayName,
+            categoryId: isSplit
+                ? nil
+                : "local:\(Self.categoryKey(categoryDisplayName))",
+            categoryName: isSplit ? nil : categoryDisplayName,
+            forecastTreatment: forecastTreatment,
+            transferAccountId: nil,
+            memo: nil,
+            deleted: deleted,
+            subtransactions: subtransactions
+        )
+    }
+
+    private static func categoryKey(_ value: String) -> String {
+        FinancialTransactionSummary.normalizedDescription(value)
+            .replacingOccurrences(of: " ", with: "-")
+    }
+}
+
+@Model
+public final class PlaidTransactionCursor {
+    @Attribute(.unique) public var itemId: String
+    public var cursor: String?
+    public var updateStatus: String? = nil
+    /// Local migration marker. Once the completed historical import and
+    /// reviewed account map have seeded legacy matches, ordinary delta syncs
+    /// must not rebuild the entire two-year reconciliation.
+    public var historicalReconciliationVersion: Int = 0
+    public var updatedAt: Date
+
+    public init(
+        itemId: String,
+        cursor: String? = nil,
+        updateStatus: String? = nil,
+        historicalReconciliationVersion: Int = 0,
+        updatedAt: Date = .now
+    ) {
+        self.itemId = itemId
+        self.cursor = cursor
+        self.updateStatus = updateStatus
+        self.historicalReconciliationVersion = historicalReconciliationVersion
+        self.updatedAt = updatedAt
+    }
+
+    public var historicalImportComplete: Bool {
+        updateStatus == "HISTORICAL_UPDATE_COMPLETE"
+    }
+}
+
+@Model
+public final class LegacyTransactionMatchRow {
+    @Attribute(.unique) public var plaidTransactionId: String
+    public var ynabTransactionId: String
+    public var confidenceRaw: String
+    public var score: Int
+    public var automatic: Bool
+    public var reviewed: Bool
+    public var createdAt: Date
+
+    public init(
+        plaidTransactionId: String,
+        ynabTransactionId: String,
+        confidence: ClassificationConfidence,
+        score: Int,
+        automatic: Bool,
+        reviewed: Bool = false,
+        createdAt: Date = .now
+    ) {
+        self.plaidTransactionId = plaidTransactionId
+        self.ynabTransactionId = ynabTransactionId
+        self.confidenceRaw = confidence.rawValue
+        self.score = score
+        self.automatic = automatic
+        self.reviewed = reviewed
+        self.createdAt = createdAt
+    }
 }

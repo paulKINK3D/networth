@@ -66,6 +66,8 @@ struct NetWorthView: View {
     @Environment(AppContainerController.self) private var container
     @Query(sort: \DurableNetWorthSnapshot.date) private var snapshots: [DurableNetWorthSnapshot]
     @Query(sort: \CachedAccount.balanceMilliunits, order: .reverse) private var accounts: [CachedAccount]
+    @Query(sort: \CachedFinancialAccount.currentBalanceMilliunits, order: .reverse)
+    private var financialAccounts: [CachedFinancialAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
     @Query private var userSettings: [DurableUserSettings]
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
@@ -99,10 +101,10 @@ struct NetWorthView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                    if container.hasYNABToken == false {
+                    if !hasPrimaryConnection {
                         NwBanner(
-                            "Connect YNAB",
-                            message: "Add your YNAB token in Settings to start tracking.",
+                            "Connect your accounts",
+                            message: "Choose YNAB or Plaid in Settings to start tracking.",
                             tone: .info,
                             actionTitle: "Open Settings",
                             action: { NotificationCenter.default.post(name: .openSettings, object: nil) }
@@ -158,7 +160,7 @@ struct NetWorthView: View {
                     } label: {
                         Label("Refresh", systemImage: NwIcon.sync.rawValue)
                     }
-                    .disabled(!container.hasYNABToken)
+                    .disabled(!hasPrimaryConnection)
                 } label: {
                     if case .error = container.syncCoordinator.phase {
                         NwIcon.warning.image.foregroundStyle(NwAppColors.caution)
@@ -176,6 +178,14 @@ struct NetWorthView: View {
         container.snapshotScheduler.computeBreakdown(
             linkedIBRLoan: container.linkedIBRLoanDocument?.current
         )
+    }
+
+    private var usesPlaidTransactions: Bool {
+        userSettings.first?.primaryFinancialDataSource == .plaid
+    }
+
+    private var hasPrimaryConnection: Bool {
+        usesPlaidTransactions ? container.hasPlaidBackendToken : container.hasYNABToken
     }
 
     private var plaidResolver: PlaidContributionResolver {
@@ -452,7 +462,14 @@ struct NetWorthView: View {
     }
 
     private func entries(for category: NetWorthCategory) -> [NetWorthEntry] {
-        let openAccounts = accounts.filter { !$0.deleted && !$0.closed }
+        let legacyLoanKinds: Set<AccountKind> = [
+            .mortgage, .autoLoan, .studentLoan, .personalLoan,
+            .medicalDebt, .otherDebt, .otherLiability
+        ]
+        let openAccounts = accounts.filter {
+            !$0.deleted && !$0.closed
+                && (!usesPlaidTransactions || legacyLoanKinds.contains($0.kind))
+        }
         let ynabEntries = openAccounts.compactMap { account -> NetWorthEntry? in
             let matches: Bool
             switch category {
@@ -480,6 +497,41 @@ struct NetWorthView: View {
                 amount: category.isLiability ? account.balance.absolute : account.balance,
                 updatedAt: nil
             )
+        }
+
+        let financialEntries: [NetWorthEntry]
+        if usesPlaidTransactions {
+            financialEntries = financialAccounts.compactMap { account in
+                guard !account.deleted else { return nil }
+                let matches: Bool
+                switch category {
+                case .cash:
+                    matches = account.type.isCashLike
+                case .investments:
+                    matches = account.type == .investment
+                case .cards:
+                    matches = account.type == .creditCard
+                case .loans:
+                    matches = account.type == .loan
+                case .otherAssets:
+                    matches = account.type == .other && !account.balance.isNegative
+                case .otherLiabilities:
+                    matches = account.type == .other && account.balance.isNegative
+                case .property:
+                    matches = false
+                }
+                guard matches else { return nil }
+                let mask = account.mask.map { " •••• \($0)" } ?? ""
+                return NetWorthEntry(
+                    id: "financial:\(account.canonicalAccountId)",
+                    name: account.name,
+                    subtitle: "\(account.institutionName ?? accountKindLabel(account.kind))\(mask)",
+                    amount: category.isLiability ? account.balance.absolute : account.balance,
+                    updatedAt: account.updatedAt
+                )
+            }
+        } else {
+            financialEntries = []
         }
 
         let durableEntries = manualAssets
@@ -518,7 +570,7 @@ struct NetWorthView: View {
             plaidEntries = []
         }
 
-        var combined = ynabEntries + durableEntries + plaidEntries
+        var combined = ynabEntries + financialEntries + durableEntries + plaidEntries
         if category == .loans, let loan = container.linkedIBRLoanDocument?.current {
             combined.append(NetWorthEntry(
                 id: "ibr:primary",

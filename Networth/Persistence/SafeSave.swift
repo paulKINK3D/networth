@@ -4,6 +4,9 @@ import os
 
 extension Notification.Name {
     public static let networthPersistenceFailure = Notification.Name("NetworthPersistenceFailure")
+    public static let networthModelContextSaved = Notification.Name(
+        "NetworthModelContextSaved"
+    )
 }
 
 public struct PersistenceFailure: Sendable, Equatable {
@@ -16,9 +19,18 @@ extension ModelContext {
     /// Drop-in replacement for `try? save()` that posts a notification on failure
     /// so a global handler can surface an alert instead of silently swallowing.
     @discardableResult
-    public func safeSave(source: String) -> Bool {
+    public func safeSave(
+        source: String,
+        notifyDataSync: Bool = true
+    ) -> Bool {
         do {
             try save()
+            if notifyDataSync {
+                NotificationCenter.default.post(
+                    name: .networthModelContextSaved,
+                    object: source
+                )
+            }
             return true
         } catch {
             let logger = Logger(subsystem: "com.bluelava.me.networth", category: "persistence")

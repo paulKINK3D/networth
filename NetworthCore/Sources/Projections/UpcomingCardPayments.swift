@@ -79,7 +79,7 @@ extension CCPaymentForecaster {
 
         let lastClose = previousCloseDate(asOf: start, cycleDay: settings.statementCycleDay)
         let lastDue = paymentDueDate(after: lastClose, dueDay: settings.paymentDueDay)
-        let lastStatement = balanceAtPastClose(
+        let lastStatement = remainingBalanceForPastStatement(
             currentOwed: card.balance.absolute,
             cardAccountId: card.id,
             closeDate: lastClose,
@@ -176,7 +176,7 @@ extension CCPaymentForecaster {
         calendar.date(byAdding: .day, value: 1, to: date) ?? date
     }
 
-    private func balanceAtPastClose(
+    private func remainingBalanceForPastStatement(
         currentOwed: Money,
         cardAccountId: String,
         closeDate: Date,
@@ -184,10 +184,21 @@ extension CCPaymentForecaster {
         history: [TransactionSummary]
     ) -> Money {
         guard closeDate < today else { return currentOwed }
-        let delta = history.lazy
-            .filter { !$0.deleted && $0.accountId == cardAccountId && $0.date > closeDate && $0.date <= today }
-            .reduce(Int64(0)) { $0 + $1.amount.milliunits }
-        let result = Money(milliunits: currentOwed.milliunits + delta)
+        // Current owed already reflects payments, refunds, and credits made
+        // after the statement closed. Preserve those reductions and remove
+        // only newer purchases, which belong to the next statement. Adding
+        // every signed transaction here reconstructs the original statement
+        // but incorrectly schedules amounts the user has already paid.
+        let postCloseCharges = history.lazy
+            .filter {
+                !$0.deleted &&
+                    $0.accountId == cardAccountId &&
+                    $0.date > closeDate &&
+                    $0.date <= today &&
+                    $0.amount.isNegative
+            }
+            .reduce(Int64(0)) { $0 + $1.amount.absolute.milliunits }
+        let result = Money(milliunits: currentOwed.milliunits - postCloseCharges)
         return result < .zero ? .zero : result
     }
 

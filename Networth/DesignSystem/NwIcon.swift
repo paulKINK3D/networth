@@ -44,6 +44,7 @@ public enum NwIcon: String, Sendable {
     case keychain     = "key.fill"
     case cloud        = "icloud"
     case connected    = "link.circle.fill"
+    case history      = "clock.arrow.circlepath"
     case chevron      = "chevron.right"
     case arrowUp      = "arrow.up.right"
     case arrowDown    = "arrow.down.right"
@@ -58,7 +59,7 @@ public struct NwConnectionIndicator: View {
 
     public var body: some View {
         NwIcon.connected.image
-            .font(.caption)
+            .font(NwTypography.footnoteEm)
             .foregroundStyle(NwAppColors.positive)
             .accessibilityLabel("Connected")
     }

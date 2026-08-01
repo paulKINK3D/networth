@@ -1,13 +1,80 @@
 # WORKING
 
-## Current State (2026-07-20)
+## Current State (2026-07-31)
 The app foundation and the Net Worth, Projections, Accounts, Investments, sync, security, persistence, and tutorial workflows are implemented around the product north star in `docs/PLAN.md`: help the user understand upcoming cash obligations before they become a problem, with clear supporting reporting for the broader financial picture.
 
-**Active branch:** `feature/plaid-integration`. Plaid work is scoped to optional investment accounts and holdings delivered through a private backend. It will not replace YNAB, feed cash projections, or import ordinary bank transactions. New Plaid accounts remain excluded from Net Worth until the user resolves possible duplication with YNAB accounts or manual assets; account balances reconcile totals and holdings explain composition.
+**Active branch:** `feature/plaid-transactions`. The completed Plaid Investments work is merged. This branch adds a staged path for Plaid Transactions to replace YNAB as the source for non-investment, non-loan accounts and new transactions.
 
-The Plaid iOS path is implemented and validated on-device in Sandbox and Production Trial. LinkKit 7.0.3 opens from Settings, exchanges its short-lived public token through the private backend, syncs Items/accounts/securities/holdings independently from YNAB, supports unlinking, and requires explicit per-account duplicate review. Real-account Link now succeeds. Duplicate matches use a dedicated selection sheet that shows source, account classification, and balance so repeated names remain distinguishable; choosing a duplicate no longer silently selects the first candidate. A Plaid account matched to a manual investment asset supplies that asset's live current value across Accounts, Investments, Net Worth, and daily snapshots without modifying the durable manual entries. Multiple Plaid accounts may replace one aggregate manual asset, and the stored manual value is the safe fallback if any matched balance becomes unavailable. Successful Plaid syncs now persist one private-CloudKit balance point per contributing account per day. Investment history uses manual values before the first Plaid point, sums multiple matched accounts while linked, and writes inactive end markers so excluding or unlinking an account preserves prior Plaid history while returning current and future days to the manual value. Connected manual-asset detail pages merge those daily Plaid observations into the preserved manual history and mark Plaid rows with the connection symbol. Only reviewed USD balances contribute; holdings remain explanatory detail. The backend bearer token is entered once and stored in iCloud Keychain. The Link session is retained until success or exit, and backend requests time out after 20 seconds so the connection sheet cannot remain stuck indefinitely. The 55-test `NetworthCore` suite passes; simulator validation is intentionally not part of this change.
+The Worker maintains product-aware Items, requests up to 730 days of history,
+exposes cursor-based added/modified/removed transaction pages, and supports
+consent upgrades for an existing investment Item. It does not call Plaid
+Recurring Transactions or Transactions Refresh. Normalized accounts,
+transactions, cursors, and match evidence stay in the disposable local cache.
 
-`PlaidWorker/` is deployed to Production Trial in the personal BlueLava Cloudflare account as `networth-plaid-worker`, with encrypted Item tokens in its dedicated KV namespace. The stable custom domain is `https://networth-plaid.bluelava.me`; Plaid has accepted `https://networth-plaid.bluelava.me/plaid/oauth`, and the live health, AASA, and OAuth fallback routes pass after the Production deployment. Worker secrets remain outside git in Cloudflare and ignored local `.dev.vars`. Six Worker tests, TypeScript checking, and the deployment bundle pass. Phase 9 is complete; the remaining action is an on-device sync and Investments-chart check that establishes the first durable real-account balance point.
+The transaction migration is now YNAB-first. YNAB payees, categories, stable
+transaction IDs, transfer IDs, and split legs seed durable editable Networth
+directories. Plaid merchant/counterparty IDs, names, and normalized
+descriptions are aliases that may point to a canonical contact; they are not
+contacts or category rules themselves. The durable models are
+`DurableCanonicalPayee`, `DurablePayeeAlias`,
+`DurableCanonicalCategory`, and
+`DurableCanonicalTransactionDecision`.
+
+The former merchant-rule/name-review result is deliberately discarded by a
+versioned one-way migration. Raw YNAB/Plaid rows, account mappings, and
+user-created categories survive. Existing transaction/payee cursors are reset
+once so YNAB can replay the stable IDs required by the new matcher.
+
+Every Plaid account must be explicitly mapped to its YNAB predecessor or marked
+new. Reconciliation waits for every historical import to finish and uses exact
+canonical account plus milliunit amount with a bounded date window. Its
+maximum-cardinality assignment avoids greedy duplicate matching. Exact matches
+copy YNAB contact/category/treatment/split decisions and do not enter review;
+ambiguous or unmatched rows do.
+
+Only posted transactions enter the future queue. Every new posted transaction
+requires confirmation, even with a strong prefill. Confirmation links aliases
+to a selected contact and stores one transaction-specific decision. All
+confirmed decisions add evidence for future suggestions, but mixed
+category/treatment history causes no category preselection instead of
+last-write-wins behavior. Apple inference and optional privacy-bounded Claude
+fallback may suggest names/categories but never approve them. Card payments
+and internal transfers have no category. Hidden YNAB categories remain valid
+only on exact historical decisions.
+
+Contacts and categories are editable from Accounts → Networth Data. Contacts
+can be created, renamed, archived, merged, and have aliases reassigned.
+Categories can be created, renamed, regrouped, and hidden. User edits survive a
+later YNAB source refresh. Review counters use `fetchCount`, remain zero until
+the current historical reconciliation completes, and the review sheet fetches
+one row at a time.
+
+Positive transactions that are not identified as income default to the Refund
+treatment. They retain a mapped Plaid/YNAB spending category when available
+and otherwise fall back to Other; positive cash flow alone never assigns the
+Income category.
+
+Pending local cleanup and historical-reconciliation migrations run during app
+bootstrap. They do not wait for the network-sync freshness window.
+
+Plaid account detail keeps its 30-day activity summary lightweight and links to
+full posted history. Full history uses an indexed account/status/date query and
+fetches 50 rows per page rather than loading or sorting the complete transaction
+cache in memory. Recent and historical rows are tappable; opening a row reuses
+the transaction editor so confirmed decisions can be corrected.
+
+The Plaid Investments iOS path is implemented and validated on-device in Sandbox and Production Trial. LinkKit 7.0.3 opens from Settings, exchanges its short-lived public token through the private backend, syncs Items/accounts/securities/holdings independently from YNAB, supports unlinking, and requires explicit per-account duplicate review. Real-account Link now succeeds. Duplicate matches use a dedicated selection sheet that shows source, account classification, and balance so repeated names remain distinguishable; choosing a duplicate no longer silently selects the first candidate. A Plaid account matched to a manual investment asset supplies that asset's live current value across Accounts, Investments, Net Worth, and daily snapshots without modifying the durable manual entries. Multiple Plaid accounts may replace one aggregate manual asset, and the stored manual value is the safe fallback if any matched balance becomes unavailable. Successful Plaid syncs now persist one private-CloudKit balance point per contributing account per day. Investment history uses manual values before the first Plaid point, sums multiple matched accounts while linked, and writes inactive end markers so excluding or unlinking an account preserves prior Plaid history while returning current and future days to the manual value. Connected manual-asset detail pages merge those daily Plaid observations into the preserved manual history and mark Plaid rows with the connection symbol. Only reviewed USD balances contribute; holdings remain explanatory detail. The backend bearer token is entered once and stored in iCloud Keychain. The Link session is retained until success or exit, and backend requests time out after 20 seconds so the connection sheet cannot remain stuck indefinitely. The 87-test `NetworthCore` suite passes; simulator validation is intentionally excluded.
+
+`PlaidWorker/` is deployed with the Transactions and privacy-bounded Claude endpoints at `networth-plaid.bluelava.me`; the Claude secret is configured outside git. Exact Plaid Transactions Production pricing remains account-specific, and Plaid documents it as a per-Item subscription. The checked-in backend never invokes the separately billed Refresh or Recurring add-ons.
+
+The optional Claude.ai data connector is implemented separately from transaction
+inference. After explicit consent, the app uploads full-replacement financial
+snapshots that exclude credentials, provider IDs, account numbers, raw bank
+descriptions, unreviewed transactions, and the local IBR document. The Worker
+encrypts the snapshot, exposes five read-only MCP tools through OAuth 2.1 with
+PKCE, and revokes every grant when access is disabled. Worker deployment and
+unauthenticated production smoke checks are complete; authenticated iPhone and
+Claude.ai verification remains a manual follow-up.
 
 **The current working tree completes the Projections rebuild around cash confidence.** The screen combines a conservative headline, one projected-cash curve, and a chronological event timeline. Each card has a close day, autopay day, and funding account; full-statement payments are simulated across the configured horizon and feed the same cash ledger as scheduled income, bills, and transfers. The chart shows total selected cash after known commitments and the spending reserve, while a separate known-commitment ledger validates that each actual payment account has enough money on the required date.
 
@@ -21,25 +88,25 @@ Projection Details exposes every complete monthly spending sample used by the me
 
 Monthly category details list their contributing transactions. A swipe excludes or restores one transaction (or one split leg) from the spending baseline. `DurableExcludedSpendTransaction` stores that user decision in the CloudKit durable tier; the Spending Exclusions screen provides a permanent restore path. The schema change is additive with defaulted fields, so existing CloudKit rows remain compatible and no legacy field cleanup is required.
 
-The Net Worth tab is now organized as a long-term scorecard. Its hero reconciles current net worth to total assets and liabilities and reports the 30-day movement. The existing scrub-enabled historical chart and diagnostic sheet remain intact. A new Balance Sheet replaces the static metric grid with tappable asset and liability categories; each category lists the YNAB accounts and manual assets that produce its total. No persistence or snapshot schema changed.
+The Net Worth tab is now organized as a long-term scorecard. Its hero reconciles current net worth to total assets and liabilities and reports the 30-day movement. The existing scrub-enabled historical chart and diagnostic sheet remain intact. A Balance Sheet provides tappable asset and liability categories; after cutover, cash/cards use Plaid while retained loan/manual/investment sources continue to contribute.
 
-The Accounts tab is now the detailed inventory behind Net Worth. Open YNAB accounts are grouped into Cash, Investments, Credit Cards, Loans, Other Assets, and Other Liabilities with section totals. Liability balances display as positive amounts owed. Account details report balance, cleared and pending amounts, 30-day money in/out (or payments/charges), and recent cached activity. Manual assets now navigate to a value-history screen with per-entry changes and notes plus an explicit Update Value action. No persistence schema changed.
+The Accounts tab is the detailed inventory behind Net Worth. Before cutover it shows YNAB accounts; afterward cash/cards use normalized Plaid balances and reviewed activity while legacy loans remain available. Liability balances display as positive amounts owed. Manual assets navigate to their durable value history.
 
 The Investments tab is now a portfolio report instead of a static list. It reconciles investment-typed YNAB accounts with manual brokerage, retirement, and crypto values; reports the total and 30-day movement; provides a scrub-enabled 3-month through 5-year balance trend; and shows allocation by source/type plus holding-level percentages. YNAB holding details include cleared/pending balances, a one-year balance trend, and recent activity. Manual holdings reuse the durable value-history and Update Value workflow. `InvestmentHistoryBuilder` reconstructs YNAB balances and carries each dated manual valuation forward. Generic Other assets are intentionally excluded from Investments. No persistence schema changed.
 
 The primary UI has had a density pass. Net Worth and Investments no longer repeat their navigation titles inside hero cards; low-value counts, single-series legends, duplicate status badges, repeated update labels, and category item counts were removed. Projection chart metadata is one line, Safe to Spend copy is shorter without dropping ordinary-spending and buffer assumptions, and configuration/diagnostic explanations were reduced to concise footnotes. Detailed methodology remains behind the existing info and detail surfaces.
 
-BL IBR can now publish an opt-in student-loan summary through the local App Group `group.com.bluelava.me.financial`. Networth refreshes that read-only document at bootstrap and foreground activation, includes the current balance in Loans and total liabilities, exposes repayment details in Accounts, and deep-links back to IBR. IBR's dated balances are overlaid locally on the Net Worth trend. By default, linked-loan history begins on the earliest cached YNAB transaction date; Accounts → Student Loans provides `Count Loan Starting` only as an override. Date edits stay local until `Apply Start Date`, avoiding repeated five-year chart recalculation while the picker changes. Before IBR's first dated balance, Networth estimates backward using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Accrued interest is floored at zero and capitalization is not inferred. The shared balance, rate, and override are deliberately excluded from `DurableNetWorthSnapshot`, so no IBR loan field, override, or derived balance is copied to CloudKit. Existing YNAB checking transactions remain the cash-flow source for loan payments; Networth does not generate another projected payment from IBR metadata.
+BL IBR can now publish an opt-in student-loan summary through the local App Group `group.com.bluelava.me.financial`. Networth refreshes that read-only document at bootstrap and foreground activation, includes the current balance in Loans and total liabilities, exposes repayment details in Accounts, and deep-links back to IBR. IBR's dated balances are overlaid locally on the Net Worth trend. By default, linked-loan history begins on the earliest cached YNAB transaction date; Accounts → Student Loans provides `Count Loan Starting` only as an override. Date edits stay local until `Apply Start Date`, avoiding repeated five-year chart recalculation while the picker changes. Before IBR's first dated balance, Networth estimates backward using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Accrued interest is floored at zero and capitalization is not inferred. The shared balance, rate, and override are deliberately excluded from `DurableNetWorthSnapshot`, so no IBR loan field, override, or derived balance is copied to CloudKit. The selected banking transaction source remains the cash-flow evidence for loan payments; Networth does not generate another projected payment from IBR metadata.
 
 - `Networth.xcodeproj` is the source of truth. Add new files via Xcode's UI.
 - The user confirmed the latest app and copy/layout cleanup run correctly on-device.
 - NetworthCore SPM package: 5 sub-modules plus an umbrella target.
-- App-target unit tests: 16 Swift Testing tests under `xcodebuild test`.
+- App-target unit tests: 42 Swift Testing tests under `xcodebuild test`.
 
 ## What ships
 - Single ModelContainer with two ModelConfigurations:
-  - `NetworthLocalCache` (no CloudKit) — YNAB cache rows plus `CachedPlaidItem`, `CachedPlaidAccount`, `CachedPlaidSecurity`, and `CachedPlaidHolding`.
-  - `NetworthDurable` (CloudKit private DB) — manual assets, aggregate snapshots, daily `DurablePlaidBalanceSnapshot` history, user/projection settings, and `DurablePlaidAccountTreatment` reconciliation decisions.
+  - `NetworthLocalCache` (no CloudKit) — retained YNAB cache rows plus Plaid investment rows, normalized banking accounts/transactions, transaction cursors, and historical match evidence.
+  - `NetworthDurable` (CloudKit private DB) — manual assets, aggregate snapshots, daily `DurablePlaidBalanceSnapshot` history, user/projection settings, account reconciliation decisions, editable canonical contacts/categories, aliases, and transaction-specific decisions.
 - `AppContainerController` (`@Observable`, `@MainActor`) owns the YNAB and private-backend Plaid clients, their independent sync coordinators, security/persistence services, and the local IBR boundaries.
 - Every IO boundary is protocol-based with a production and in-memory/scriptable/recorded fake.
 - `Nw*` design system: tokens (spacing, corner radius, typography, colors, shadow, opacity, stroke, icons) + components (card, section header, metric capsule, status badge, empty/loading state, inline notice, banner, modal layout, button styles, amount text).
@@ -47,7 +114,7 @@ BL IBR can now publish an opt-in student-loan summary through the local App Grou
 - Investments combines YNAB investment accounts, manual brokerage/retirement/crypto assets, and approved Plaid investment balances. Plaid account details reconcile account balances to security-level holdings and cost basis without double-counting holdings.
 - Net Worth is the default launch tab. Projections remains the daily cash-confidence tool and shows selected cash today, the lowest projected balance and date, the event that causes it, a user-set minimum buffer, and derivation details for assumptions and card payments.
 - Optional IBR linking is local-only and read-only. The current IBR balance contributes to liabilities; dated IBR balances and the local history-start estimate overlay the chart without entering the CloudKit snapshot store.
-- Known Commitments uses dated YNAB scheduled activity plus generated full-statement card autopays. Estimated monthly spending is the median complete month of all external cash and funded-card outflows, including scheduled spending. Expected Spending adds only the median unscheduled remainder because scheduled cash flows are already in the known curve; short histories use an equivalent daily-average fallback. Unscheduled income and refunds are not assumed.
+- Before cutover, Known Commitments uses dated YNAB scheduled activity plus generated full-statement card autopays. After cutover, recurring/scheduled prediction is intentionally deferred: projections use Plaid transaction history for ordinary-spending estimates and retain the explicit card statement/autopay settings, but do not pretend Plaid's historical feed contains future bills.
 - Aggregate cash establishes overall capacity, but does not mask account liquidity. Internal scheduled transfers update both account paths without changing the total; when an account runs short despite sufficient total cash, the headline gives the minimum transfer and deadline.
 - Aggregate shortfall headlines report the first day projected cash turns negative; the lowest balance across the full horizon remains supporting context rather than replacing the actionable crossing date.
 - Card-cycle timing treats an ambiguous later-numbered due day fewer than 14 days after close as belonging to the following monthly cycle. Prior statement autopays are netted from a following statement estimate even when that payment lands just after the next close, preventing duplicate same-day autopays.
@@ -67,20 +134,21 @@ BL IBR can now publish an opt-in student-loan summary through the local App Grou
 # Pure-Swift domain tests (fastest):
 cd NetworthCore && swift test
 
-# App target build (iOS 26 simulator):
+# App target builds (generic iPhone; do not launch a simulator):
 xcodebuild -project Networth.xcodeproj -scheme Networth \
-  -destination 'platform=iOS Simulator,id=51F1E9A0-59D3-4021-A264-A706679CBD55' \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO
+  -configuration Debug -destination 'generic/platform=iOS' build
 
-# App target tests:
-xcodebuild test -project Networth.xcodeproj -scheme Networth \
-  -destination 'platform=iOS Simulator,id=51F1E9A0-59D3-4021-A264-A706679CBD55' \
-  CODE_SIGNING_ALLOWED=NO
+xcodebuild -project Networth.xcodeproj -scheme Networth \
+  -configuration Release -destination 'generic/platform=iOS' build
+
+# Worker tests and type checking:
+cd PlaidWorker && npm test && npm run check
 ```
 
 ## Known follow-ups
 - **CloudKit cross-device verification:** not needed for the user's current single-device workflow.
-- **TestFlight CloudKit schema:** `DurablePlaidBalanceSnapshot` is an additive model with only defaulted/optional fields, so existing records need no migration or cleanup. Before a TestFlight build, initialize the record type in the Development environment and deploy that schema to Production in CloudKit Console.
+- **TestFlight CloudKit schema:** before a TestFlight build, initialize and deploy the additive canonical account/payee/alias/category/transaction-decision record types and the new defaulted/optional `DurableUserSettings` fields. Keep the legacy merchant-rule, custom-category, and override record types for migration compatibility. The exact checklist lives in `docs/2026-07-25-plaid-transactions-migration.md`.
+- **Claude.ai connector verification:** on iPhone, enable access and confirm the first snapshot sync; connect Claude.ai with a fresh app code; exercise all five read-only tools; then disable access and verify the connector is revoked.
 - **Numeric-first-tap-replaces-value:** the documented input pattern is stubbed in `ManualAssetForm.selectAllOnFirstTap()` — wire a UITextField responder coordinator if/when that polish is desired.
 - **Historical transfers from excluded closed accounts — deferred:** the 5-year reconstructor walks open accounts plus user-selected closed accounts. If a closed account remains excluded, its transfer into an included account is still rolled back as if it were external activity, which can understate earlier net worth. Including that closed account mitigates the issue. The user chose to ignore this edge case for now.
 

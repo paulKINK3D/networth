@@ -1,6 +1,11 @@
 import type { EncryptedValue } from "./types";
 
-const additionalData = new TextEncoder().encode("networth-plaid-item-token-v1");
+const tokenAdditionalData = new TextEncoder().encode(
+  "networth-plaid-item-token-v1",
+);
+const snapshotAdditionalData = new TextEncoder().encode(
+  "networth-claude-snapshot-v1",
+);
 
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -30,16 +35,17 @@ async function importEncryptionKey(encodedKey: string): Promise<CryptoKey> {
   ]);
 }
 
-export async function encryptAccessToken(
-  accessToken: string,
+async function encryptString(
+  value: string,
   encodedKey: string,
+  additionalData: Uint8Array,
 ): Promise<EncryptedValue> {
   const key = await importEncryptionKey(encodedKey);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv, additionalData },
+    { name: "AES-GCM", iv, additionalData: ownedBuffer(additionalData) },
     key,
-    new TextEncoder().encode(accessToken),
+    new TextEncoder().encode(value),
   );
   return {
     version: 1,
@@ -48,9 +54,10 @@ export async function encryptAccessToken(
   };
 }
 
-export async function decryptAccessToken(
+async function decryptString(
   encrypted: EncryptedValue,
   encodedKey: string,
+  additionalData: Uint8Array,
 ): Promise<string> {
   if (encrypted.version !== 1) throw new Error("Unsupported token ciphertext");
   const key = await importEncryptionKey(encodedKey);
@@ -58,10 +65,38 @@ export async function decryptAccessToken(
     {
       name: "AES-GCM",
       iv: ownedBuffer(fromBase64(encrypted.iv)),
-      additionalData,
+      additionalData: ownedBuffer(additionalData),
     },
     key,
     ownedBuffer(fromBase64(encrypted.ciphertext)),
   );
   return new TextDecoder().decode(plaintext);
+}
+
+export async function encryptAccessToken(
+  accessToken: string,
+  encodedKey: string,
+): Promise<EncryptedValue> {
+  return encryptString(accessToken, encodedKey, tokenAdditionalData);
+}
+
+export async function decryptAccessToken(
+  encrypted: EncryptedValue,
+  encodedKey: string,
+): Promise<string> {
+  return decryptString(encrypted, encodedKey, tokenAdditionalData);
+}
+
+export async function encryptClaudeSnapshot(
+  snapshotJSON: string,
+  encodedKey: string,
+): Promise<EncryptedValue> {
+  return encryptString(snapshotJSON, encodedKey, snapshotAdditionalData);
+}
+
+export async function decryptClaudeSnapshot(
+  encrypted: EncryptedValue,
+  encodedKey: string,
+): Promise<string> {
+  return decryptString(encrypted, encodedKey, snapshotAdditionalData);
 }

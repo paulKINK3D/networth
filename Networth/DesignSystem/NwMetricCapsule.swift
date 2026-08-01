@@ -18,7 +18,7 @@ public struct NwMetricCapsule: View {
             HStack(spacing: NwSpacing.xs) {
                 if let symbol {
                     symbol.image
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(NwTypography.footnoteEm)
                         .foregroundStyle(NwAppColors.textSecondary)
                 }
                 Text(label)

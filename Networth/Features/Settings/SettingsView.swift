@@ -6,6 +6,22 @@ import struct LinkKit.Plaid
 import class LinkKit.PlaidLinkSession
 import UIKit
 
+private enum SettingsPage {
+    case connections
+    case budget
+    case assets
+    case privacy
+
+    var title: String {
+        switch self {
+        case .connections: "Accounts & Sync"
+        case .budget: "Budget & Forecast"
+        case .assets: "Manual Assets"
+        case .privacy: "Privacy & App"
+        }
+    }
+}
+
 struct SettingsView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query private var settingsList: [DurableUserSettings]
@@ -19,6 +35,7 @@ struct SettingsView: View {
     @Query(sort: \CachedPlaidItem.institutionName) private var plaidItems: [CachedPlaidItem]
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
+    @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
 
     @State private var showingTokenSheet = false
     @State private var showingAssetForm: DurableManualAsset? = nil
@@ -30,36 +47,80 @@ struct SettingsView: View {
     @State private var showingIncludedClosed = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
+    @State private var showingDiscretionaryBudget = false
     @State private var showingPlaidConnection = false
     @State private var showingPlaidReview = false
+    @State private var showingPlaidBankingConnection = false
+    @State private var showingClaudeConsent = false
     @State private var plaidItemToRemove: CachedPlaidItem?
     @State private var plaidManagedManualAsset: DurableManualAsset?
     @State private var showingRemovePlaidConfirm = false
     @State private var plaidActionError: String?
 
+    private let page: SettingsPage?
+
+    init() {
+        page = nil
+    }
+
+    private init(page: SettingsPage) {
+        self.page = page
+    }
+
     private var settings: DurableUserSettings? { settingsList.first }
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
+            if page == nil {
                 Section {
-                    Button {
-                        showingTokenSheet = true
+                    NavigationLink {
+                        SettingsView(page: .connections)
                     } label: {
-                        HStack {
-                            Label {
-                                Text(container.hasYNABToken ? "YNAB Token" : "Add YNAB Token")
-                            } icon: {
-                                NwIcon.keychain.image.foregroundStyle(NwAppColors.primary)
-                            }
-                            Spacer()
-                            if container.hasYNABToken {
-                                NwStatusBadge("Stored", style: .positive, icon: .success)
-                            } else {
-                                NwIcon.chevron.image.foregroundStyle(.secondary)
-                            }
-                        }
+                        NwSettingsNavigationRow(
+                            "Accounts & Sync",
+                            subtitle: "Banking, investments, and data refresh",
+                            icon: .accounts,
+                            value: usesPlaidTransactions ? "Plaid" : "YNAB"
+                        )
                     }
+
+                    NavigationLink {
+                        SettingsView(page: .budget)
+                    } label: {
+                        NwSettingsNavigationRow(
+                            "Budget & Forecast",
+                            subtitle: "Envelope, cash, and card timing",
+                            icon: .projections,
+                            value: discretionaryTargetSummary
+                        )
+                    }
+
+                    NavigationLink {
+                        SettingsView(page: .assets)
+                    } label: {
+                        NwSettingsNavigationRow(
+                            "Manual Assets",
+                            subtitle: "Property and manually tracked values",
+                            icon: .otherAsset,
+                            value: "\(activeManualAssetCount)"
+                        )
+                    }
+
+                    NavigationLink {
+                        SettingsView(page: .privacy)
+                    } label: {
+                        NwSettingsNavigationRow(
+                            "Privacy & App",
+                            subtitle: "Face ID, Claude access, and tutorial",
+                            icon: .faceID,
+                            value: settings?.faceIDEnabled == true ? "Locked" : nil
+                        )
+                    }
+                }
+            }
+
+            if page == .privacy {
+                Section {
                     Toggle(isOn: faceIDBinding) {
                         Label {
                             Text("Require \(container.biometricGate.displayName)")
@@ -84,7 +145,41 @@ struct SettingsView: View {
                 } header: {
                     Text("Authentication")
                 }
+            }
 
+            if page == .connections {
+                Section {
+                    Button {
+                        showingTokenSheet = true
+                    } label: {
+                        HStack {
+                            Label {
+                                Text(container.hasYNABToken
+                                    ? "YNAB Token"
+                                    : "Add YNAB Token")
+                            } icon: {
+                                NwIcon.keychain.image
+                                    .foregroundStyle(NwAppColors.primary)
+                            }
+                            Spacer()
+                            if container.hasYNABToken {
+                                NwStatusBadge(
+                                    "Stored",
+                                    style: .positive,
+                                    icon: .success
+                                )
+                            } else {
+                                NwIcon.chevron.image
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("YNAB")
+                }
+            }
+
+            if page == .connections {
                 Section {
                     HStack {
                         Label {
@@ -106,7 +201,7 @@ struct SettingsView: View {
                     Button("Sync Now") {
                         Task { await container.syncNow() }
                     }
-                    .disabled(!container.hasYNABToken || isSyncing)
+                    .disabled(!canSync || isAnySyncing)
                     Button("Force Full Resync") {
                         showingForceResyncConfirm = true
                     }
@@ -147,57 +242,105 @@ struct SettingsView: View {
                 } header: {
                     Text("Sync")
                 }
+            }
 
+            if page == .connections {
+                Section {
+                    Button {
+                        showingPlaidBankingConnection = true
+                    } label: {
+                        NwSettingsActionRow(
+                            hasTransactionConnection
+                                ? "Manage Banking Accounts"
+                                : "Connect Banking Accounts",
+                            subtitle: "Checking, savings, and credit cards",
+                            icon: .accounts
+                        )
+                    }
+
+                    ForEach(transactionItems) { item in
+                        connectionItemRow(item)
+                    }
+                } header: {
+                    Text("Banking Connections")
+                } footer: {
+                    Text("Transactions · Up to two years of history")
+                }
+            }
+
+            if page == .connections, hasTransactionConnection {
+                Section {
+                    HStack {
+                        Label {
+                            Text("Primary source")
+                        } icon: {
+                            NwIcon.accounts.image.foregroundStyle(NwAppColors.primary)
+                        }
+                        Spacer()
+                        Text(usesPlaidTransactions ? "Plaid" : "YNAB")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Toggle(isOn: claudeFallbackBinding) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Claude fallback")
+                            Text("Only for transactions the on-device model cannot classify confidently.")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Transaction Import")
+                } footer: {
+                    Text("Networth learns names and categories from reviewed YNAB history and future corrections.")
+                }
+            }
+
+            if page == .privacy {
+                Section {
+                    NavigationLink {
+                        ClaudeDataAccessView()
+                    } label: {
+                        HStack {
+                            Label {
+                                Text("Claude.ai Access")
+                            } icon: {
+                                NwIcon.cloud.image
+                                    .foregroundStyle(NwAppColors.primary)
+                            }
+                            Spacer()
+                            if settings?.claudeDataSyncEnabled == true {
+                                NwStatusBadge(
+                                    "On",
+                                    style: .positive,
+                                    icon: .success
+                                )
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Claude.ai")
+                } footer: {
+                    Text("Optional read-only access to an encrypted financial copy. Separate from transaction classification.")
+                }
+            }
+
+            if page == .connections {
                 Section {
                     Button {
                         showingPlaidConnection = true
                     } label: {
-                        HStack {
-                            Label {
-                                Text(plaidItems.isEmpty ? "Connect Investment Account" : "Connect Another Account")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                            } icon: {
-                                NwIcon.investment.image.foregroundStyle(NwAppColors.primary)
-                            }
-                            Spacer()
-                            NwIcon.chevron.image.foregroundStyle(.secondary)
-                        }
+                        NwSettingsActionRow(
+                            investmentItems.isEmpty
+                                ? "Connect Investment Accounts"
+                                : "Connect Another Investment Account",
+                            subtitle: "Brokerage and retirement accounts",
+                            icon: .investment
+                        )
                     }
 
-                    ForEach(plaidItems) { item in
-                        HStack {
-                            Text(item.institutionName)
-                            Spacer()
-                            NwStatusBadge(
-                                item.status == "healthy" ? "Connected" : "Attention",
-                                style: item.status == "healthy" ? .positive : .caution,
-                                icon: item.status == "healthy" ? .success : .warning
-                            )
-                        }
-                        .swipeActions(allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                plaidItemToRemove = item
-                                showingRemovePlaidConfirm = true
-                            } label: {
-                                Label("Remove", systemImage: NwIcon.delete.rawValue)
-                            }
-                        }
-                    }
-
-                    if !plaidAccounts.isEmpty {
-                        Button {
-                            showingPlaidReview = true
-                        } label: {
-                            HStack {
-                                Text("Review Connected Accounts")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                                Spacer()
-                                if pendingPlaidReviewCount > 0 {
-                                    NwStatusBadge("\(pendingPlaidReviewCount)", style: .caution, icon: .warning)
-                                }
-                                NwIcon.chevron.image.foregroundStyle(.secondary)
-                            }
-                        }
+                    ForEach(investmentItems) { item in
+                        connectionItemRow(item)
                     }
 
                     switch container.plaidSyncCoordinator.phase {
@@ -224,8 +367,47 @@ struct SettingsView: View {
                 } footer: {
                     Text("Read-only · Review before inclusion")
                 }
+            }
 
+            if page == .connections, !plaidAccounts.isEmpty {
                 Section {
+                    Button {
+                        showingPlaidReview = true
+                    } label: {
+                        HStack {
+                            Text("Review Connected Accounts")
+                                .foregroundStyle(NwAppColors.textPrimary)
+                            Spacer()
+                            if pendingPlaidReviewCount > 0 {
+                                NwStatusBadge("\(pendingPlaidReviewCount)", style: .caution, icon: .warning)
+                            }
+                            NwIcon.chevron.image.foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Investment Account Review")
+                }
+            }
+
+            if page == .budget {
+                Section {
+                    Button {
+                        showingDiscretionaryBudget = true
+                    } label: {
+                        HStack {
+                            Label {
+                                Text("Discretionary Budget")
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                            } icon: {
+                                NwIcon.projections.image
+                                    .foregroundStyle(NwAppColors.primary)
+                            }
+                            Spacer()
+                            Text(discretionaryTargetSummary)
+                                .foregroundStyle(.secondary)
+                            NwIcon.chevron.image.foregroundStyle(.secondary)
+                        }
+                    }
                     HStack {
                         Text("Projection horizon")
                         Spacer()
@@ -282,7 +464,9 @@ struct SettingsView: View {
                 } header: {
                     Text("Projections")
                 }
+            }
 
+            if page == .assets {
                 Section("Manual Assets") {
                     Button {
                         showingNewAsset = true
@@ -331,7 +515,9 @@ struct SettingsView: View {
                         }
                     }
                 }
+            }
 
+            if page == .budget {
                 Section {
                     ForEach(creditCardAccounts) { acct in
                         let setting = cardSettings.first { $0.accountId == acct.id }
@@ -358,7 +544,9 @@ struct SettingsView: View {
                 } footer: {
                     Text("Full-statement autopay assumed.")
                 }
+            }
 
+            if page == .privacy {
                 Section {
                     Button {
                         NotificationCenter.default.post(name: .showTutorial, object: nil)
@@ -376,7 +564,9 @@ struct SettingsView: View {
                     }
                 }
             }
-            .navigationTitle("Settings")
+        }
+            .navigationTitle(page?.title ?? "Settings")
+            .navigationBarTitleDisplayMode(page == nil ? .large : .inline)
             .sheet(isPresented: $showingTokenSheet) {
                 PATEntrySheet().environment(container)
             }
@@ -405,11 +595,25 @@ struct SettingsView: View {
             .sheet(isPresented: $showingCashBuffer) {
                 MinimumCashBufferSheet().environment(container)
             }
+            .sheet(isPresented: $showingDiscretionaryBudget) {
+                DiscretionaryBudgetSettingsSheet().environment(container)
+            }
             .sheet(isPresented: $showingPlaidConnection) {
                 PlaidConnectionSheet().environment(container)
             }
             .sheet(isPresented: $showingPlaidReview) {
                 PlaidAccountReviewSheet().environment(container)
+            }
+            .sheet(isPresented: $showingPlaidBankingConnection) {
+                PlaidBankingConnectionSheet().environment(container)
+            }
+            .alert("Use Claude for Difficult Transactions?", isPresented: $showingClaudeConsent) {
+                Button("Cancel", role: .cancel) {}
+                Button("Allow") {
+                    container.setClaudeFallbackEnabled(true)
+                }
+            } message: {
+                Text("For low-confidence items only, Networth sends the transaction description, merchant/counterparty, Plaid category, payment channel, and direction through your private backend to Anthropic Claude. It never sends account numbers, balances, amounts, dates, or your YNAB history.")
             }
             .alert("Force Full Resync?", isPresented: $showingForceResyncConfirm) {
                 Button("Cancel", role: .cancel) {}
@@ -428,7 +632,8 @@ struct SettingsView: View {
                             plaidActionError = nil
                             plaidItemToRemove = nil
                         } catch {
-                            plaidActionError = "The connection could not be removed. Try again."
+                            plaidActionError = (error as? LocalizedError)?.errorDescription
+                                ?? "The connection could not be removed. Try again."
                         }
                     }
                 }
@@ -447,12 +652,51 @@ struct SettingsView: View {
             } message: { asset in
                 Text("Plaid supplies the current value for \(asset.name.isEmpty ? "this asset" : asset.name). Change its match before editing or deleting; manual history stays intact.")
             }
-        }
     }
 
     private var isSyncing: Bool {
         if case .syncing = container.syncCoordinator.phase { return true }
         return false
+    }
+
+    private var isAnySyncing: Bool {
+        if isSyncing { return true }
+        if case .syncing = container.plaidTransactionSyncCoordinator.phase { return true }
+        return false
+    }
+
+    private var canSync: Bool {
+        container.hasYNABToken || container.hasPlaidBackendToken
+    }
+
+    private var usesPlaidTransactions: Bool {
+        settings?.primaryFinancialDataSource == .plaid
+    }
+
+    private var investmentItems: [CachedPlaidItem] {
+        plaidItems.filter { $0.products.contains("investments") }
+    }
+
+    private var transactionItems: [CachedPlaidItem] {
+        plaidItems.filter { $0.products.contains("transactions") }
+    }
+
+    private var hasTransactionConnection: Bool {
+        settings?.plaidTransactionsEnabled == true
+            || plaidItems.contains { $0.products.contains("transactions") }
+    }
+
+    private var claudeFallbackBinding: Binding<Bool> {
+        Binding(
+            get: { settings?.claudeFallbackEnabled ?? false },
+            set: { enabled in
+                if enabled {
+                    showingClaudeConsent = true
+                } else {
+                    container.setClaudeFallbackEnabled(false)
+                }
+            }
+        )
     }
 
     private var plaidResolver: PlaidContributionResolver {
@@ -476,6 +720,26 @@ struct SettingsView: View {
         }.count
     }
 
+    private func connectionItemRow(_ item: CachedPlaidItem) -> some View {
+        HStack {
+            Text(item.institutionName)
+            Spacer()
+            NwStatusBadge(
+                item.status == "healthy" ? "Connected" : "Attention",
+                style: item.status == "healthy" ? .positive : .caution,
+                icon: item.status == "healthy" ? .success : .warning
+            )
+        }
+        .swipeActions(allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                plaidItemToRemove = item
+                showingRemovePlaidConfirm = true
+            } label: {
+                Label("Remove", systemImage: NwIcon.delete.rawValue)
+            }
+        }
+    }
+
     private var horizonBinding: Binding<Int> {
         Binding(
             get: { settings?.projectionHorizonDays ?? 90 },
@@ -496,7 +760,31 @@ struct SettingsView: View {
 
     private var excludedCount: Int { exclusions.count + transactionExclusions.count }
 
+    private var discretionaryTargetSummary: String {
+        guard let target = settings?.discretionaryMonthlyTargetMilliunits,
+              target > 0 else {
+            return "Set up"
+        }
+        return "\(CurrencyFormatter.compact(Money(milliunits: target)))/mo"
+    }
+
+    private var activeManualAssetCount: Int {
+        manualAssets.filter { !$0.deleted }.count
+    }
+
     private var selectedCashAccountCount: Int {
+        if usesPlaidTransactions {
+            var overridesByCanonicalID: [String: Bool] = [:]
+            cashAccountOverrides.forEach {
+                if let id = $0.canonicalAccountId {
+                    overridesByCanonicalID[id] = $0.included
+                }
+            }
+            return financialAccounts.filter {
+                !$0.deleted && $0.type.isCashLike
+                    && (overridesByCanonicalID[$0.canonicalAccountId] ?? true)
+            }.count
+        }
         var overrides: [String: Bool] = [:]
         cashAccountOverrides.forEach { overrides[$0.accountId] = $0.included }
         return accounts.filter { account in
@@ -584,6 +872,8 @@ private struct ProjectionCashAccountsSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
+    @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
+    @Query private var userSettings: [DurableUserSettings]
     @Query private var overrides: [DurableProjectionCashAccountOverride]
 
     private var cashAccounts: [CachedAccount] {
@@ -596,12 +886,38 @@ private struct ProjectionCashAccountsSheet: View {
                 Text("Choose cash available for projections.")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
-                if cashAccounts.isEmpty {
+                if usesPlaidTransactions && plaidCashAccounts.isEmpty
+                    || !usesPlaidTransactions && cashAccounts.isEmpty {
                     NwEmptyState(
                         title: "No cash accounts",
-                        message: "Sync YNAB to load checking, savings, and cash accounts.",
+                        message: "Sync your primary banking source to load checking, savings, and cash accounts.",
                         icon: .accounts
                     )
+                } else if usesPlaidTransactions {
+                    VStack(spacing: 0) {
+                        ForEach(plaidCashAccounts) { account in
+                            HStack(spacing: NwSpacing.sm) {
+                                NwIcon.forAccountKind(account.kind.rawValue).image
+                                    .foregroundStyle(NwAppColors.primary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(account.name).foregroundStyle(NwAppColors.textPrimary)
+                                    Text(account.institutionName ?? "Plaid")
+                                        .font(NwTypography.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Toggle("", isOn: binding(for: account))
+                                    .labelsHidden()
+                            }
+                            .padding(.vertical, NwSpacing.sm)
+                            if account.canonicalAccountId != plaidCashAccounts.last?.canonicalAccountId {
+                                Divider()
+                            }
+                        }
+                    }
+                    .padding(.horizontal, NwSpacing.md)
+                    .background(NwAppColors.cardSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
                 } else {
                     VStack(spacing: 0) {
                         ForEach(cashAccounts) { account in
@@ -630,6 +946,14 @@ private struct ProjectionCashAccountsSheet: View {
         }
     }
 
+    private var usesPlaidTransactions: Bool {
+        userSettings.first?.primaryFinancialDataSource == .plaid
+    }
+
+    private var plaidCashAccounts: [CachedFinancialAccount] {
+        financialAccounts.filter { !$0.deleted && $0.type.isCashLike }
+    }
+
     private func binding(for account: CachedAccount) -> Binding<Bool> {
         Binding(
             get: { overrides.first(where: { $0.accountId == account.id })?.included ?? account.onBudget },
@@ -649,6 +973,40 @@ private struct ProjectionCashAccountsSheet: View {
             ctx.insert(DurableProjectionCashAccountOverride(accountId: account.id, included: included))
         }
         if !ctx.safeSave(source: "settings.cashAccounts.toggle") { ctx.rollback() }
+    }
+
+    private func binding(for account: CachedFinancialAccount) -> Binding<Bool> {
+        Binding(
+            get: {
+                overrides.first {
+                    $0.canonicalAccountId == account.canonicalAccountId
+                }?.included ?? true
+            },
+            set: { set(account: account, included: $0) }
+        )
+    }
+
+    private func set(account: CachedFinancialAccount, included: Bool) {
+        let context = container.modelContainer.mainContext
+        let existing = overrides.filter {
+            $0.canonicalAccountId == account.canonicalAccountId
+        }
+        if included {
+            existing.forEach(context.delete)
+        } else if let first = existing.first {
+            first.included = false
+            existing.dropFirst().forEach(context.delete)
+        } else {
+            let row = DurableProjectionCashAccountOverride(
+                accountId: "",
+                included: false
+            )
+            row.canonicalAccountId = account.canonicalAccountId
+            context.insert(row)
+        }
+        if !context.safeSave(source: "settings.cashAccounts.togglePlaid") {
+            context.rollback()
+        }
     }
 }
 
@@ -671,7 +1029,7 @@ private struct MinimumCashBufferSheet: View {
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
                 TextField("500", text: $amountText)
-                    .keyboardType(.decimalPad)
+                    .nwCurrencyInput(text: $amountText)
                     .font(NwTypography.display)
                     .focused($amountFocused)
                     .onChange(of: amountFocused) { _, focused in
@@ -687,13 +1045,13 @@ private struct MinimumCashBufferSheet: View {
         }
         .onAppear {
             let amount = Money(milliunits: settingsList.first?.dipThresholdMilliunits ?? 500_000)
-            amountText = NSDecimalNumber(decimal: amount.decimalValue).stringValue
+            amountText = CurrencyInputFormatter.text(for: amount)
         }
     }
 
     private func save() {
-        let normalized = amountText.replacingOccurrences(of: ",", with: "")
-        guard let value = Decimal(string: normalized), value >= 0 else {
+        guard let amount = CurrencyInputFormatter.money(from: amountText),
+              amount >= .zero else {
             saveError = "Enter a valid amount of zero or more."
             return
         }
@@ -704,13 +1062,2061 @@ private struct MinimumCashBufferSheet: View {
             return value
         }()
         let prior = settings.dipThresholdMilliunits
-        settings.dipThresholdMilliunits = Money.dollars(value).milliunits
+        settings.dipThresholdMilliunits = amount.milliunits
         guard ctx.safeSave(source: "settings.minimumCashBuffer") else {
             settings.dipThresholdMilliunits = prior
             saveError = "Saving the minimum cash buffer failed. Try again."
             return
         }
         dismiss()
+    }
+}
+
+struct DiscretionaryBudgetSettingsSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query private var settingsList: [DurableUserSettings]
+    @Query(sort: \DurableCanonicalCategory.name)
+    private var canonicalCategories: [DurableCanonicalCategory]
+    @Query(sort: \CachedCategory.name)
+    private var cachedCategories: [CachedCategory]
+
+    @State private var targetText = ""
+    @State private var selectedIds: Set<String> = []
+    @State private var saveError: String?
+    @State private var loaded = false
+
+    private var activeOptions: [DiscretionaryCategoryOption] {
+        DiscretionaryCategoryResolver.options(
+            canonical: canonicalCategories,
+            cached: cachedCategories,
+            activeOnly: true
+        ).filter {
+            $0.groupName != "Credit Card Payments"
+                && $0.groupName != "Internal Master Category"
+        }
+    }
+
+    private var groupedOptions: [
+        (group: String, items: [DiscretionaryCategoryOption])
+    ] {
+        Dictionary(grouping: activeOptions, by: \.groupName)
+            .map {
+                (
+                    group: $0.key,
+                    items: $0.value.sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name)
+                            == .orderedAscending
+                    }
+                )
+            }
+            .sorted {
+                $0.group.localizedCaseInsensitiveCompare($1.group)
+                    == .orderedAscending
+            }
+    }
+
+    var body: some View {
+        NwModalLayout(
+            title: "Discretionary Budget",
+            onClose: { dismiss() },
+            onConfirm: save
+        ) {
+            if let saveError {
+                NwInlineNotice(
+                    "Couldn't save",
+                    message: saveError,
+                    tone: .warning
+                )
+            }
+
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                Text("MONTHLY TARGET")
+                    .font(NwTypography.caption)
+                    .foregroundStyle(.secondary)
+                TextField("0.00", text: $targetText)
+                    .nwCurrencyInput(text: $targetText)
+                    .font(NwTypography.display)
+                    .padding(NwSpacing.md)
+                    .background(NwAppColors.cardSurface)
+                    .clipShape(RoundedRectangle(
+                        cornerRadius: NwCornerRadius.md,
+                        style: .continuous
+                    ))
+            }
+
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                HStack {
+                    Text("DISCRETIONARY CATEGORIES")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(selectedIds.count) selected")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Text("One shared envelope. Transfers, income, and card payments are always excluded.")
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if groupedOptions.isEmpty {
+                NwEmptyState(
+                    title: "No active categories",
+                    message: "Sync your transaction categories first.",
+                    icon: .empty
+                )
+            } else {
+                ForEach(groupedOptions, id: \.group) { group in
+                    VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                        Text(displayGroupName(group.group).uppercased())
+                            .font(NwTypography.caption)
+                            .foregroundStyle(.secondary)
+                        VStack(spacing: 0) {
+                            ForEach(group.items) { option in
+                                categoryRow(option)
+                                if option.id != group.items.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                        .padding(.horizontal, NwSpacing.md)
+                        .background(NwAppColors.cardSurface)
+                        .clipShape(RoundedRectangle(
+                            cornerRadius: NwCornerRadius.md,
+                            style: .continuous
+                        ))
+                    }
+                }
+            }
+        }
+        .onAppear { loadDraft() }
+    }
+
+    private func categoryRow(
+        _ option: DiscretionaryCategoryOption
+    ) -> some View {
+        let selected = selectedIds.contains(option.id)
+        return Button {
+            if selected {
+                selectedIds.remove(option.id)
+            } else {
+                selectedIds.insert(option.id)
+            }
+        } label: {
+            HStack(spacing: NwSpacing.sm) {
+                Image(systemName: selected
+                    ? "checkmark.circle.fill"
+                    : "circle")
+                    .foregroundStyle(selected
+                        ? NwAppColors.primary
+                        : NwAppColors.strokeSubtle)
+                Text(option.name)
+                    .font(NwTypography.body)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, NwSpacing.sm)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func displayGroupName(_ name: String) -> String {
+        name == "Internal Master Category" ? "Income" : name
+    }
+
+    private func loadDraft() {
+        guard !loaded else { return }
+        let settings = settingsList.first
+        targetText = CurrencyInputFormatter.text(
+            for: Money(
+                milliunits: settings?
+                    .discretionaryMonthlyTargetMilliunits ?? 0
+            )
+        )
+        selectedIds = DiscretionaryCategoryResolver.selectedIds(
+            settings: settings,
+            activeOptions: activeOptions
+        )
+        loaded = true
+    }
+
+    private func save() {
+        guard let target = CurrencyInputFormatter.money(from: targetText),
+              target > .zero else {
+            saveError = "Enter a monthly target greater than zero."
+            return
+        }
+        let context = container.modelContainer.mainContext
+        let settings = settingsList.first ?? {
+            let value = DurableUserSettings()
+            context.insert(value)
+            return value
+        }()
+        let priorTarget = settings.discretionaryMonthlyTargetMilliunits
+        let priorCategoryData = settings.discretionaryCategoryIdsData
+        settings.discretionaryMonthlyTargetMilliunits = target.milliunits
+        settings.discretionaryCategoryIds = selectedIds
+        guard context.safeSave(source: "settings.discretionaryBudget") else {
+            settings.discretionaryMonthlyTargetMilliunits = priorTarget
+            settings.discretionaryCategoryIdsData = priorCategoryData
+            saveError = "Saving the discretionary budget failed. Try again."
+            return
+        }
+        dismiss()
+    }
+}
+
+private struct PlaidBankingConnectionSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query(sort: \CachedPlaidItem.institutionName) private var items: [CachedPlaidItem]
+
+    @State private var backendToken = ""
+    @State private var isWorking = false
+    @State private var errorMessage: String?
+    @State private var linkSession: PlaidLinkSession?
+    @State private var itemToRemove: CachedPlaidItem?
+    @State private var showingRemoveConfirm = false
+
+    private var connectedItems: [CachedPlaidItem] {
+        items.filter { $0.products.contains("transactions") }
+    }
+
+    private var upgradeableItems: [CachedPlaidItem] {
+        items.filter { !$0.products.contains("transactions") }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Connect checking, savings, and credit-card accounts. Plaid will return posted and pending transactions plus up to two years of history.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !container.hasPlaidBackendToken {
+                    Section("Backend Access") {
+                        SecureField("Private app token", text: $backendToken)
+                            .textContentType(.password)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                }
+
+                if !connectedItems.isEmpty {
+                    Section {
+                        ForEach(connectedItems) { item in
+                            HStack {
+                                Text(item.institutionName)
+                                Spacer()
+                                NwStatusBadge(
+                                    item.status == "healthy" ? "Connected" : "Attention",
+                                    style: item.status == "healthy" ? .positive : .caution,
+                                    icon: item.status == "healthy" ? .success : .warning
+                                )
+                            }
+                            .swipeActions(allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    itemToRemove = item
+                                    showingRemoveConfirm = true
+                                } label: {
+                                    Label("Remove", systemImage: NwIcon.delete.rawValue)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Connected")
+                    }
+                }
+
+                if !upgradeableItems.isEmpty {
+                    Section {
+                        ForEach(upgradeableItems) { item in
+                            Button {
+                                beginUpgrade(item)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(item.institutionName)
+                                            .foregroundStyle(NwAppColors.textPrimary)
+                                        Text("Add transaction access")
+                                            .font(NwTypography.footnote)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    NwIcon.chevron.image.foregroundStyle(.secondary)
+                                }
+                            }
+                            .disabled(isWorking)
+                        }
+                    } header: {
+                        Text("Add Transaction Access")
+                    } footer: {
+                        Text("Updating an existing connection avoids creating a duplicate Plaid Item.")
+                    }
+                }
+
+                Section {
+                    Button {
+                        beginNewConnection()
+                    } label: {
+                        HStack {
+                            if isWorking { ProgressView().controlSize(.small) }
+                            Text(isWorking ? "Connecting" : "Connect a New Institution")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .disabled(
+                        isWorking
+                            || (!container.hasPlaidBackendToken && backendToken.trimmed.isEmpty)
+                    )
+                }
+
+                if let errorMessage {
+                    Section {
+                        NwInlineNotice("Connection failed", message: errorMessage, tone: .warning)
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                    }
+                }
+            }
+            .navigationTitle("Banking Connections")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        NwIcon.close.image.foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+            .interactiveDismissDisabled(isWorking)
+            .alert("Remove Connection?", isPresented: $showingRemoveConfirm, presenting: itemToRemove) { item in
+                Button("Cancel", role: .cancel) {}
+                Button("Remove", role: .destructive) {
+                    Task { @MainActor in
+                        do {
+                            try await container.removePlaidItem(id: item.id)
+                            itemToRemove = nil
+                        } catch {
+                            errorMessage = (error as? LocalizedError)?.errorDescription
+                                ?? "The connection could not be removed. Try again."
+                        }
+                    }
+                }
+            } message: { item in
+                Text("Disconnects \(item.institutionName) from Networth only.")
+            }
+        }
+    }
+
+    private func prepareBackendToken() async throws {
+        if !container.hasPlaidBackendToken {
+            try await container.savePlaidBackendToken(backendToken)
+        }
+    }
+
+    private func beginNewConnection() {
+        errorMessage = nil
+        isWorking = true
+        Task { @MainActor in
+            do {
+                try await prepareBackendToken()
+                let token = try await container.createPlaidTransactionLinkToken()
+                isWorking = false
+                linkSession = try PlaidLinkPresenter.present(
+                    token: token,
+                    onSuccess: { publicToken in
+                        Task { @MainActor in
+                            linkSession = nil
+                            isWorking = true
+                            do {
+                                _ = try await container.completePlaidTransactionLink(
+                                    publicToken: publicToken
+                                )
+                                isWorking = false
+                                dismiss()
+                            } catch {
+                                isWorking = false
+                                errorMessage = message(for: error)
+                            }
+                        }
+                    },
+                    onExit: { message in
+                        Task { @MainActor in
+                            linkSession = nil
+                            isWorking = false
+                            if let message { errorMessage = message }
+                        }
+                    }
+                )
+            } catch {
+                isWorking = false
+                errorMessage = message(for: error)
+            }
+        }
+    }
+
+    private func beginUpgrade(_ item: CachedPlaidItem) {
+        errorMessage = nil
+        isWorking = true
+        Task { @MainActor in
+            do {
+                try await prepareBackendToken()
+                let token = try await container.createPlaidTransactionUpdateLinkToken(itemId: item.id)
+                isWorking = false
+                linkSession = try PlaidLinkPresenter.present(
+                    token: token,
+                    onSuccess: { _ in
+                        Task { @MainActor in
+                            linkSession = nil
+                            isWorking = true
+                            do {
+                                try await container.completePlaidTransactionUpgrade(itemId: item.id)
+                                isWorking = false
+                                dismiss()
+                            } catch {
+                                isWorking = false
+                                errorMessage = message(for: error)
+                            }
+                        }
+                    },
+                    onExit: { message in
+                        Task { @MainActor in
+                            linkSession = nil
+                            isWorking = false
+                            if let message { errorMessage = message }
+                        }
+                    }
+                )
+            } catch {
+                isWorking = false
+                errorMessage = message(for: error)
+            }
+        }
+    }
+
+    private func message(for error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription
+            ?? "The banking service could not complete the request."
+    }
+}
+
+struct PlaidAccountMappingSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query(sort: \DurableCanonicalAccountBinding.accountName)
+    private var bindings: [DurableCanonicalAccountBinding]
+    @Query(sort: \CachedAccount.name) private var ynabAccounts: [CachedAccount]
+    @Query private var financialAccounts: [CachedFinancialAccount]
+    @Query private var historicalMatches: [LegacyTransactionMatchRow]
+
+    private static let notReviewed = "__not_reviewed__"
+    private static let noMatch = "__no_match__"
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("Match each Plaid account to the YNAB account it replaces. Choose “No YNAB match” for a genuinely new account. Networth will not merge accounts unless you confirm the identity.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(activeBindings) { binding in
+                    Section {
+                        Picker("YNAB account", selection: selection(for: binding)) {
+                            Text("Choose a match").tag(Self.notReviewed)
+                            Text("No YNAB match").tag(Self.noMatch)
+                            ForEach(eligibleYNABAccounts(for: binding)) { account in
+                                Text(account.name).tag(account.id)
+                            }
+                        }
+
+                        let matchCount = historicalMatches.filter {
+                            $0.plaidTransactionId.hasPrefix("plaid:")
+                                && $0.reviewed == false
+                        }.count
+                        if binding.reviewed {
+                            HStack {
+                                Text("Reconciliation")
+                                Spacer()
+                                NwStatusBadge("Confirmed", style: .positive, icon: .success)
+                            }
+                        } else if matchCount > 0 {
+                            Text("Historical transaction candidates are ready after account confirmation.")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(binding.accountName)
+                            Text(accountSubtitle(binding))
+                                .font(NwTypography.caption)
+                                .textCase(nil)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Reconcile Accounts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button { dismiss() } label: {
+                        NwIcon.confirm.image.foregroundStyle(NwAppColors.positive)
+                    }
+                    .accessibilityLabel("Done")
+                }
+            }
+        }
+    }
+
+    private var activeBindings: [DurableCanonicalAccountBinding] {
+        let activeIDs = Set(
+            financialAccounts.filter { !$0.deleted }.map(\.externalId)
+        )
+        return bindings.filter { activeIDs.contains($0.plaidAccountId) }
+    }
+
+    private func selection(for binding: DurableCanonicalAccountBinding) -> Binding<String> {
+        Binding(
+            get: {
+                guard binding.reviewed else { return Self.notReviewed }
+                return binding.ynabAccountId ?? Self.noMatch
+            },
+            set: { value in
+                guard value != Self.notReviewed else { return }
+                container.mapPlaidAccount(
+                    binding.plaidAccountId,
+                    toYNABAccount: value == Self.noMatch ? nil : value
+                )
+            }
+        )
+    }
+
+    private func eligibleYNABAccounts(
+        for binding: DurableCanonicalAccountBinding
+    ) -> [CachedAccount] {
+        let candidates = ynabAccounts.filter { !$0.deleted && !$0.closed }
+        switch binding.accountType {
+        case .checking, .savings, .cash:
+            return candidates.filter { $0.kind.isCashLike }
+        case .creditCard:
+            return candidates.filter { $0.kind.isCreditCardLike }
+        case .investment:
+            return candidates.filter { $0.kind == .investment }
+        case .loan:
+            return candidates.filter {
+                [.mortgage, .autoLoan, .studentLoan, .personalLoan,
+                 .medicalDebt, .otherDebt].contains($0.kind)
+            }
+        case .other:
+            return candidates
+        }
+    }
+
+    private func accountSubtitle(_ binding: DurableCanonicalAccountBinding) -> String {
+        let mask = binding.mask.map { " •••• \($0)" } ?? ""
+        return "\(binding.institutionName)\(mask)"
+    }
+}
+
+struct PlaidClassificationReviewSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(\.modelContext) private var modelContext
+    @Query(sort: \CachedFinancialAccount.name)
+    private var financialAccounts: [CachedFinancialAccount]
+    @State private var transactions: [CachedFinancialTransaction] = []
+    @State private var isLoading = false
+    @State private var hasMore = true
+    @State private var loadError: String?
+    @State private var loadedInbox = false
+
+    private static let pageSize = 50
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if !loadedInbox {
+                    ProgressView()
+                } else if transactions.isEmpty, loadError == nil {
+                    NwEmptyState(
+                        title: "All caught up",
+                        message: "New posted transactions will appear here for confirmation.",
+                        icon: .success
+                    )
+                    .padding(NwSpacing.screenPadding)
+                } else {
+                    reviewInbox
+                }
+            }
+            .background(NwAppColors.background.ignoresSafeArea())
+            .navigationTitle("Review Transactions")
+            .navigationBarTitleDisplayMode(.inline)
+            .task {
+                guard !loadedInbox else { return }
+                loadInitialInbox()
+                loadedInbox = true
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        NwIcon.close.image
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+        }
+    }
+
+    private var reviewInbox: some View {
+        List {
+            let needsAttention = transactions.filter {
+                reviewReadiness(for: $0) != .ready
+            }
+            let readyToConfirm = transactions.filter {
+                reviewReadiness(for: $0) == .ready
+            }
+
+            if !needsAttention.isEmpty {
+                Section("Needs Attention") {
+                    ForEach(needsAttention) { transaction in
+                        reviewRow(for: transaction)
+                    }
+                }
+            }
+
+            if !readyToConfirm.isEmpty {
+                Section("Ready to Confirm") {
+                    ForEach(readyToConfirm) { transaction in
+                        reviewRow(for: transaction)
+                    }
+                }
+            }
+
+            Section {
+                if isLoading {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
+                } else if let loadError {
+                    VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                        Text(loadError)
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.liability)
+                        Button("Retry") {
+                            self.loadError = nil
+                            loadNextPage()
+                        }
+                    }
+                } else if hasMore {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
+                    .onAppear {
+                        loadNextPage()
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func reviewRow(
+        for transaction: CachedFinancialTransaction
+    ) -> some View {
+        let readiness = reviewReadiness(for: transaction)
+        return NavigationLink {
+            PlaidTransactionReviewEditor(
+                transaction: transaction,
+                matchingTransactions: [transaction],
+                dismissAfterSave: true,
+                onSaved: {
+                    removeCompletedReview(transaction.id)
+                }
+            )
+        } label: {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                HStack {
+                    NwStatusBadge(
+                        readiness.label,
+                        style: readiness.badgeStyle,
+                        icon: readiness.icon
+                    )
+                    Spacer(minLength: NwSpacing.sm)
+                    Text(
+                        transaction.postedDate.formatted(
+                            date: .abbreviated,
+                            time: .omitted
+                        )
+                    )
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+                }
+
+                NwTransactionRow(
+                    title: transaction.displayName,
+                    subtitle: reviewSubtitle(for: transaction),
+                    amount: Money(
+                        milliunits: transaction.amountMilliunits
+                    )
+                )
+            }
+            .padding(.vertical, NwSpacing.xs)
+            .contentShape(Rectangle())
+        }
+    }
+
+    private func loadInitialInbox() {
+        transactions = []
+        hasMore = true
+        loadError = nil
+        loadNextPage()
+    }
+
+    private func loadNextPage() {
+        guard !isLoading, hasMore else { return }
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    $0.requiresReview
+                        && !$0.deleted
+                        && !$0.pending
+                },
+                sortBy: [
+                    SortDescriptor(
+                        \.reviewOriginRaw,
+                        order: .reverse
+                    ),
+                    SortDescriptor(\.postedDate, order: .reverse),
+                    SortDescriptor(\.id, order: .forward)
+                ]
+            )
+            descriptor.fetchLimit = Self.pageSize
+            descriptor.fetchOffset = transactions.count
+            let page = try modelContext.fetch(descriptor)
+            let loadedIDs = Set(transactions.map(\.id))
+            transactions.append(
+                contentsOf: page.filter { !loadedIDs.contains($0.id) }
+            )
+            hasMore = page.count == Self.pageSize
+        } catch {
+            loadError = "More transactions could not be loaded."
+        }
+    }
+
+    private func removeCompletedReview(_ id: String) {
+        transactions.removeAll { $0.id == id }
+        if transactions.count < Self.pageSize / 2, hasMore {
+            loadNextPage()
+        }
+    }
+
+    private func reviewReadiness(
+        for transaction: CachedFinancialTransaction
+    ) -> PlaidReviewReadiness {
+        guard transaction.payeeCanonicalId != nil else {
+            return .needsContact
+        }
+        if transaction.isSplit {
+            let splits = transaction.subtransactions
+            guard splits.count >= 2,
+                  splits.map(\.amount).sum().milliunits
+                    == transaction.amountMilliunits else {
+                return .needsSplit
+            }
+            return .ready
+        }
+        if transaction.forecastTreatment.requiresCategory {
+            let categoryName = transaction.categoryName?.trimmed ?? ""
+            guard transaction.categoryCanonicalId != nil,
+                  !categoryName.isEmpty else {
+                return .needsCategory
+            }
+        }
+        return .ready
+    }
+
+    private func reviewSubtitle(
+        for transaction: CachedFinancialTransaction
+    ) -> String {
+        let classification = transaction.forecastTreatment.requiresCategory
+            ? transaction.categoryDisplayName
+            : transaction.forecastTreatment.displayName
+        let account = plaidTransactionAccountLabel(
+            for: transaction,
+            financialAccounts: financialAccounts
+        )
+        return "\(classification) · \(account)"
+    }
+}
+
+private enum PlaidReviewReadiness: Equatable {
+    case ready
+    case needsContact
+    case needsCategory
+    case needsSplit
+
+    var label: String {
+        switch self {
+        case .ready: "Ready"
+        case .needsContact: "Needs contact"
+        case .needsCategory: "Needs category"
+        case .needsSplit: "Needs split"
+        }
+    }
+
+    var badgeStyle: NwStatusBadgeStyle {
+        self == .ready ? .positive : .caution
+    }
+
+    var icon: NwIcon {
+        self == .ready ? .success : .warning
+    }
+}
+
+private struct PlaidSplitDraft: Identifiable {
+    let id: UUID
+    var persistedID: String?
+    var categoryID: String?
+    var categoryName: String
+    var treatment: ForecastTreatment?
+    var amountText: String
+
+    init(
+        id: UUID = UUID(),
+        persistedID: String? = nil,
+        categoryID: String? = nil,
+        categoryName: String = "",
+        treatment: ForecastTreatment? = nil,
+        amountText: String = ""
+    ) {
+        self.id = id
+        self.persistedID = persistedID
+        self.categoryID = categoryID
+        self.categoryName = categoryName
+        self.treatment = treatment
+        self.amountText = amountText
+    }
+}
+
+struct PlaidTransactionReviewEditor: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query(sort: \DurableCanonicalPayee.name)
+    private var canonicalPayees: [DurableCanonicalPayee]
+    @Query(sort: \DurableCanonicalCategory.name)
+    private var canonicalCategories: [DurableCanonicalCategory]
+    @Query(sort: \CachedFinancialAccount.name)
+    private var financialAccounts: [CachedFinancialAccount]
+    let transaction: CachedFinancialTransaction
+    let matchingTransactions: [CachedFinancialTransaction]
+    let dismissAfterSave: Bool
+    let canMovePrevious: Bool
+    let canMoveNext: Bool
+    let onPrevious: (() -> Void)?
+    let onNext: (() -> Void)?
+    let onSaved: () -> Void
+
+    @State private var displayName: String
+    @State private var payeeCanonicalId: String?
+    @State private var categoryName: String
+    @State private var categoryCanonicalId: String?
+    @State private var treatment: ForecastTreatment
+    @State private var cachedCategoryGroups: [PlaidCategoryGroup] = []
+    @State private var payeeNameByID: [String: String] = [:]
+    @State private var categoryNameByID: [String: String] = [:]
+    @State private var activeCategoryByID: [String: PlaidCategoryOption] = [:]
+    @State private var activeCategoryByName: [String: PlaidCategoryOption] = [:]
+    @State private var isSplit: Bool
+    @State private var splitDrafts: [PlaidSplitDraft]
+    @State private var splitTransactionID: String
+    @State private var splitSaveError: String?
+    @FocusState private var splitAmountFocusedID: UUID?
+
+    init(
+        transaction: CachedFinancialTransaction,
+        matchingTransactions: [CachedFinancialTransaction],
+        dismissAfterSave: Bool = false,
+        canMovePrevious: Bool = false,
+        canMoveNext: Bool = false,
+        onPrevious: (() -> Void)? = nil,
+        onNext: (() -> Void)? = nil,
+        onSaved: @escaping () -> Void
+    ) {
+        self.transaction = transaction
+        self.matchingTransactions = matchingTransactions
+        self.dismissAfterSave = dismissAfterSave
+        self.canMovePrevious = canMovePrevious
+        self.canMoveNext = canMoveNext
+        self.onPrevious = onPrevious
+        self.onNext = onNext
+        self.onSaved = onSaved
+        _displayName = State(initialValue: transaction.displayName)
+        _payeeCanonicalId = State(
+            initialValue: transaction.payeeCanonicalId
+        )
+        _categoryName = State(
+            initialValue: transaction.categoryName?.trimmed ?? ""
+        )
+        _categoryCanonicalId = State(
+            initialValue: transaction.categoryCanonicalId
+        )
+        _treatment = State(initialValue: transaction.forecastTreatment)
+        let existingDrafts = transaction.subtransactions.map {
+            let splitTreatment: ForecastTreatment? =
+                if transaction.amountMilliunits > 0 {
+                    $0.forecastTreatment == .income
+                        || $0.categoryName?
+                            .localizedCaseInsensitiveContains("income")
+                            == true
+                        ? .income
+                        : .refund
+                } else {
+                    nil
+                }
+            return PlaidSplitDraft(
+                persistedID: $0.id,
+                categoryID: $0.categoryId,
+                categoryName: $0.categoryName ?? "",
+                treatment: splitTreatment,
+                amountText: CurrencyInputFormatter.text(
+                    for: $0.amount.absolute
+                )
+            )
+        }
+        let initialDrafts: [PlaidSplitDraft]
+        if existingDrafts.isEmpty {
+            initialDrafts = transaction.amountMilliunits > 0
+                ? [
+                    PlaidSplitDraft(treatment: .income),
+                    PlaidSplitDraft(treatment: .refund)
+                ]
+                : [PlaidSplitDraft(), PlaidSplitDraft()]
+        } else {
+            initialDrafts = existingDrafts
+        }
+        _isSplit = State(initialValue: !existingDrafts.isEmpty)
+        _splitDrafts = State(initialValue: initialDrafts)
+        _splitTransactionID = State(initialValue: transaction.id)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                reviewControls
+
+                Divider()
+
+                transactionHistory
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(NwAppColors.background.ignoresSafeArea())
+        .navigationTitle(
+            transaction.requiresReview
+                ? "Review Transaction"
+                : "Edit Transaction"
+        )
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            prepareDirectoryIndexes()
+            resolveDisplayedSelections()
+        }
+        .onChange(of: canonicalPayees.count) {
+            prepareDirectoryIndexes()
+        }
+        .onChange(of: canonicalCategories.count) {
+            prepareDirectoryIndexes()
+        }
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button {
+                    saveReview()
+                } label: {
+                    NwIcon.confirm.image.foregroundStyle(NwAppColors.positive)
+                }
+                .accessibilityLabel("Save")
+                .disabled(!canSaveReview)
+            }
+        }
+    }
+
+    private var reviewControls: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            if let splitSaveError {
+                NwInlineNotice(
+                    "Couldn't save transaction",
+                    message: splitSaveError,
+                    tone: .warning
+                )
+            }
+
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                reviewSectionTitle("Contact")
+                NwCard(style: .primary, padding: 0) {
+                    NavigationLink {
+                        CanonicalPayeePicker(
+                            selection: $payeeCanonicalId,
+                            displayName: $displayName,
+                            payees: canonicalPayees
+                        )
+                    } label: {
+                        LabeledContent("Contact") {
+                            Text(
+                                selectedPayeeName
+                                    ?? "Select contact"
+                            )
+                            .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(NwSpacing.md)
+                }
+                if payeeCanonicalId == nil,
+                   !displayName.trimmed.isEmpty {
+                    Text("Suggested: \(displayName.trimmed). Tap Contact to select or create it.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                reviewSectionTitle("Classification")
+                classificationControls
+                if let classificationFooter {
+                    Text(classificationFooter)
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            splitControls
+                .frame(height: isSplit ? nil : 0, alignment: .top)
+                .clipped()
+                .opacity(isSplit ? 1 : 0)
+                .allowsHitTesting(isSplit)
+                .accessibilityHidden(!isSplit)
+
+            if onPrevious != nil || onNext != nil {
+                reviewNavigationControls
+            }
+        }
+        .padding(.horizontal, NwSpacing.screenPadding)
+        .padding(.vertical, NwSpacing.md)
+    }
+
+    private var selectedPayeeName: String? {
+        guard let payeeCanonicalId else { return nil }
+        if let name = payeeNameByID[payeeCanonicalId] {
+            return name
+        }
+        let fallback = displayName.trimmed
+        return fallback.isEmpty ? nil : fallback
+    }
+
+    private var selectedCategoryName: String? {
+        guard let categoryCanonicalId else { return nil }
+        if let name = categoryNameByID[categoryCanonicalId] {
+            return name
+        }
+        let fallback = categoryName.trimmed
+        return fallback.isEmpty ? nil : fallback
+    }
+
+    private func resolveDisplayedSelections() {
+        if payeeCanonicalId == nil {
+            let suggestion = displayName.trimmed
+            let matches = canonicalPayees.filter {
+                !$0.archived
+                    && !$0.deletedAtSource
+                    && (
+                        FinancialTransactionSummary.namesReferToSamePayee(
+                            $0.name,
+                            suggestion
+                        )
+                        || FinancialTransactionSummary.namesReferToSamePayee(
+                            $0.sourceName,
+                            suggestion
+                        )
+                    )
+            }
+            let canonicalIDs = Set(matches.map(\.canonicalId))
+            if canonicalIDs.count == 1,
+               let match = matches.first {
+                payeeCanonicalId = match.canonicalId
+                displayName = match.name
+            }
+        }
+
+        if selectedCategoryName == nil {
+            let suggestion = categoryName.trimmed
+            let matches = canonicalCategories.filter {
+                !$0.deletedAtSource
+                    && $0.name.localizedCaseInsensitiveCompare(suggestion)
+                        == .orderedSame
+            }
+            let canonicalIDs = Set(matches.map(\.canonicalId))
+            if canonicalIDs.count == 1,
+               let match = matches.first {
+                categoryCanonicalId = match.canonicalId
+                categoryName = match.name
+            }
+        }
+    }
+
+    private var classificationControls: some View {
+        NwCard(style: .primary, padding: 0) {
+            VStack(spacing: 0) {
+                Toggle("Split transaction", isOn: $isSplit)
+                    .onChange(of: isSplit) {
+                        splitSaveError = nil
+                    }
+                    .padding(NwSpacing.md)
+
+                nonSplitClassificationControls
+                    .frame(height: isSplit ? 0 : nil, alignment: .top)
+                    .clipped()
+                    .opacity(isSplit ? 0 : 1)
+                    .allowsHitTesting(!isSplit)
+                    .accessibilityHidden(isSplit)
+            }
+        }
+    }
+
+    private var nonSplitClassificationControls: some View {
+        VStack(spacing: 0) {
+            Divider()
+            Picker("Transaction type", selection: $treatment) {
+                ForEach(ForecastTreatment.allCases, id: \.self) {
+                    Text($0.displayName).tag($0)
+                }
+            }
+            .pickerStyle(.menu)
+            .padding(NwSpacing.md)
+
+            Divider()
+            if treatment.requiresCategory {
+                NavigationLink {
+                    PlaidCategoryPicker(
+                        selection: $categoryName,
+                        groups: cachedCategoryGroups,
+                        onSelect: { option in
+                            categoryCanonicalId =
+                                option.categoryID
+                        }
+                    )
+                } label: {
+                    LabeledContent("Category") {
+                        Text(
+                            selectedCategoryName
+                                ?? "Select category"
+                        )
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(NwSpacing.md)
+                if selectedCategoryName == nil,
+                   !categoryName.trimmed.isEmpty {
+                    Text(
+                        "Suggested: \(categoryName.trimmed). Tap Category to select it."
+                    )
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, NwSpacing.md)
+                    .padding(.bottom, NwSpacing.md)
+                }
+            } else {
+                LabeledContent("Category") {
+                    Text("Not applicable")
+                        .foregroundStyle(.secondary)
+                }
+                .padding(NwSpacing.md)
+            }
+        }
+    }
+
+    private var classificationFooter: String? {
+        if isSplit {
+            return "A split applies only to the selected transaction. Networth will reuse the merchant name, but future transactions return for category review."
+        }
+        if transaction.reviewOriginRaw == "new" {
+            return "This is a new posted transaction. Networth prefilled its best match, but every new transaction still requires confirmation."
+        }
+        return "This historical transaction did not have one unique exact YNAB match. This confirmation improves future suggestions."
+    }
+
+    private var reviewNavigationControls: some View {
+        HStack(spacing: NwSpacing.md) {
+            Button {
+                onPrevious?()
+            } label: {
+                Label("Previous", systemImage: "chevron.left")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canMovePrevious)
+
+            Button {
+                onNext?()
+            } label: {
+                Label("Next", systemImage: "chevron.right")
+                    .labelStyle(.titleAndIcon)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canMoveNext)
+        }
+    }
+
+    private var splitControls: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            reviewSectionTitle("Split details")
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach($splitDrafts) { $draft in
+                        HStack(spacing: NwSpacing.md) {
+                            if isIncomingSplit {
+                                VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                                    Text("Classification")
+                                        .font(NwTypography.caption)
+                                        .foregroundStyle(.secondary)
+                                    Picker(
+                                        "Classification",
+                                        selection: $draft.treatment
+                                    ) {
+                                        Text("Income")
+                                            .tag(
+                                                Optional(
+                                                    ForecastTreatment.income
+                                                )
+                                            )
+                                        Text("Reimbursement")
+                                            .tag(
+                                                Optional(
+                                                    ForecastTreatment.refund
+                                                )
+                                            )
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
+                                    .tint(NwAppColors.primary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                NavigationLink {
+                                    PlaidCategoryPicker(
+                                        selection: $draft.categoryName,
+                                        groups: cachedCategoryGroups,
+                                        onSelect: { option in
+                                            draft.categoryID =
+                                                option.categoryID
+                                        }
+                                    )
+                                } label: {
+                                    VStack(
+                                        alignment: .leading,
+                                        spacing: NwSpacing.xs
+                                    ) {
+                                        Text("Category")
+                                            .font(NwTypography.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text(
+                                            draft.categoryName.isEmpty
+                                                ? "Select"
+                                                : draft.categoryName
+                                        )
+                                        .lineLimit(1)
+                                    }
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        alignment: .leading
+                                    )
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            NwAccessoryCurrencyTextField(
+                                    text: $draft.amountText,
+                                    onFocusChange: { focused in
+                                        if focused {
+                                            splitAmountFocusedID = draft.id
+                                        } else if splitAmountFocusedID
+                                            == draft.id {
+                                            splitAmountFocusedID = nil
+                                        }
+                                    }
+                                )
+                                .accessibilityLabel("Split amount")
+                                .frame(width: 80)
+                                .onDisappear {
+                                    if splitAmountFocusedID == draft.id {
+                                        splitAmountFocusedID = nil
+                                    }
+                                }
+
+                            Button {
+                                deleteSplitDraft(id: draft.id)
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .foregroundStyle(NwAppColors.liability)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(splitDrafts.count <= 2)
+                            .accessibilityLabel("Remove split")
+                        }
+                        .padding(NwSpacing.md)
+
+                        if draft.id != splitDrafts.last?.id {
+                            Divider()
+                        }
+                    }
+
+                    Divider()
+                    Button {
+                        splitDrafts.append(PlaidSplitDraft())
+                    } label: {
+                        Label("Add Split", systemImage: "plus.circle.fill")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(NwAppColors.primary)
+                    .padding(NwSpacing.md)
+                }
+            }
+
+            if splitAmountFocusedID == nil {
+                HStack {
+                    Text(splitBalanceLabel)
+                    Spacer()
+                    NwAmountText(
+                        splitRemaining.absolute,
+                        variant: .body,
+                        color: splitRemaining.isZero
+                            ? NwAppColors.positive
+                            : NwAppColors.caution
+                    )
+                }
+                .font(NwTypography.footnote)
+            }
+        }
+    }
+
+    private var transactionHistory: some View {
+        PlaidTransactionHistoryPane(
+            transactions: matchingTransactions,
+            financialAccounts: financialAccounts
+        )
+    }
+
+    private func reviewSectionTitle(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(NwTypography.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private var selectedSplitTransaction: CachedFinancialTransaction {
+        matchingTransactions.first {
+            $0.id == splitTransactionID
+        } ?? transaction
+    }
+
+    private var isIncomingSplit: Bool {
+        selectedSplitTransaction.amountMilliunits > 0
+    }
+
+    private var enteredSplitTotal: Money {
+        Money(milliunits: splitDrafts.reduce(Int64(0)) { total, draft in
+            total + (parsedSplitAmount(draft)?.milliunits ?? 0)
+        })
+    }
+
+    private var splitRemaining: Money {
+        Money(
+            milliunits: Swift.abs(selectedSplitTransaction.amountMilliunits)
+                - enteredSplitTotal.milliunits
+        )
+    }
+
+    private var splitBalanceLabel: String {
+        if splitRemaining.isZero { return "Balanced" }
+        return splitRemaining.isNegative ? "Over by" : "Remaining"
+    }
+
+    private var reviewedSplitTransactions: [SubTransactionSummary]? {
+        guard splitDrafts.count >= 2 else { return nil }
+        let selected = selectedSplitTransaction
+        let sign: Int64 = selected.amountMilliunits < 0 ? -1 : 1
+        var result: [SubTransactionSummary] = []
+        for draft in splitDrafts {
+            guard let amount = parsedSplitAmount(draft) else { return nil }
+            if isIncomingSplit {
+                guard let treatment = draft.treatment,
+                      treatment == .income || treatment == .refund else {
+                    return nil
+                }
+                result.append(SubTransactionSummary(
+                    id: draft.persistedID
+                        ?? "plaid-split:\(selected.externalId):\(draft.id.uuidString)",
+                    amount: Money(
+                        milliunits: amount.milliunits * sign
+                    ),
+                    categoryId: nil,
+                    categoryName: treatment == .income
+                        ? "Income"
+                        : "Reimbursement",
+                    forecastTreatment: treatment,
+                    payeeName: nil,
+                    memo: nil,
+                    deleted: false
+                ))
+                continue
+            }
+            guard let category = activeCategory(for: draft) else {
+                return nil
+            }
+            result.append(SubTransactionSummary(
+                id: draft.persistedID
+                    ?? "plaid-split:\(selected.externalId):\(draft.id.uuidString)",
+                amount: Money(milliunits: amount.milliunits * sign),
+                categoryId: category.id,
+                categoryName: category.name,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ))
+        }
+        guard result.map(\.amount).sum().milliunits
+                == selected.amountMilliunits else {
+            return nil
+        }
+        return result
+    }
+
+    private var canSaveReview: Bool {
+        if isSplit {
+            return payeeCanonicalId != nil
+                && reviewedSplitTransactions != nil
+        }
+        return payeeCanonicalId != nil
+            && (!treatment.requiresCategory
+                || (categoryCanonicalId != nil
+                    && !categoryName.trimmed.isEmpty))
+    }
+
+    private func parsedSplitAmount(_ draft: PlaidSplitDraft) -> Money? {
+        guard let amount = CurrencyInputFormatter.money(
+            from: draft.amountText
+        ), amount > .zero else {
+            return nil
+        }
+        return amount.absolute
+    }
+
+    private func activeCategory(
+        for draft: PlaidSplitDraft
+    ) -> (id: String, name: String)? {
+        if let categoryID = draft.categoryID,
+           let exact = activeCategoryByID[categoryID] {
+            return (categoryID, exact.name)
+        }
+        if let exact = activeCategoryByName[
+            directoryLookupKey(draft.categoryName)
+        ], let categoryID = exact.categoryID {
+            return (categoryID, exact.name)
+        }
+        return nil
+    }
+
+    private func deleteSplitDraft(id: UUID) {
+        guard splitDrafts.count > 2 else { return }
+        splitDrafts.removeAll { $0.id == id }
+    }
+
+    private func splitTransactionLabel(
+        _ item: CachedFinancialTransaction
+    ) -> String {
+        let date = item.postedDate.formatted(
+            date: .abbreviated,
+            time: .omitted
+        )
+        let amount = CurrencyFormatter.currency(
+            Money(milliunits: item.amountMilliunits).absolute
+        )
+        return "\(date) · \(accountLabel(for: item)) · \(amount)"
+    }
+
+    private func saveReview() {
+        let cleanedName = displayName.trimmed.isEmpty
+            ? transaction.rawDescription
+            : displayName.trimmed
+        if isSplit {
+            guard let splitTransactions = reviewedSplitTransactions else {
+                splitSaveError = isIncomingSplit
+                    ? "Choose Income or Reimbursement for at least two amounts that equal the transaction total."
+                    : "Choose at least two categories whose amounts equal the transaction total."
+                return
+            }
+            guard container.reviewPlaidSplitTransaction(
+                id: selectedSplitTransaction.id,
+                displayName: cleanedName,
+                payeeCanonicalId: payeeCanonicalId,
+                subtransactions: splitTransactions
+            ) else {
+                splitSaveError =
+                    "The split could not be saved. Check the categories and amounts, then try again."
+                return
+            }
+        } else {
+            guard container.confirmPlaidTransaction(
+                id: transaction.id,
+                displayName: cleanedName,
+                payeeCanonicalId: payeeCanonicalId,
+                categoryName: treatment.requiresCategory
+                    ? categoryName.trimmed
+                    : nil,
+                treatment: treatment,
+                categoryCanonicalId: treatment.requiresCategory
+                    ? categoryCanonicalId
+                    : nil
+            ) else {
+                splitSaveError =
+                    "The transaction could not be saved. Check its classification, then try again."
+                return
+            }
+        }
+        onSaved()
+        if dismissAfterSave {
+            dismiss()
+        }
+    }
+
+    private func accountLabel(
+        for item: CachedFinancialTransaction
+    ) -> String {
+        plaidTransactionAccountLabel(
+            for: item,
+            financialAccounts: financialAccounts
+        )
+    }
+
+    private func prepareDirectoryIndexes() {
+        payeeNameByID = Dictionary(
+            canonicalPayees.map { ($0.canonicalId, $0.name) },
+            uniquingKeysWith: { _, newest in newest }
+        )
+        categoryNameByID = Dictionary(
+            canonicalCategories.map { ($0.canonicalId, $0.name) },
+            uniquingKeysWith: { _, newest in newest }
+        )
+
+        var options: [PlaidCategoryOption] = []
+        var byID: [String: PlaidCategoryOption] = [:]
+        var byName: [String: PlaidCategoryOption] = [:]
+        for category in canonicalCategories {
+            guard !category.hidden,
+                  !category.deletedAtSource,
+                  !category.name.trimmed.isEmpty else { continue }
+            let option = PlaidCategoryOption(
+                categoryID: category.canonicalId,
+                name: category.name.trimmed,
+                groupName: category.groupName.trimmed.isEmpty
+                    ? "Networth Categories"
+                    : category.groupName.trimmed
+            )
+            options.append(option)
+            byID[category.canonicalId] = option
+            let nameKey = directoryLookupKey(category.name)
+            if byName[nameKey] == nil {
+                byName[nameKey] = option
+            }
+        }
+
+        let sameNameCategories = canonicalCategories.filter {
+            !$0.deletedAtSource
+                && directoryLookupKey($0.name)
+                    == directoryLookupKey(categoryName)
+        }
+        if !sameNameCategories.isEmpty,
+           sameNameCategories.allSatisfy(\.hidden),
+           let hiddenCategory = sameNameCategories.first {
+            options.append(
+                PlaidCategoryOption(
+                    categoryID: hiddenCategory.canonicalId,
+                    name: categoryName,
+                    groupName: "Historical Category — Hidden"
+                )
+            )
+        }
+        cachedCategoryGroups = PlaidCategoryGroup.makeGroups(from: options)
+        activeCategoryByID = byID
+        activeCategoryByName = byName
+    }
+
+    private func directoryLookupKey(_ value: String) -> String {
+        value.trimmed.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: .current
+        )
+    }
+}
+
+private struct PlaidTransactionHistoryPane: View {
+    let transactions: [CachedFinancialTransaction]
+    let financialAccounts: [CachedFinancialAccount]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            Text(
+                transactions.count == 1
+                    ? "TRANSACTION"
+                    : "\(transactions.count) TRANSACTIONS"
+            )
+            .font(NwTypography.caption)
+            .foregroundStyle(.secondary)
+
+            LazyVStack(spacing: 0) {
+                ForEach(transactions) { item in
+                    transactionRow(item)
+                    if item.id != transactions.last?.id {
+                        Divider()
+                    }
+                }
+            }
+            .nwCardStyle(.primary, padding: 0)
+        }
+        .padding(.horizontal, NwSpacing.screenPadding)
+        .padding(.top, NwSpacing.md)
+        .padding(.bottom, NwSpacing.sm)
+    }
+
+    private func transactionRow(
+        _ item: CachedFinancialTransaction
+    ) -> some View {
+        VStack(alignment: .leading, spacing: NwSpacing.xs) {
+            HStack(alignment: .firstTextBaseline, spacing: NwSpacing.md) {
+                Text(item.rawDescription)
+                    .font(NwTypography.bodyEmphasis)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                Spacer(minLength: NwSpacing.sm)
+                NwAmountText(
+                    Money(milliunits: item.amountMilliunits),
+                    variant: .body,
+                    color: item.amountMilliunits < 0
+                        ? NwAppColors.liability
+                        : NwAppColors.positive
+                )
+            }
+            HStack(spacing: NwSpacing.sm) {
+                Text(
+                    "\(classificationLabel(for: item)) · \(plaidTransactionAccountLabel(for: item, financialAccounts: financialAccounts))"
+                )
+                .lineLimit(1)
+                Spacer(minLength: NwSpacing.sm)
+                Text(
+                    item.postedDate.formatted(
+                        date: .abbreviated,
+                        time: .omitted
+                    )
+                )
+            }
+            .font(NwTypography.footnote)
+            .foregroundStyle(.secondary)
+        }
+        .padding(NwSpacing.md)
+    }
+
+    private func classificationLabel(
+        for item: CachedFinancialTransaction
+    ) -> String {
+        item.forecastTreatment.requiresCategory
+            ? item.categoryDisplayName
+            : item.forecastTreatment.displayName
+    }
+}
+
+private func plaidTransactionAccountLabel(
+    for item: CachedFinancialTransaction,
+    financialAccounts: [CachedFinancialAccount]
+) -> String {
+    guard let account = financialAccounts.first(where: {
+        $0.canonicalAccountId == item.canonicalAccountId
+    }) else {
+        return "Unknown account"
+    }
+    let mask = account.mask.map { " •••• \($0)" } ?? ""
+    return "\(account.name)\(mask)"
+}
+
+private struct CanonicalPayeePicker: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Binding var selection: String?
+    @Binding var displayName: String
+    let payees: [DurableCanonicalPayee]
+    @State private var searchText = ""
+    @FocusState private var searchFocused: Bool
+
+    init(
+        selection: Binding<String?>,
+        displayName: Binding<String>,
+        payees: [DurableCanonicalPayee]
+    ) {
+        _selection = selection
+        _displayName = displayName
+        self.payees = payees
+        _searchText = State(initialValue: displayName.wrappedValue)
+    }
+
+    var body: some View {
+        List {
+            ForEach(filteredPayees) { payee in
+                Button {
+                    selection = payee.canonicalId
+                    displayName = payee.name
+                    dismiss()
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(payee.name)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                            if payee.ynabPayeeId != nil {
+                                Text("YNAB contact")
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if selection == payee.canonicalId {
+                            NwIcon.confirm.image
+                                .foregroundStyle(NwAppColors.positive)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+            }
+            let cleaned = searchText.trimmed
+            if !cleaned.isEmpty && !hasExactMatch {
+                Section {
+                    Button {
+                        guard let id =
+                                container.createCanonicalPayeeReturningId(
+                                    name: cleaned
+                                ) else {
+                            return
+                        }
+                        selection = id
+                        displayName = cleaned
+                        dismiss()
+                    } label: {
+                        Label(
+                            "Create “\(cleaned)”",
+                            systemImage: "plus.circle.fill"
+                        )
+                    }
+                }
+            }
+        }
+        .navigationTitle("Contact")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(
+            text: $searchText,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Search contacts"
+        )
+        .searchFocused($searchFocused)
+        .task {
+            await Task.yield()
+            searchFocused = true
+        }
+    }
+
+    private var filteredPayees: [DurableCanonicalPayee] {
+        let query = searchText.trimmed
+        let active = payees.filter {
+            !$0.archived && !$0.deletedAtSource
+        }
+        guard !query.isEmpty else { return active }
+        return active.filter {
+            $0.name.localizedCaseInsensitiveContains(query)
+                || $0.sourceName.localizedCaseInsensitiveContains(query)
+                || FinancialTransactionSummary.namesReferToSamePayee(
+                    $0.name,
+                    query
+                )
+                || FinancialTransactionSummary.namesReferToSamePayee(
+                    $0.sourceName,
+                    query
+                )
+        }
+    }
+
+    private var hasExactMatch: Bool {
+        let query = FinancialTransactionSummary.normalizedDescription(
+            searchText
+        )
+        guard !query.isEmpty else { return false }
+        return payees.contains {
+            !$0.archived
+                && !$0.deletedAtSource
+                && FinancialTransactionSummary.normalizedDescription(
+                    $0.name
+                ) == query
+        }
+    }
+}
+
+private struct PlaidCategoryOption: Identifiable {
+    let categoryID: String?
+    let name: String
+    let groupName: String
+
+    init(
+        categoryID: String? = nil,
+        name: String,
+        groupName: String
+    ) {
+        self.categoryID = categoryID
+        self.name = name
+        self.groupName = groupName
+    }
+
+    var id: String { "\(groupName.lowercased()):\(name.lowercased())" }
+}
+
+private struct PlaidCategoryGroup: Identifiable {
+    let groupName: String
+    let options: [PlaidCategoryOption]
+
+    var id: String { groupName }
+
+    static func makeGroups(
+        from options: [PlaidCategoryOption]
+    ) -> [PlaidCategoryGroup] {
+        Dictionary(grouping: options, by: \.groupName)
+            .map { groupName, options in
+                PlaidCategoryGroup(
+                    groupName: groupName,
+                    options: options.sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name)
+                            == .orderedAscending
+                    }
+                )
+            }
+            .sorted {
+                $0.groupName.localizedCaseInsensitiveCompare($1.groupName)
+                    == .orderedAscending
+            }
+    }
+}
+
+private struct PlaidCategoryPicker: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Binding var selection: String
+    let groups: [PlaidCategoryGroup]
+    let onSelect: ((PlaidCategoryOption) -> Void)?
+    @State private var searchText = ""
+    @State private var showingNewCategory = false
+    @FocusState private var searchFocused: Bool
+
+    init(
+        selection: Binding<String>,
+        groups: [PlaidCategoryGroup],
+        onSelect: ((PlaidCategoryOption) -> Void)? = nil
+    ) {
+        _selection = selection
+        self.groups = groups
+        self.onSelect = onSelect
+    }
+
+    var body: some View {
+        List {
+            ForEach(filteredGroups) { group in
+                Section(group.groupName) {
+                    ForEach(group.options) { option in
+                        Button {
+                            selection = option.name
+                            onSelect?(option)
+                            dismiss()
+                        } label: {
+                            HStack {
+                                Text(option.name)
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                                Spacer()
+                                if option.name.localizedCaseInsensitiveCompare(
+                                    selection
+                                ) == .orderedSame {
+                                    NwIcon.confirm.image
+                                        .foregroundStyle(NwAppColors.positive)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                    }
+                }
+            }
+            Section {
+                Button {
+                    showingNewCategory = true
+                } label: {
+                    Label("New Networth Category", systemImage: "plus.circle.fill")
+                }
+            }
+        }
+        .navigationTitle("Category")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(
+            text: $searchText,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Search categories"
+        )
+        .searchFocused($searchFocused)
+        .task {
+            await Task.yield()
+            searchFocused = true
+        }
+        .sheet(isPresented: $showingNewCategory) {
+            PlaidNewCategorySheet { name in
+                createCategory(name)
+            }
+        }
+    }
+
+    private func createCategory(_ name: String) {
+        let cleanedName = name.trimmed
+        guard !cleanedName.isEmpty,
+              let canonicalId =
+                container.createCanonicalCategoryReturningId(
+                    name: cleanedName,
+                    groupName: "Networth Categories"
+                ) else {
+            return
+        }
+        let option = PlaidCategoryOption(
+            categoryID: canonicalId,
+            name: cleanedName,
+            groupName: "Networth Categories"
+        )
+        selection = cleanedName
+        onSelect?(option)
+        Task { @MainActor in
+            await Task.yield()
+            dismiss()
+        }
+    }
+
+    private var filteredGroups: [PlaidCategoryGroup] {
+        let query = searchText.trimmed
+        guard !query.isEmpty else { return groups }
+        return groups.compactMap { group in
+            let matches = group.options.filter {
+                $0.name.localizedCaseInsensitiveContains(query)
+                    || group.groupName.localizedCaseInsensitiveContains(query)
+            }
+            guard !matches.isEmpty else { return nil }
+            return PlaidCategoryGroup(
+                groupName: group.groupName,
+                options: matches
+            )
+        }
+    }
+
+}
+
+private struct PlaidNewCategorySheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    let onSave: (String) -> Void
+    @State private var name = ""
+    @FocusState private var nameFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Category Name") {
+                    TextField("Name", text: $name)
+                        .textInputAutocapitalization(.words)
+                        .submitLabel(.done)
+                        .focused($nameFocused)
+                        .onSubmit(save)
+                }
+            }
+            .navigationTitle("New Category")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                nameFocused = true
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        NwIcon.close.image
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) {
+                        NwIcon.confirm.image
+                            .foregroundStyle(NwAppColors.positive)
+                    }
+                    .disabled(name.trimmed.isEmpty)
+                    .accessibilityLabel("Save category")
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button {
+                        nameFocused = false
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Dismiss keyboard")
+                }
+            }
+        }
+    }
+
+    private func save() {
+        let cleanedName = name.trimmed
+        guard !cleanedName.isEmpty else { return }
+        dismiss()
+        onSave(cleanedName)
+    }
+}
+
+extension ForecastTreatment {
+    var requiresCategory: Bool {
+        self != .cardPayment && self != .internalTransfer
+    }
+
+    var displayName: String {
+        switch self {
+        case .income: "Income"
+        case .ordinarySpending: "Ordinary spending"
+        case .internalTransfer: "Internal transfer"
+        case .cardPayment: "Credit-card payment"
+        case .refund: "Refund"
+        case .excluded: "Exclude from forecast"
+        }
     }
 }
 
@@ -1234,6 +3640,224 @@ private struct PlaidMatchSourceSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+private struct ClaudeDataAccessView: View {
+    @SwiftUI.Environment(AppContainerController.self)
+    private var container
+    @Query private var settingsList: [DurableUserSettings]
+
+    @State private var showingEnableConsent = false
+    @State private var showingDisableConfirm = false
+    @State private var isWorking = false
+    @State private var connectCode: ClaudeConnectCodeResponseDTO?
+    @State private var errorMessage: String?
+
+    private var settings: DurableUserSettings? {
+        settingsList.first
+    }
+
+    private var isEnabled: Bool {
+        settings?.claudeDataSyncEnabled == true
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Sync financial data", isOn: enabledBinding)
+                    .disabled(
+                        isWorking || !container.hasPlaidBackendToken
+                    )
+
+                if !container.hasPlaidBackendToken {
+                    NwInlineNotice(
+                        "Backend access required",
+                        message: "Save the private backend token before enabling Claude.ai access.",
+                        tone: .warning
+                    )
+                }
+            } header: {
+                Text("Data Access")
+            } footer: {
+                Text("Uploads account labels and balances, effective manual assets, holdings, confirmed transactions, and net-worth history. Credentials, account numbers, provider IDs, notes, raw bank descriptions, and unreviewed transactions stay out.")
+            }
+
+            if isEnabled {
+                Section("Sync Status") {
+                    syncStatus
+
+                    Button {
+                        Task {
+                            await container.syncClaudeDataNow()
+                        }
+                    } label: {
+                        Label("Sync Now", systemImage: NwIcon.sync.rawValue)
+                    }
+                    .disabled(isWorking || isSyncing)
+                }
+
+                Section {
+                    Text("Add this custom connector URL in Claude.ai:")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("https://networth-plaid.bluelava.me/mcp")
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
+
+                    Button {
+                        generateConnectCode()
+                    } label: {
+                        HStack {
+                            Text("Generate Connect Code")
+                            if isWorking {
+                                Spacer()
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                    }
+                    .disabled(isWorking || isSyncing)
+
+                    if let connectCode {
+                        Text(connectCode.code)
+                            .font(.system(.title2, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text(
+                            "Enter on the authorization page. Expires \(connectCode.expiresAt.formatted(.relative(presentation: .named)))."
+                        )
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Connect Claude")
+                } footer: {
+                    Text("Claude receives read-only access. Turning sync off deletes the server copy and revokes every Claude.ai grant.")
+                }
+            }
+
+            if let errorMessage {
+                Section {
+                    NwInlineNotice(
+                        "Claude.ai access error",
+                        message: errorMessage,
+                        tone: .warning
+                    )
+                }
+            }
+        }
+        .navigationTitle("Claude.ai Access")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert(
+            "Sync Financial Data to Claude.ai?",
+            isPresented: $showingEnableConsent
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Allow") {
+                setEnabled(true)
+            }
+        } message: {
+            Text("Networth will upload an encrypted read-only financial copy to your private Cloudflare Worker. Claude.ai may receive account labels, balances, holdings, confirmed transaction dates and amounts, contacts, categories, and net-worth history when you ask it questions.")
+        }
+        .alert(
+            "Turn Off Claude.ai Access?",
+            isPresented: $showingDisableConfirm
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Turn Off", role: .destructive) {
+                setEnabled(false)
+            }
+        } message: {
+            Text("Deletes the financial copy from the Worker and revokes all Claude.ai access tokens. Data on this iPhone and in CloudKit stays intact.")
+        }
+    }
+
+    @ViewBuilder
+    private var syncStatus: some View {
+        switch container.claudeDataSyncCoordinator.phase {
+        case .idle:
+            if let lastSyncedAt = settings?.claudeDataLastSyncedAt {
+                LabeledContent(
+                    "Last synced",
+                    value: lastSyncedAt.formatted(
+                        date: .abbreviated,
+                        time: .shortened
+                    )
+                )
+            } else {
+                Text("Waiting for the first sync.")
+                    .foregroundStyle(.secondary)
+            }
+        case .syncing:
+            HStack(spacing: NwSpacing.sm) {
+                ProgressView().controlSize(.small)
+                Text("Updating Claude.ai copy")
+                    .foregroundStyle(.secondary)
+            }
+        case .success(let date):
+            LabeledContent(
+                "Last synced",
+                value: date.formatted(
+                    date: .abbreviated,
+                    time: .shortened
+                )
+            )
+        case .error(let message):
+            Text(message)
+                .foregroundStyle(NwAppColors.liability)
+        }
+    }
+
+    private var isSyncing: Bool {
+        if case .syncing = container.claudeDataSyncCoordinator.phase {
+            return true
+        }
+        return false
+    }
+
+    private var enabledBinding: Binding<Bool> {
+        Binding(
+            get: { isEnabled },
+            set: { enabled in
+                if enabled {
+                    showingEnableConsent = true
+                } else {
+                    showingDisableConfirm = true
+                }
+            }
+        )
+    }
+
+    private func setEnabled(_ enabled: Bool) {
+        isWorking = true
+        errorMessage = nil
+        connectCode = nil
+        Task { @MainActor in
+            defer { isWorking = false }
+            do {
+                try await container.setClaudeDataSyncEnabled(enabled)
+            } catch {
+                errorMessage =
+                    (error as? LocalizedError)?.errorDescription
+                    ?? "The request could not be completed."
+            }
+        }
+    }
+
+    private func generateConnectCode() {
+        isWorking = true
+        errorMessage = nil
+        connectCode = nil
+        Task { @MainActor in
+            defer { isWorking = false }
+            do {
+                connectCode =
+                    try await container.generateClaudeConnectCode()
+            } catch {
+                errorMessage =
+                    (error as? LocalizedError)?.errorDescription
+                    ?? "A connect code could not be generated."
+            }
+        }
     }
 }
 

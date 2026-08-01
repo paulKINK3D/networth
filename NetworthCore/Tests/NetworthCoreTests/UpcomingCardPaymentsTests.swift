@@ -102,6 +102,45 @@ struct UpcomingCardPaymentsTests {
         #expect(payments[0].basis == .closedStatementEstimate)
     }
 
+    @Test func postClosePaymentReducesRemainingStatementAutopay() {
+        let f = CCPaymentForecaster(calendar: utc)
+        let ihg = card(balance: Money(milliunits: -59_990))
+        let settings = CardStatementSettings(
+            accountId: "card-1",
+            statementCycleDay: 1,
+            paymentDueDay: 8,
+            paymentAccountId: "checking-1"
+        )
+        let partialPayment = TransactionSummary(
+            id: "partial-payment",
+            accountId: "card-1",
+            date: date(2026, 7, 9),
+            amount: Money(milliunits: 105_200),
+            cleared: true,
+            approved: true,
+            payeeName: "Payment",
+            categoryId: nil,
+            categoryName: nil,
+            transferAccountId: "checking-1",
+            memo: nil,
+            deleted: false
+        )
+
+        let payments = f.upcomingPayments(
+            card: ihg,
+            settings: settings,
+            scheduled: [],
+            historicalTransactions: [partialPayment],
+            spendAccountIds: ["card-1", "checking-1"],
+            asOf: date(2026, 7, 30),
+            horizonDays: 30
+        )
+
+        #expect(payments.count == 1)
+        #expect(payments[0].amount == Money(milliunits: 59_990))
+        #expect(payments[0].basis == .closedStatementEstimate)
+    }
+
     @Test func nextCloseAndDuePickedUpInsideHorizon() {
         // Today = 5th, close = 15th (10 days away), due = 11th of next month.
         // Current owed $500, no scheduled or post-close charges.

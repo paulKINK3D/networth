@@ -118,10 +118,13 @@ public struct YNABTransactionDTO: Decodable, Sendable, Identifiable, Hashable {
     public let cleared: String
     public let approved: Bool
     public let account_id: String
+    public let payee_id: String?
     public let payee_name: String?
     public let category_id: String?
     public let category_name: String?
     public let transfer_account_id: String?
+    public let transfer_transaction_id: String?
+    public let import_id: String?
     public let memo: String?
     public let deleted: Bool
     public let subtransactions: [YNABSubTransactionDTO]?
@@ -177,6 +180,40 @@ public struct YNABSubTransactionDTO: Decodable, Sendable, Identifiable, Hashable
             memo: memo,
             deleted: deleted
         )
+    }
+}
+
+// MARK: - Payees
+
+public struct YNABPayeesResponse: Decodable, Sendable {
+    public let payees: [YNABPayeeDTO]
+    public let server_knowledge: Int64?
+
+    public init(
+        payees: [YNABPayeeDTO] = [],
+        server_knowledge: Int64? = nil
+    ) {
+        self.payees = payees
+        self.server_knowledge = server_knowledge
+    }
+}
+
+public struct YNABPayeeDTO: Decodable, Sendable, Identifiable, Hashable {
+    public let id: String
+    public let name: String
+    public let transfer_account_id: String?
+    public let deleted: Bool
+
+    public init(
+        id: String,
+        name: String,
+        transfer_account_id: String? = nil,
+        deleted: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.transfer_account_id = transfer_account_id
+        self.deleted = deleted
     }
 }
 

@@ -62,6 +62,48 @@ struct CashPositionProjectorTests {
         #expect(result.projectedEndingBalance == Money.dollars(1_000))
     }
 
+    @Test func ynabDateOnlyDepositIsNotSkippedAtPacificDayBoundary() {
+        var pacific = Calendar(identifier: .gregorian)
+        pacific.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let asOf = pacific.date(
+            from: DateComponents(year: 2026, month: 7, day: 30, hour: 12)
+        )!
+        let ynabJuly31 = date(2026, 7, 31)
+        let localJuly31 = pacific.date(
+            from: DateComponents(year: 2026, month: 7, day: 31)
+        )!
+        let august14 = pacific.date(
+            from: DateComponents(year: 2026, month: 8, day: 14)
+        )!
+        let deposit = ScheduledTransactionSummary(
+            id: "paycheck",
+            accountId: "checking",
+            firstDate: date(2026, 7, 17),
+            nextDate: ynabJuly31,
+            frequency: .everyOtherWeek,
+            amount: Money(milliunits: 8_321_560),
+            payeeName: "Paycheck"
+        )
+
+        let result = CashPositionProjector(calendar: pacific).project(
+            cashAccounts: [account("checking", balance: 1_000)],
+            selectedCashAccountIds: ["checking"],
+            cardAccountIds: [],
+            fundedCardAccountIds: [],
+            cardPayments: [],
+            scheduled: [deposit],
+            historicalTransactions: [],
+            spendAccountIds: ["checking"],
+            asOf: asOf,
+            horizonDays: 16
+        )
+
+        #expect(result.events.count == 2)
+        #expect(result.events.first?.date == localJuly31)
+        #expect(result.events.last?.date == august14)
+        #expect(result.knownInflows == Money(milliunits: 16_643_120))
+    }
+
     @Test func transfersCrossingSelectedPoolAreSignedAndInternalTransfersNetOut() {
         let today = date(2026, 1, 1)
         let out = ScheduledTransactionSummary(

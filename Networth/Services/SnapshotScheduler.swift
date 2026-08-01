@@ -380,6 +380,15 @@ public final class SnapshotScheduler {
     /// the store — i.e. there is real data that could contribute non-zero
     /// values to today's snapshot.
     private func hasContributingData() -> Bool {
+        if usesPlaidTransactions {
+            var financialDescriptor = FetchDescriptor<CachedFinancialAccount>(
+                predicate: #Predicate { $0.deleted == false }
+            )
+            financialDescriptor.fetchLimit = 1
+            if let count = try? mainContext.fetchCount(financialDescriptor), count > 0 {
+                return true
+            }
+        }
         var accountDescriptor = FetchDescriptor<CachedAccount>(
             predicate: #Predicate { $0.deleted == false && $0.closed == false }
         )
@@ -423,7 +432,11 @@ public final class SnapshotScheduler {
             predicate: #Predicate { $0.deleted == false && $0.closed == false }
         )
         let accounts = (try? mainContext.fetch(accountDescriptor)) ?? []
-        for account in accounts {
+        let legacyLoanKinds: Set<AccountKind> = [
+            .mortgage, .autoLoan, .studentLoan, .personalLoan,
+            .medicalDebt, .otherDebt, .otherLiability
+        ]
+        for account in accounts where !usesPlaidTransactions || legacyLoanKinds.contains(account.kind) {
             let kind = account.kind
             let balance = account.balance
             switch kind {
@@ -441,6 +454,33 @@ public final class SnapshotScheduler {
                 otherLiabs += balance.absolute
             case .unknown:
                 break
+            }
+        }
+
+        if usesPlaidTransactions {
+            let financialAccounts = (try? mainContext.fetch(
+                FetchDescriptor<CachedFinancialAccount>(
+                    predicate: #Predicate { $0.deleted == false }
+                )
+            )) ?? []
+            for account in financialAccounts {
+                let balance = account.balance
+                switch account.type {
+                case .checking, .savings, .cash:
+                    cash += balance
+                case .creditCard:
+                    cardDebt += balance.absolute
+                case .investment:
+                    investments += balance
+                case .loan:
+                    loans += balance.absolute
+                case .other:
+                    if balance.isNegative {
+                        otherLiabs += balance.absolute
+                    } else {
+                        otherAssets += balance
+                    }
+                }
             }
         }
 
@@ -501,5 +541,10 @@ public final class SnapshotScheduler {
         account.unofficialCurrencyCode == nil
             && account.isoCurrencyCode?.uppercased() == "USD"
             && account.currentBalance != nil
+    }
+
+    private var usesPlaidTransactions: Bool {
+        let settings = try? mainContext.fetch(FetchDescriptor<DurableUserSettings>()).first
+        return settings?.primaryFinancialDataSource == .plaid
     }
 }

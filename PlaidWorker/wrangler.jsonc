@@ -22,7 +22,9 @@
       "PLAID_SECRET",
       "PLAID_REDIRECT_URI",
       "BACKEND_BEARER_TOKEN",
-      "TOKEN_ENCRYPTION_KEY"
+      "TOKEN_ENCRYPTION_KEY",
+      "CLAUDE_SNAPSHOT_ENCRYPTION_KEY",
+      "ANTHROPIC_API_KEY"
     ]
   },
   "kv_namespaces": [

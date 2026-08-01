@@ -7,6 +7,7 @@ struct CardSettingsForm: View {
     @Environment(AppContainerController.self) private var container
     let account: CachedAccount
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
+    @Query private var canonicalBindings: [DurableCanonicalAccountBinding]
 
     @State private var cycleDay: Int = 1
     @State private var dueDay: Int = 1
@@ -107,9 +108,17 @@ struct CardSettingsForm: View {
         let priorCycleDay = setting.statementCycleDay
         let priorDueDay = setting.paymentDueDay
         let priorPaymentAccountId = setting.paymentAccountId
+        let priorCanonicalAccountId = setting.canonicalAccountId
+        let priorCanonicalPaymentAccountId = setting.canonicalPaymentAccountId
         setting.statementCycleDay = max(1, min(31, cycleDay))
         setting.paymentDueDay = max(1, min(31, dueDay))
         setting.paymentAccountId = paymentAccountId
+        setting.canonicalAccountId = canonicalBindings.first {
+            $0.ynabAccountId == account.id
+        }?.canonicalAccountId
+        setting.canonicalPaymentAccountId = canonicalBindings.first {
+            $0.ynabAccountId == paymentAccountId
+        }?.canonicalAccountId
         let succeeded = ctx.safeSave(source: "cardSettings.save")
         guard succeeded else {
             if isNew {
@@ -118,6 +127,8 @@ struct CardSettingsForm: View {
                 setting.statementCycleDay = priorCycleDay
                 setting.paymentDueDay = priorDueDay
                 setting.paymentAccountId = priorPaymentAccountId
+                setting.canonicalAccountId = priorCanonicalAccountId
+                setting.canonicalPaymentAccountId = priorCanonicalPaymentAccountId
             }
             saveError = "Saving card settings failed. Your selection is still here — try again."
             return

@@ -87,7 +87,7 @@ struct TrendDetailView: View {
                                 Text(Self.monthFormatter.string(from: bucket.monthStart))
                                 Spacer()
                                 Text("\(bucket.snapshotCount) snap")
-                                    .font(.caption)
+                                    .font(NwTypography.caption)
                                     .foregroundStyle(.tertiary)
                                 Text(CurrencyFormatter.compact(bucket.endValue))
                                     .monospacedDigit()
@@ -108,7 +108,7 @@ struct TrendDetailView: View {
                                 Text(hint.label)
                                     .font(NwTypography.body)
                                 Text(hint.detail)
-                                    .font(.caption)
+                                    .font(NwTypography.footnote)
                                     .foregroundStyle(.secondary)
                             }
                             .padding(.vertical, 2)
@@ -128,7 +128,7 @@ struct TrendDetailView: View {
                                     Text(entry.name)
                                         .font(NwTypography.body)
                                     Text("From \(entry.firstEntryLabel)")
-                                        .font(.caption)
+                                        .font(NwTypography.footnote)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -181,7 +181,7 @@ struct TrendDetailView: View {
                                     Text(entry.name)
                                         .font(NwTypography.body)
                                     Text(entry.detail)
-                                        .font(.caption)
+                                        .font(NwTypography.footnote)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -238,7 +238,7 @@ struct TrendDetailView: View {
                 Text(account.name)
                     .font(NwTypography.body)
                 Text(label(for: account.kind))
-                    .font(.caption)
+                    .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
             }
             Spacer()

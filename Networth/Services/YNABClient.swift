@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import os
 import NetworthCore
 
@@ -24,6 +25,7 @@ public protocol YNABClient: Actor {
     func setToken(_ token: String?)
     func budgets() async throws -> [YNABBudgetSummary]
     func accounts(budgetId: String, lastKnowledge: Int64?) async throws -> YNABAccountsResponse
+    func payees(budgetId: String, lastKnowledge: Int64?) async throws -> YNABPayeesResponse
     func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse
     func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse
     func scheduledTransactions(budgetId: String, lastKnowledge: Int64?) async throws -> YNABScheduledTransactionsResponse
@@ -57,6 +59,18 @@ public actor LiveYNABClient: YNABClient {
         if let k = lastKnowledge { path += "?last_knowledge_of_server=\(k)" }
         let env: YNABEnvelope<YNABAccountsResponse> = try await get(path)
         return env.data
+    }
+
+    public func payees(
+        budgetId: String,
+        lastKnowledge: Int64?
+    ) async throws -> YNABPayeesResponse {
+        var path = "/budgets/\(budgetId)/payees"
+        if let lastKnowledge {
+            path += "?last_knowledge_of_server=\(lastKnowledge)"
+        }
+        let envelope: YNABEnvelope<YNABPayeesResponse> = try await get(path)
+        return envelope.data
     }
 
     public func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse {
@@ -170,6 +184,7 @@ public actor LiveYNABClient: YNABClient {
 public actor RecordedYNABClient: YNABClient {
     public var budgetsResult: [YNABBudgetSummary]
     public var accountsResult: YNABAccountsResponse
+    public var payeesResult: YNABPayeesResponse
     public var categoriesResult: YNABCategoriesResponse
     public var transactionsResult: YNABTransactionsResponse
     public var scheduledResult: YNABScheduledTransactionsResponse
@@ -179,12 +194,14 @@ public actor RecordedYNABClient: YNABClient {
     public init(
         budgets: [YNABBudgetSummary] = [],
         accounts: YNABAccountsResponse = .init(accounts: [], server_knowledge: 0),
+        payees: YNABPayeesResponse = .init(payees: [], server_knowledge: 0),
         categories: YNABCategoriesResponse = .init(category_groups: [], server_knowledge: 0),
         transactions: YNABTransactionsResponse = .init(transactions: [], server_knowledge: 0),
         scheduled: YNABScheduledTransactionsResponse = .init(scheduled_transactions: [], server_knowledge: 0)
     ) {
         self.budgetsResult = budgets
         self.accountsResult = accounts
+        self.payeesResult = payees
         self.categoriesResult = categories
         self.transactionsResult = transactions
         self.scheduledResult = scheduled
@@ -197,6 +214,7 @@ public actor RecordedYNABClient: YNABClient {
         return budgetsResult
     }
     public func accounts(budgetId: String, lastKnowledge: Int64?) async throws -> YNABAccountsResponse { accountsResult }
+    public func payees(budgetId: String, lastKnowledge: Int64?) async throws -> YNABPayeesResponse { payeesResult }
     public func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse { categoriesResult }
     public func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse { transactionsResult }
     public func scheduledTransactions(budgetId: String, lastKnowledge: Int64?) async throws -> YNABScheduledTransactionsResponse { scheduledResult }
@@ -213,14 +231,41 @@ public enum PlaidClientError: Error, Sendable, Equatable {
     case cancelled
 }
 
+public enum PlaidLinkMode: String, Codable, Sendable {
+    case investments
+    case transactions
+    case updateTransactions
+}
+
 /// Talks only to Networth's private backend. Plaid credentials and Item access
 /// tokens are intentionally absent from this interface.
 public protocol PlaidClient: Actor {
     func configure(baseURL: URL?, bearerToken: String?)
-    func createLinkToken() async throws -> PlaidLinkTokenResponseDTO
-    func exchangePublicToken(_ publicToken: String) async throws -> PlaidExchangeResponseDTO
+    func createLinkToken(
+        mode: PlaidLinkMode,
+        itemId: String?
+    ) async throws -> PlaidLinkTokenResponseDTO
+    func exchangePublicToken(
+        _ publicToken: String,
+        products: [String]
+    ) async throws -> PlaidExchangeResponseDTO
     func items() async throws -> PlaidItemsResponseDTO
     func holdings() async throws -> PlaidHoldingsResponseDTO
+    func transactions(
+        itemId: String,
+        cursor: String?,
+        count: Int
+    ) async throws -> PlaidTransactionsSyncResponseDTO
+    func enableTransactions(itemId: String) async throws -> PlaidExchangeResponseDTO
+    func inferTransaction(
+        _ input: PlaidInferenceRequestDTO
+    ) async throws -> PlaidInferenceResponseDTO
+    func uploadClaudeSnapshot(
+        _ snapshot: ClaudeFinancialSnapshotDTO
+    ) async throws
+    func generateClaudeConnectCode() async throws
+        -> ClaudeConnectCodeResponseDTO
+    func revokeClaudeAccess() async throws
     func removeItem(id: String) async throws
 }
 
@@ -236,6 +281,7 @@ public actor LivePlaidClient: PlaidClient {
         self.decoder = JSONDecoder()
         self.decoder.dateDecodingStrategy = .iso8601
         self.encoder = JSONEncoder()
+        self.encoder.dateEncodingStrategy = .iso8601
     }
 
     public func configure(baseURL: URL?, bearerToken: String?) {
@@ -243,16 +289,33 @@ public actor LivePlaidClient: PlaidClient {
         self.bearerToken = bearerToken?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    public func createLinkToken() async throws -> PlaidLinkTokenResponseDTO {
-        try await request(path: "v1/plaid/link-token", method: "POST")
+    public func createLinkToken(
+        mode: PlaidLinkMode,
+        itemId: String?
+    ) async throws -> PlaidLinkTokenResponseDTO {
+        struct Body: Encodable {
+            let mode: PlaidLinkMode
+            let itemId: String?
+        }
+        return try await request(
+            path: "v1/plaid/link-token",
+            method: "POST",
+            body: encoder.encode(Body(mode: mode, itemId: itemId))
+        )
     }
 
-    public func exchangePublicToken(_ publicToken: String) async throws -> PlaidExchangeResponseDTO {
-        struct Body: Encodable { let publicToken: String }
+    public func exchangePublicToken(
+        _ publicToken: String,
+        products: [String]
+    ) async throws -> PlaidExchangeResponseDTO {
+        struct Body: Encodable {
+            let publicToken: String
+            let products: [String]
+        }
         return try await request(
             path: "v1/plaid/exchange",
             method: "POST",
-            body: encoder.encode(Body(publicToken: publicToken))
+            body: encoder.encode(Body(publicToken: publicToken, products: products))
         )
     }
 
@@ -262,6 +325,65 @@ public actor LivePlaidClient: PlaidClient {
 
     public func holdings() async throws -> PlaidHoldingsResponseDTO {
         try await request(path: "v1/plaid/investments/holdings", method: "GET")
+    }
+
+    public func transactions(
+        itemId: String,
+        cursor: String?,
+        count: Int = 500
+    ) async throws -> PlaidTransactionsSyncResponseDTO {
+        struct Body: Encodable {
+            let itemId: String
+            let cursor: String?
+            let count: Int
+        }
+        return try await request(
+            path: "v1/plaid/transactions/sync",
+            method: "POST",
+            body: encoder.encode(Body(itemId: itemId, cursor: cursor, count: count))
+        )
+    }
+
+    public func enableTransactions(itemId: String) async throws -> PlaidExchangeResponseDTO {
+        try await request(
+            path: "v1/plaid/items/\(itemId)/enable-transactions",
+            method: "POST"
+        )
+    }
+
+    public func inferTransaction(
+        _ input: PlaidInferenceRequestDTO
+    ) async throws -> PlaidInferenceResponseDTO {
+        try await request(
+            path: "v1/plaid/inference/transaction",
+            method: "POST",
+            body: encoder.encode(input)
+        )
+    }
+
+    public func uploadClaudeSnapshot(
+        _ snapshot: ClaudeFinancialSnapshotDTO
+    ) async throws {
+        _ = try await send(
+            path: "v1/claude/snapshot",
+            method: "PUT",
+            body: encoder.encode(snapshot)
+        )
+    }
+
+    public func generateClaudeConnectCode() async throws
+        -> ClaudeConnectCodeResponseDTO {
+        try await request(
+            path: "v1/claude/connect-code",
+            method: "POST"
+        )
+    }
+
+    public func revokeClaudeAccess() async throws {
+        _ = try await send(
+            path: "v1/claude/access",
+            method: "DELETE"
+        )
     }
 
     public func removeItem(id: String) async throws {
@@ -336,10 +458,19 @@ public actor RecordedPlaidClient: PlaidClient {
     public var exchangeResult: PlaidExchangeResponseDTO
     public var itemsResult: PlaidItemsResponseDTO
     public var holdingsResult: PlaidHoldingsResponseDTO
+    public var transactionsResult: PlaidTransactionsSyncResponseDTO?
+    public var inferenceResult: PlaidInferenceResponseDTO
     public private(set) var exchangedPublicTokens: [String] = []
+    public private(set) var requestedLinkModes: [PlaidLinkMode] = []
+    public private(set) var transactionRequests: [(itemId: String, cursor: String?)] = []
+    public private(set) var enabledTransactionItemIDs: [String] = []
     public private(set) var removedItemIDs: [String] = []
+    public private(set) var uploadedClaudeSnapshots:
+        [ClaudeFinancialSnapshotDTO] = []
+    public private(set) var claudeAccessRevoked = false
     public private(set) var configuredBaseURL: URL?
     public private(set) var configuredBearerToken: String?
+    public var claudeConnectCodeResult: ClaudeConnectCodeResponseDTO
 
     public init(
         linkToken: PlaidLinkTokenResponseDTO = .init(linkToken: "recorded-link-token", expiration: nil),
@@ -350,12 +481,25 @@ public actor RecordedPlaidClient: PlaidClient {
         items: PlaidItemsResponseDTO = .init(items: []),
         holdings: PlaidHoldingsResponseDTO = .init(
             items: [], accounts: [], securities: [], holdings: []
+        ),
+        transactions: PlaidTransactionsSyncResponseDTO? = nil,
+        inference: PlaidInferenceResponseDTO = .init(
+            displayName: "Recorded Merchant",
+            categoryCode: NativeTransactionCategory.other.rawValue,
+            confidence: ClassificationConfidence.medium.rawValue
+        ),
+        claudeConnectCode: ClaudeConnectCodeResponseDTO = .init(
+            code: "ABC234",
+            expiresAt: .now.addingTimeInterval(600)
         )
     ) {
         self.linkTokenResult = linkToken
         self.exchangeResult = exchange
         self.itemsResult = items
         self.holdingsResult = holdings
+        self.transactionsResult = transactions
+        self.inferenceResult = inference
+        self.claudeConnectCodeResult = claudeConnectCode
     }
 
     public func configure(baseURL: URL?, bearerToken: String?) {
@@ -363,12 +507,163 @@ public actor RecordedPlaidClient: PlaidClient {
         configuredBearerToken = bearerToken
     }
 
-    public func createLinkToken() async throws -> PlaidLinkTokenResponseDTO { linkTokenResult }
-    public func exchangePublicToken(_ publicToken: String) async throws -> PlaidExchangeResponseDTO {
+    public func createLinkToken(
+        mode: PlaidLinkMode,
+        itemId: String?
+    ) async throws -> PlaidLinkTokenResponseDTO {
+        requestedLinkModes.append(mode)
+        return linkTokenResult
+    }
+    public func exchangePublicToken(
+        _ publicToken: String,
+        products: [String]
+    ) async throws -> PlaidExchangeResponseDTO {
         exchangedPublicTokens.append(publicToken)
         return exchangeResult
     }
     public func items() async throws -> PlaidItemsResponseDTO { itemsResult }
     public func holdings() async throws -> PlaidHoldingsResponseDTO { holdingsResult }
+    public func transactions(
+        itemId: String,
+        cursor: String?,
+        count: Int
+    ) async throws -> PlaidTransactionsSyncResponseDTO {
+        transactionRequests.append((itemId, cursor))
+        if let transactionsResult { return transactionsResult }
+        return PlaidTransactionsSyncResponseDTO(
+            item: PlaidItemDTO(
+                id: itemId,
+                institutionName: "Recorded Bank",
+                status: "healthy",
+                lastSyncedAt: .now,
+                products: ["transactions"]
+            ),
+            accounts: [],
+            added: [],
+            modified: [],
+            removed: [],
+            nextCursor: cursor ?? "recorded-cursor",
+            hasMore: false
+        )
+    }
+    public func enableTransactions(itemId: String) async throws -> PlaidExchangeResponseDTO {
+        enabledTransactionItemIDs.append(itemId)
+        return exchangeResult
+    }
+    public func inferTransaction(
+        _ input: PlaidInferenceRequestDTO
+    ) async throws -> PlaidInferenceResponseDTO {
+        inferenceResult
+    }
+    public func uploadClaudeSnapshot(
+        _ snapshot: ClaudeFinancialSnapshotDTO
+    ) async throws {
+        uploadedClaudeSnapshots.append(snapshot)
+    }
+    public func generateClaudeConnectCode() async throws
+        -> ClaudeConnectCodeResponseDTO {
+        claudeConnectCodeResult
+    }
+    public func revokeClaudeAccess() async throws {
+        claudeAccessRevoked = true
+    }
     public func removeItem(id: String) async throws { removedItemIDs.append(id) }
+}
+
+// MARK: - On-device transaction inference
+
+public protocol OnDeviceTransactionInferring: Sendable {
+    func suggestion(
+        for transaction: FinancialTransactionSummary
+    ) async -> ModelClassificationSuggestion?
+}
+
+public struct AppleTransactionInferenceProvider: OnDeviceTransactionInferring {
+    public init() {}
+
+    public func suggestion(
+        for transaction: FinancialTransactionSummary
+    ) async -> ModelClassificationSuggestion? {
+        let model = SystemLanguageModel(useCase: .contentTagging)
+        guard model.availability == .available else { return nil }
+        let session = LanguageModelSession(
+            model: model,
+            instructions: """
+            Classify one personal-finance transaction. Return a short defensible
+            merchant/counterparty display name and exactly one allowed category.
+            Do not infer identity, account ownership, location, or other facts.
+            """
+        )
+        let prompt = """
+        Raw description: \(transaction.rawDescription)
+        Plaid merchant: \(transaction.providerMerchantName ?? "unknown")
+        Counterparty: \(transaction.counterpartyName ?? "unknown")
+        Payment channel: \(transaction.paymentChannel ?? "unknown")
+        Plaid category: \(transaction.providerCategoryPrimary ?? "unknown") / \(transaction.providerCategoryDetailed ?? "unknown")
+        Plaid confidence: \(transaction.providerCategoryConfidence ?? "unknown")
+        Direction: \(transaction.amount.isNegative ? "outflow" : "inflow")
+        """
+        do {
+            let response = try await session.respond(
+                to: prompt,
+                generating: AppleTransactionInferenceOutput.self
+            )
+            guard let category = NativeTransactionCategory(
+                rawValue: response.content.categoryCode
+            ), let confidence = ClassificationConfidence(
+                rawValue: response.content.confidence
+            ) else {
+                return nil
+            }
+            let name = response.content.displayName
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return nil }
+            return ModelClassificationSuggestion(
+                displayName: String(name.prefix(120)),
+                category: category,
+                confidence: confidence,
+                provenance: .appleModel
+            )
+        } catch {
+            return nil
+        }
+    }
+}
+
+public struct RecordedTransactionInferenceProvider: OnDeviceTransactionInferring {
+    public var result: ModelClassificationSuggestion?
+
+    public init(result: ModelClassificationSuggestion? = nil) {
+        self.result = result
+    }
+
+    public func suggestion(
+        for transaction: FinancialTransactionSummary
+    ) async -> ModelClassificationSuggestion? {
+        result
+    }
+}
+
+@Generable
+private struct AppleTransactionInferenceOutput {
+    @Guide(description: "Short human-readable merchant or counterparty name.")
+    var displayName: String
+
+    @Guide(
+        description: "Exactly one allowed Networth category code.",
+        .anyOf([
+            "income", "reimbursements", "housing", "utilities", "groceries",
+            "dining", "transportation", "health", "insurance", "shopping",
+            "personalCare", "entertainment", "subscriptions", "travel",
+            "education", "familyAndPets", "taxes", "feesAndInterest",
+            "giftsAndDonations", "other"
+        ])
+    )
+    var categoryCode: String
+
+    @Guide(
+        description: "Confidence in the name and category.",
+        .anyOf(["high", "medium", "low"])
+    )
+    var confidence: String
 }

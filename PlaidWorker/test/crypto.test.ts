@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decryptAccessToken, encryptAccessToken } from "../src/crypto";
+import {
+  decryptAccessToken,
+  decryptClaudeSnapshot,
+  encryptAccessToken,
+  encryptClaudeSnapshot,
+} from "../src/crypto";
 
 const key = Buffer.alloc(32, 7).toString("base64");
 
@@ -20,4 +25,17 @@ test("access-token encryption rejects invalid key sizes", async () => {
     encryptAccessToken("token", Buffer.alloc(16).toString("base64")),
     /exactly 32 bytes/,
   );
+});
+
+test("Claude snapshots use a distinct authenticated encryption context", async () => {
+  const encrypted = await encryptClaudeSnapshot(
+    '{"schemaVersion":1}',
+    key,
+  );
+
+  assert.equal(
+    await decryptClaudeSnapshot(encrypted, key),
+    '{"schemaVersion":1}',
+  );
+  await assert.rejects(decryptAccessToken(encrypted, key));
 });

@@ -132,6 +132,9 @@ public final class DurableNetWorthSnapshot {
 @Model
 public final class DurableCardSettings {
     public var accountId: String = ""
+    /// Additive source-neutral replacement for `accountId`. Legacy installs
+    /// continue reading the YNAB ID until account reconciliation fills this.
+    public var canonicalAccountId: String? = nil
     public var statementCycleDay: Int = 1
     public var minimumPaymentPercentNumerator: Int = 2
     public var minimumPaymentPercentDenominator: Int = 100
@@ -142,6 +145,7 @@ public final class DurableCardSettings {
     public var paymentDueDay: Int = 0
     /// Cash account that funds this card's full-statement autopay.
     public var paymentAccountId: String? = nil
+    public var canonicalPaymentAccountId: String? = nil
 
     public init(
         accountId: String,
@@ -150,7 +154,9 @@ public final class DurableCardSettings {
         minimumPaymentPercentDenominator: Int = 100,
         minimumPaymentFloorMilliunits: Int64 = 25_000,
         paymentDueDay: Int = 0,
-        paymentAccountId: String? = nil
+        paymentAccountId: String? = nil,
+        canonicalAccountId: String? = nil,
+        canonicalPaymentAccountId: String? = nil
     ) {
         self.accountId = accountId
         self.statementCycleDay = max(1, min(31, statementCycleDay))
@@ -159,6 +165,8 @@ public final class DurableCardSettings {
         self.minimumPaymentFloorMilliunits = minimumPaymentFloorMilliunits
         self.paymentDueDay = max(0, min(31, paymentDueDay))
         self.paymentAccountId = paymentAccountId
+        self.canonicalAccountId = canonicalAccountId
+        self.canonicalPaymentAccountId = canonicalPaymentAccountId
     }
 
     public var minimumPaymentPercent: Decimal {
@@ -192,6 +200,11 @@ public final class DurableUserSettings {
     public var projectionHorizonDays: Int = 90
     public var hasSeenTutorial: Bool = false
     public var spendingLookbackDays: Int = 365
+    /// One monthly cap shared by every category in the discretionary envelope.
+    public var discretionaryMonthlyTargetMilliunits: Int64 = 0
+    /// JSON-encoded stable canonical category IDs. Nil means the confirmed
+    /// name/group defaults have not yet been materialized for this user.
+    public var discretionaryCategoryIdsData: Data? = nil
     /// Bumped when a one-time migration changes existing settings defaults.
     /// Version 2 = enable Face ID when biometric is available.
     /// Version 3 = normalize expected-spending lookback to 365 days.
@@ -222,8 +235,365 @@ public final class DurableUserSettings {
     /// they reset the chart to "start fresh" from a chosen date.
     /// `nil` = no floor (default behavior: 60 months back).
     public var chartStartDate: Date? = nil
+    /// `"ynab"` during comparison and `"plaid"` after explicit cutover.
+    public var primaryFinancialDataSourceRaw: String = FinancialDataSource.ynab.rawValue
+    public var plaidTransactionsEnabled: Bool = false
+    public var claudeFallbackEnabled: Bool = false
+    public var claudeFallbackConsentAt: Date? = nil
+    /// Opt-in read-only Claude.ai connector. These additive defaulted fields
+    /// are CloudKit-safe: existing records hydrate with sync disabled and no
+    /// migration or legacy-field cleanup is required.
+    public var claudeDataSyncEnabled: Bool = false
+    public var claudeDataSyncConsentAt: Date? = nil
+    public var claudeDataLastSyncedAt: Date? = nil
+    public var plaidPrimaryCutoverAt: Date? = nil
+    /// Version of the YNAB-first transaction data model. Version 1 discards
+    /// the former fingerprint/rule review state and rebuilds from canonical
+    /// YNAB payees, categories, and transaction history.
+    public var canonicalTransactionDataVersion: Int = 0
 
     public init(id: String = "singleton") { self.id = id }
+
+    public var primaryFinancialDataSource: FinancialDataSource {
+        get { FinancialDataSource(rawValue: primaryFinancialDataSourceRaw) ?? .ynab }
+        set { primaryFinancialDataSourceRaw = newValue.rawValue }
+    }
+
+    public var discretionaryCategoryIds: Set<String> {
+        get {
+            guard let discretionaryCategoryIdsData,
+                  let values = try? JSONDecoder().decode(
+                      [String].self,
+                      from: discretionaryCategoryIdsData
+                  ) else {
+                return []
+            }
+            return Set(values)
+        }
+        set {
+            discretionaryCategoryIdsData = try? JSONEncoder().encode(
+                newValue.sorted()
+            )
+        }
+    }
+}
+
+/// Networth's editable, durable contact/payee directory. YNAB is the seed
+/// source, while future user-confirmed Plaid aliases expand the directory.
+/// `sourceName` is retained as audit evidence; edits change `name` only.
+@Model
+public final class DurableCanonicalPayee {
+    public var id: UUID = UUID()
+    public var canonicalId: String = ""
+    public var ynabPayeeId: String? = nil
+    public var name: String = ""
+    public var sourceName: String = ""
+    public var transferAccountId: String? = nil
+    public var archived: Bool = false
+    public var deletedAtSource: Bool = false
+    public var userEdited: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        canonicalId: String = "",
+        ynabPayeeId: String? = nil,
+        name: String = "",
+        sourceName: String = "",
+        transferAccountId: String? = nil,
+        archived: Bool = false,
+        deletedAtSource: Bool = false,
+        userEdited: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.canonicalId = canonicalId
+        self.ynabPayeeId = ynabPayeeId
+        self.name = name
+        self.sourceName = sourceName
+        self.transferAccountId = transferAccountId
+        self.archived = archived
+        self.deletedAtSource = deletedAtSource
+        self.userEdited = userEdited
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+/// One piece of provider evidence that resolves to a canonical payee. Aliases
+/// are many-to-one and never carry category or approval state.
+@Model
+public final class DurablePayeeAlias {
+    public var id: UUID = UUID()
+    public var aliasKey: String = ""
+    public var payeeCanonicalId: String = ""
+    public var displayValue: String = ""
+    public var kindRaw: String = ""
+    public var institutionName: String? = nil
+    public var provenanceRaw: String = ClassificationProvenance.historicalMatch.rawValue
+    public var confirmed: Bool = false
+    public var suppressed: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        aliasKey: String = "",
+        payeeCanonicalId: String = "",
+        displayValue: String = "",
+        kindRaw: String = "",
+        institutionName: String? = nil,
+        provenance: ClassificationProvenance = .historicalMatch,
+        confirmed: Bool = false,
+        suppressed: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.aliasKey = aliasKey
+        self.payeeCanonicalId = payeeCanonicalId
+        self.displayValue = displayValue
+        self.kindRaw = kindRaw
+        self.institutionName = institutionName
+        self.provenanceRaw = provenance.rawValue
+        self.confirmed = confirmed
+        self.suppressed = suppressed
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+/// Editable category catalog seeded from YNAB. Stable category identity and
+/// group identity remain intact even when the user changes their local names.
+@Model
+public final class DurableCanonicalCategory {
+    public var id: UUID = UUID()
+    public var canonicalId: String = ""
+    public var ynabCategoryId: String? = nil
+    public var ynabGroupId: String? = nil
+    public var name: String = ""
+    public var groupName: String = ""
+    public var sourceName: String = ""
+    public var sourceGroupName: String = ""
+    public var hidden: Bool = false
+    public var deletedAtSource: Bool = false
+    public var userEdited: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        canonicalId: String = "",
+        ynabCategoryId: String? = nil,
+        ynabGroupId: String? = nil,
+        name: String = "",
+        groupName: String = "",
+        sourceName: String = "",
+        sourceGroupName: String = "",
+        hidden: Bool = false,
+        deletedAtSource: Bool = false,
+        userEdited: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.canonicalId = canonicalId
+        self.ynabCategoryId = ynabCategoryId
+        self.ynabGroupId = ynabGroupId
+        self.name = name
+        self.groupName = groupName
+        self.sourceName = sourceName
+        self.sourceGroupName = sourceGroupName
+        self.hidden = hidden
+        self.deletedAtSource = deletedAtSource
+        self.userEdited = userEdited
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+struct DiscretionaryCategoryOption: Identifiable, Hashable {
+    let id: String
+    let sourceCategoryId: String?
+    let name: String
+    let sourceName: String
+    let groupName: String
+    let hidden: Bool
+    let deleted: Bool
+
+    var acceptedIds: Set<String> {
+        var values: Set<String> = [id]
+        if let sourceCategoryId {
+            values.insert(sourceCategoryId)
+            values.insert("ynab:\(sourceCategoryId)")
+        }
+        for candidate in [name, sourceName] where !candidate.isEmpty {
+            let normalized = FinancialTransactionSummary
+                .normalizedDescription(candidate)
+                .replacingOccurrences(of: " ", with: "-")
+            values.insert("local:\(normalized)")
+        }
+        return values
+    }
+
+    var acceptedNames: Set<String> {
+        Set([name, sourceName].filter { !$0.isEmpty })
+    }
+}
+
+enum DiscretionaryCategoryResolver {
+    static func options(
+        canonical: [DurableCanonicalCategory],
+        cached: [CachedCategory],
+        activeOnly: Bool
+    ) -> [DiscretionaryCategoryOption] {
+        var byID: [String: DiscretionaryCategoryOption] = [:]
+        for category in canonical {
+            let option = DiscretionaryCategoryOption(
+                id: category.canonicalId,
+                sourceCategoryId: category.ynabCategoryId,
+                name: category.name,
+                sourceName: category.sourceName,
+                groupName: category.groupName,
+                hidden: category.hidden,
+                deleted: category.deletedAtSource
+            )
+            byID[option.id] = option
+        }
+        for category in cached {
+            let id = "ynab:\(category.id)"
+            guard byID[id] == nil else { continue }
+            byID[id] = DiscretionaryCategoryOption(
+                id: id,
+                sourceCategoryId: category.id,
+                name: category.name,
+                sourceName: category.name,
+                groupName: category.groupName,
+                hidden: category.hidden,
+                deleted: category.deleted
+            )
+        }
+        return byID.values
+            .filter {
+                !$0.name.isEmpty
+                    && (!activeOnly || (!$0.hidden && !$0.deleted))
+            }
+            .sorted {
+                if $0.groupName != $1.groupName {
+                    return $0.groupName.localizedCaseInsensitiveCompare(
+                        $1.groupName
+                    ) == .orderedAscending
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name)
+                    == .orderedAscending
+            }
+    }
+
+    static func selectedIds(
+        settings: DurableUserSettings?,
+        activeOptions: [DiscretionaryCategoryOption]
+    ) -> Set<String> {
+        if let settings,
+           settings.discretionaryCategoryIdsData != nil {
+            return settings.discretionaryCategoryIds
+        }
+        return Set(activeOptions.filter {
+            DiscretionaryBudgetDefaults.includesCategory(
+                name: $0.name,
+                groupName: $0.groupName
+            )
+        }.map(\.id))
+    }
+
+    static func acceptedCategories(
+        selectedIds: Set<String>,
+        allOptions: [DiscretionaryCategoryOption]
+    ) -> (ids: Set<String>, names: Set<String>) {
+        let selectedOptions = allOptions.filter {
+            selectedIds.contains($0.id)
+        }
+        return (
+            selectedOptions.reduce(into: selectedIds) {
+                $0.formUnion($1.acceptedIds)
+            },
+            selectedOptions.reduce(into: Set<String>()) {
+                $0.formUnion($1.acceptedNames)
+            }
+        )
+    }
+}
+
+/// A durable decision for exactly one Plaid transaction. Payee identity,
+/// category identity, treatment, splits, and review status are transaction
+/// data—not merchant rules.
+@Model
+public final class DurableCanonicalTransactionDecision {
+    public var id: UUID = UUID()
+    public var transactionExternalId: String = ""
+    public var ynabTransactionId: String? = nil
+    public var payeeCanonicalId: String? = nil
+    public var payeeNameSnapshot: String = ""
+    public var categoryCanonicalId: String? = nil
+    public var categoryNameSnapshot: String? = nil
+    public var amountSign: Int = 0
+    public var forecastTreatmentRaw: String = ForecastTreatment.ordinarySpending.rawValue
+    public var subtransactionsData: Data? = nil
+    public var reviewed: Bool = false
+    public var provenanceRaw: String = ClassificationProvenance.historicalMatch.rawValue
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        transactionExternalId: String = "",
+        ynabTransactionId: String? = nil,
+        payeeCanonicalId: String? = nil,
+        payeeNameSnapshot: String = "",
+        categoryCanonicalId: String? = nil,
+        categoryNameSnapshot: String? = nil,
+        amountSign: Int = 0,
+        forecastTreatment: ForecastTreatment = .ordinarySpending,
+        subtransactionsData: Data? = nil,
+        reviewed: Bool = false,
+        provenance: ClassificationProvenance = .historicalMatch,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.transactionExternalId = transactionExternalId
+        self.ynabTransactionId = ynabTransactionId
+        self.payeeCanonicalId = payeeCanonicalId
+        self.payeeNameSnapshot = payeeNameSnapshot
+        self.categoryCanonicalId = categoryCanonicalId
+        self.categoryNameSnapshot = categoryNameSnapshot
+        self.amountSign = amountSign
+        self.forecastTreatmentRaw = forecastTreatment.rawValue
+        self.subtransactionsData = subtransactionsData
+        self.reviewed = reviewed
+        self.provenanceRaw = provenance.rawValue
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var forecastTreatment: ForecastTreatment {
+        get {
+            ForecastTreatment(rawValue: forecastTreatmentRaw)
+                ?? .ordinarySpending
+        }
+        set { forecastTreatmentRaw = newValue.rawValue }
+    }
+
+    public var subtransactions: [SubTransactionSummary] {
+        guard let subtransactionsData, !subtransactionsData.isEmpty else {
+            return []
+        }
+        return (try? JSONDecoder().decode(
+            [SubTransactionSummary].self,
+            from: subtransactionsData
+        )) ?? []
+    }
 }
 
 /// One row per closed YNAB account the user wants to include in the trend
@@ -234,6 +604,7 @@ public final class DurableUserSettings {
 @Model
 public final class DurableIncludedClosedAccount {
     public var accountId: String = ""
+    public var canonicalAccountId: String? = nil
     public var addedAt: Date = Date.now
 
     public init(accountId: String = "", addedAt: Date = .now) {
@@ -293,12 +664,202 @@ public final class DurableExcludedSpendTransaction {
 public final class DurableProjectionCashAccountOverride {
     public var id: UUID = UUID()
     public var accountId: String = ""
+    public var canonicalAccountId: String? = nil
     public var included: Bool = false
 
     public init(id: UUID = UUID(), accountId: String = "", included: Bool = false) {
         self.id = id
         self.accountId = accountId
         self.included = included
+    }
+}
+
+/// Durable identity bridge between provider-specific account IDs and the
+/// source-neutral account ID used by settings and projections.
+@Model
+public final class DurableCanonicalAccountBinding {
+    public var id: UUID = UUID()
+    public var canonicalAccountId: String = ""
+    public var plaidAccountId: String = ""
+    public var ynabAccountId: String? = nil
+    public var itemId: String = ""
+    public var institutionName: String = ""
+    public var accountName: String = ""
+    public var mask: String? = nil
+    public var accountTypeRaw: String = FinancialAccountType.other.rawValue
+    public var reviewed: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        canonicalAccountId: String = UUID().uuidString,
+        plaidAccountId: String = "",
+        ynabAccountId: String? = nil,
+        itemId: String = "",
+        institutionName: String = "",
+        accountName: String = "",
+        mask: String? = nil,
+        accountType: FinancialAccountType = .other,
+        reviewed: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.canonicalAccountId = canonicalAccountId
+        self.plaidAccountId = plaidAccountId
+        self.ynabAccountId = ynabAccountId
+        self.itemId = itemId
+        self.institutionName = institutionName
+        self.accountName = accountName
+        self.mask = mask
+        self.accountTypeRaw = accountType.rawValue
+        self.reviewed = reviewed
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var accountType: FinancialAccountType {
+        get { FinancialAccountType(rawValue: accountTypeRaw) ?? .other }
+        set { accountTypeRaw = newValue.rawValue }
+    }
+}
+
+@Model
+public final class DurableMerchantRule {
+    public var id: UUID = UUID()
+    public var fingerprint: String = ""
+    public var preferredName: String = ""
+    public var categoryRaw: String = NativeTransactionCategory.other.rawValue
+    public var categoryName: String? = nil
+    public var forecastTreatmentRaw: String = ForecastTreatment.ordinarySpending.rawValue
+    public var categoryReusable: Bool = false
+    public var ruleSchemaVersion: Int = 0
+    public var provenanceRaw: String = ClassificationProvenance.user.rawValue
+    public var confirmed: Bool = false
+    public var nameConfirmedAt: Date? = nil
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        fingerprint: String = "",
+        preferredName: String = "",
+        category: NativeTransactionCategory = .other,
+        categoryName: String? = nil,
+        forecastTreatment: ForecastTreatment = .ordinarySpending,
+        categoryReusable: Bool = false,
+        ruleSchemaVersion: Int = 1,
+        provenance: ClassificationProvenance = .user,
+        confirmed: Bool = false,
+        nameConfirmedAt: Date? = nil,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.fingerprint = fingerprint
+        self.preferredName = preferredName
+        self.categoryRaw = category.rawValue
+        self.categoryName = categoryName
+        self.forecastTreatmentRaw = forecastTreatment.rawValue
+        self.categoryReusable = categoryReusable
+        self.ruleSchemaVersion = ruleSchemaVersion
+        self.provenanceRaw = provenance.rawValue
+        self.confirmed = confirmed
+        self.nameConfirmedAt = nameConfirmedAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public func toCore() -> MerchantClassificationRule {
+        MerchantClassificationRule(
+            id: id,
+            fingerprint: fingerprint,
+            preferredName: preferredName,
+            category: NativeTransactionCategory(rawValue: categoryRaw) ?? .other,
+            categoryName: categoryName,
+            treatment: ForecastTreatment(rawValue: forecastTreatmentRaw) ?? .ordinarySpending,
+            categoryReusable: categoryReusable,
+            provenance: ClassificationProvenance(rawValue: provenanceRaw) ?? .user,
+            confirmed: confirmed
+        )
+    }
+}
+
+/// A user-created category that extends the imported YNAB category list.
+@Model
+public final class DurableTransactionCategory {
+    public var id: UUID = UUID()
+    public var name: String = ""
+    public var groupName: String = "Networth Categories"
+    public var hidden: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        groupName: String = "Networth Categories",
+        hidden: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.name = name
+        self.groupName = groupName
+        self.hidden = hidden
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+/// One-off correction when the user does not want a change to become a
+/// merchant-wide rule.
+@Model
+public final class DurableTransactionOverride {
+    public var id: UUID = UUID()
+    public var transactionExternalId: String = ""
+    public var displayName: String = ""
+    public var categoryRaw: String = NativeTransactionCategory.other.rawValue
+    public var categoryName: String? = nil
+    public var forecastTreatmentRaw: String = ForecastTreatment.ordinarySpending.rawValue
+    public var subtransactionsData: Data? = nil
+    public var provenanceRaw: String = ClassificationProvenance.user.rawValue
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        transactionExternalId: String = "",
+        displayName: String = "",
+        category: NativeTransactionCategory = .other,
+        categoryName: String? = nil,
+        forecastTreatment: ForecastTreatment = .ordinarySpending,
+        subtransactionsData: Data? = nil,
+        provenance: ClassificationProvenance = .user,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.transactionExternalId = transactionExternalId
+        self.displayName = displayName
+        self.categoryRaw = category.rawValue
+        self.categoryName = categoryName
+        self.forecastTreatmentRaw = forecastTreatment.rawValue
+        self.subtransactionsData = subtransactionsData
+        self.provenanceRaw = provenance.rawValue
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var subtransactions: [SubTransactionSummary] {
+        guard let subtransactionsData, !subtransactionsData.isEmpty else {
+            return []
+        }
+        return (try? JSONDecoder().decode(
+            [SubTransactionSummary].self,
+            from: subtransactionsData
+        )) ?? []
     }
 }
 

@@ -16,6 +16,7 @@ public final class SyncCoordinator {
 
     public private(set) var phase: Phase = .idle
     public private(set) var lastSyncedAt: Date?
+    public private(set) var canonicalHistoryChangedInLastSync = false
 
     private let client: any YNABClient
     private let mainContext: ModelContext
@@ -44,6 +45,7 @@ public final class SyncCoordinator {
         // sync-in-flight flag here; if another sync is already running, this
         // call is a no-op.
         if case .syncing = phase { return }
+        canonicalHistoryChangedInLastSync = false
         do {
             phase = .syncing(label: "Budgets")
             let budgets = try await client.budgets()
@@ -70,6 +72,18 @@ public final class SyncCoordinator {
             // once, then never again because the categories cursor exists.
             resetCursorsIfPreCategoryCache(budgetId: useBudget)
             resetScheduledCursorIfMissingFirstDate(budgetId: useBudget)
+
+            phase = .syncing(label: "Contacts")
+            let payeesCursor = cursor(key: "payees:\(useBudget)")
+            let payeesResp = try await client.payees(
+                budgetId: useBudget,
+                lastKnowledge: payeesCursor
+            )
+            upsertCanonicalPayees(payeesResp.payees)
+            saveCursor(
+                key: "payees:\(useBudget)",
+                value: payeesResp.server_knowledge
+            )
 
             phase = .syncing(label: "Categories")
             let categoriesCursor = cursor(key: "categories:\(useBudget)")
@@ -98,6 +112,10 @@ public final class SyncCoordinator {
                 phase = .error("Saving synced data failed. Retry the sync in a moment.")
                 return
             }
+            canonicalHistoryChangedInLastSync =
+                !payeesResp.payees.isEmpty
+                || !categoriesResp.category_groups.isEmpty
+                || !txnResp.transactions.isEmpty
             updateUserLastSynced(date: .now, budgetId: useBudget)
             guard mainContext.safeSave(source: "sync.durable") else {
                 mainContext.rollback()
@@ -112,6 +130,12 @@ public final class SyncCoordinator {
             }
 
             lastSyncedAt = .now
+            if let settings = try? mainContext.fetch(
+                FetchDescriptor<DurableUserSettings>()
+            ).first {
+                settings.lastSyncedAt = .now
+                mainContext.safeSave(source: "plaidTransactions.lastSyncedAt")
+            }
             phase = .idle
         } catch let error as YNABClientError {
             // Any in-flight upserts before the YNAB request threw should be
@@ -461,10 +485,13 @@ public final class SyncCoordinator {
                 existing.amountMilliunits = t.amount
                 existing.cleared = t.cleared == "cleared" || t.cleared == "reconciled"
                 existing.approved = t.approved
+                existing.payeeId = t.payee_id
                 existing.payeeName = t.payee_name
                 existing.categoryId = t.category_id
                 existing.categoryName = t.category_name
                 existing.transferAccountId = t.transfer_account_id
+                existing.transferTransactionId = t.transfer_transaction_id
+                existing.importId = t.import_id
                 existing.memo = t.memo
                 existing.deleted = t.deleted
                 existing.date = parsed
@@ -477,7 +504,10 @@ public final class SyncCoordinator {
                     approved: t.approved,
                     payeeName: t.payee_name,
                     categoryId: t.category_id, categoryName: t.category_name,
+                    payeeId: t.payee_id,
                     transferAccountId: t.transfer_account_id,
+                    transferTransactionId: t.transfer_transaction_id,
+                    importId: t.import_id,
                     memo: t.memo, deleted: t.deleted,
                     subtransactionsData: subData
                 ))
@@ -486,6 +516,15 @@ public final class SyncCoordinator {
     }
 
     private func upsertCategories(_ groups: [YNABCategoryGroupDTO], budgetId: String) {
+        let canonicalRows = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        var canonicalByID: [String: DurableCanonicalCategory] = [:]
+        for row in canonicalRows.sorted(by: {
+            $0.updatedAt < $1.updatedAt
+        }) {
+            canonicalByID[row.canonicalId] = row
+        }
         for group in groups {
             for cat in group.categories {
                 let targetId = cat.id
@@ -505,6 +544,68 @@ public final class SyncCoordinator {
                         deleted: cat.deleted || group.deleted
                     ))
                 }
+                let canonicalId = "ynab:\(cat.id)"
+                let sourceHidden = cat.hidden || group.hidden
+                let sourceDeleted = cat.deleted || group.deleted
+                if let canonical = canonicalByID[canonicalId] {
+                    canonical.ynabCategoryId = cat.id
+                    canonical.ynabGroupId = group.id
+                    canonical.sourceName = cat.name
+                    canonical.sourceGroupName = group.name
+                    canonical.deletedAtSource = sourceDeleted
+                    if !canonical.userEdited {
+                        canonical.name = cat.name
+                        canonical.groupName = group.name
+                        canonical.hidden = sourceHidden
+                    }
+                    canonical.updatedAt = .now
+                } else {
+                    mainContext.insert(DurableCanonicalCategory(
+                        canonicalId: canonicalId,
+                        ynabCategoryId: cat.id,
+                        ynabGroupId: group.id,
+                        name: cat.name,
+                        groupName: group.name,
+                        sourceName: cat.name,
+                        sourceGroupName: group.name,
+                        hidden: sourceHidden,
+                        deletedAtSource: sourceDeleted
+                    ))
+                }
+            }
+        }
+    }
+
+    private func upsertCanonicalPayees(_ payees: [YNABPayeeDTO]) {
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        var byID: [String: DurableCanonicalPayee] = [:]
+        for row in rows.sorted(by: { $0.updatedAt < $1.updatedAt }) {
+            byID[row.canonicalId] = row
+        }
+        for payee in payees {
+            let canonicalId = "ynab:\(payee.id)"
+            if let row = byID[canonicalId] {
+                row.ynabPayeeId = payee.id
+                row.sourceName = payee.name
+                row.transferAccountId = payee.transfer_account_id
+                row.deletedAtSource = payee.deleted
+                if !row.userEdited {
+                    row.name = payee.name
+                    row.archived = payee.deleted
+                }
+                row.updatedAt = .now
+            } else {
+                mainContext.insert(DurableCanonicalPayee(
+                    canonicalId: canonicalId,
+                    ynabPayeeId: payee.id,
+                    name: payee.name,
+                    sourceName: payee.name,
+                    transferAccountId: payee.transfer_account_id,
+                    archived: payee.deleted,
+                    deletedAtSource: payee.deleted
+                ))
             }
         }
     }
@@ -693,12 +794,14 @@ public final class PlaidSyncCoordinator {
                 row.institutionName = item.institutionName
                 row.status = item.status
                 row.lastSyncedAt = item.lastSyncedAt
+                row.productsRaw = row.products.union(["investments"]).sorted().joined(separator: ",")
             } else {
                 mainContext.insert(CachedPlaidItem(
                     id: item.id,
                     institutionName: item.institutionName,
                     status: item.status,
-                    lastSyncedAt: item.lastSyncedAt
+                    lastSyncedAt: item.lastSyncedAt,
+                    products: ["investments"]
                 ))
             }
         }
@@ -716,9 +819,11 @@ public final class PlaidSyncCoordinator {
                     name: account.name,
                     officialName: account.officialName,
                     mask: account.mask,
+                    typeRaw: "investment",
                     subtype: account.subtype,
                     currentBalanceMilliunits: account.currentBalance?.milliunits,
                     availableBalanceMilliunits: account.availableBalance?.milliunits,
+                    limitMilliunits: nil,
                     isoCurrencyCode: account.isoCurrencyCode,
                     unofficialCurrencyCode: account.unofficialCurrencyCode
                 ))
@@ -793,9 +898,11 @@ public final class PlaidSyncCoordinator {
         row.name = account.name
         row.officialName = account.officialName
         row.mask = account.mask
+        row.typeRaw = "investment"
         row.subtype = account.subtype
         row.currentBalanceMilliunits = account.currentBalance?.milliunits
         row.availableBalanceMilliunits = account.availableBalance?.milliunits
+        row.limitMilliunits = nil
         row.isoCurrencyCode = account.isoCurrencyCode
         row.unofficialCurrencyCode = account.unofficialCurrencyCode
     }
@@ -833,5 +940,2635 @@ public final class PlaidSyncCoordinator {
         case .cancelled:
             return ""
         }
+    }
+}
+
+// MARK: - Plaid banking transactions
+
+/// Pulls transaction deltas through the private Worker, normalizes them into
+/// the provider-neutral cache, and advances each Plaid cursor only after the
+/// matching SwiftData page has been saved successfully.
+@MainActor
+@Observable
+public final class PlaidTransactionSyncCoordinator {
+    private static let currentHistoricalReconciliationVersion = 13
+    private static let currentCanonicalTransactionDataVersion = 2
+
+    public enum Phase: Sendable, Equatable {
+        case idle
+        case syncing(String)
+        case error(String)
+    }
+
+    public private(set) var phase: Phase = .idle
+    public private(set) var lastSyncedAt: Date?
+    public private(set) var pendingTransactionReviewCount: Int = 0
+    public private(set) var unresolvedPayeeReviewCount: Int = 0
+    public private(set) var canonicalReviewReady: Bool = false
+
+    private let client: any PlaidClient
+    private let inferenceProvider: any OnDeviceTransactionInferring
+    private let mainContext: ModelContext
+    private let classifier = TransactionClassifier()
+
+    public init(
+        client: any PlaidClient,
+        inferenceProvider: any OnDeviceTransactionInferring,
+        mainContext: ModelContext
+    ) {
+        self.client = client
+        self.inferenceProvider = inferenceProvider
+        self.mainContext = mainContext
+    }
+
+    /// Applies cache/durable migrations that do not require a network request.
+    /// This must run at bootstrap so a recently completed sync cannot delay a
+    /// newer reconciliation rule behind the 15-minute freshness window.
+    public func runLocalMigrationsIfNeeded() {
+        let deduplicated = deduplicateCanonicalDirectory()
+        let backfilledDirection = backfillCanonicalDecisionDirection()
+        let canonicalDirectoryChanged =
+            deduplicated || backfilledDirection
+        if canonicalDirectoryChanged,
+           !mainContext.safeSave(
+               source: "plaidTransactions.canonicalDeduplication"
+           ) {
+            mainContext.rollback()
+            return
+        }
+        resetDerivedTransactionDataIfNeeded()
+        if prepareMissingCanonicalDirectoryReplay(),
+           !mainContext.safeSave(
+               source: "plaidTransactions.canonicalDirectoryReplay"
+           ) {
+            mainContext.rollback()
+            return
+        }
+        reconcileHistoryIfNeeded()
+        refreshCanonicalReviewCounts()
+    }
+
+    /// A completed reconciliation is valid only for the YNAB cache it read.
+    /// YNAB delta sync can add or change canonical contacts, categories, and
+    /// transactions after that marker was written, so make the next Plaid
+    /// pass replay history against the updated source.
+    public func invalidateHistoricalReconciliationForYNABChanges() {
+        invalidateHistoricalReconciliation()
+        guard mainContext.safeSave(
+            source: "plaidTransactions.invalidateAfterYNABSync"
+        ) else {
+            mainContext.rollback()
+            return
+        }
+        refreshCanonicalReviewCounts()
+    }
+
+    /// A delta cursor can legitimately return no category/payee rows even
+    /// though the old disposable cache is populated. If the new canonical
+    /// table is empty, clear only that source cursor so the next ordinary YNAB
+    /// sync performs a full directory replay. Do not touch Plaid rows,
+    /// aliases, or transaction decisions.
+    private func prepareMissingCanonicalDirectoryReplay() -> Bool {
+        let canonicalPayees = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        let canonicalCategories = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        let cursors = (try? mainContext.fetch(
+            FetchDescriptor<SyncCursor>()
+        )) ?? []
+
+        let needsPayeeReplay = canonicalPayees.isEmpty
+            && cursors.contains { $0.key.hasPrefix("payees:") }
+        let needsCategoryReplay = canonicalCategories.isEmpty
+            && cursors.contains { $0.key.hasPrefix("categories:") }
+        guard needsPayeeReplay || needsCategoryReplay else {
+            return false
+        }
+
+        for cursor in cursors {
+            if needsPayeeReplay && cursor.key.hasPrefix("payees:") {
+                mainContext.delete(cursor)
+            }
+            if needsCategoryReplay
+                && cursor.key.hasPrefix("categories:") {
+                mainContext.delete(cursor)
+            }
+        }
+        invalidateHistoricalReconciliation()
+        let settings = (try? mainContext.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ))?.first
+        if settings?.primaryFinancialDataSource == .ynab {
+            settings?.lastSyncedAt = nil
+        }
+        return true
+    }
+
+    private func backfillCanonicalDecisionDirection() -> Bool {
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        let missing = decisions.filter { $0.amountSign == 0 }
+        guard !missing.isEmpty else { return false }
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []
+        var amountByExternalID: [String: Int64] = [:]
+        for row in rows {
+            amountByExternalID[row.externalId] = row.amountMilliunits
+        }
+        var changed = false
+        for decision in missing {
+            guard let amount =
+                    amountByExternalID[decision.transactionExternalId],
+                  amount != 0 else {
+                continue
+            }
+            decision.amountSign = Int(amount.signum())
+            decision.updatedAt = .now
+            changed = true
+        }
+        return changed
+    }
+
+    /// CloudKit can deliver logically identical rows created on two devices.
+    /// Stable string IDs are the real identity; keep the newest row for each
+    /// identity before building dictionaries or presenting management UI.
+    private func deduplicateCanonicalDirectory() -> Bool {
+        var changed = false
+
+        let payees = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        for group in Dictionary(
+            grouping: payees,
+            by: \.canonicalId
+        ).values where group.count > 1 {
+            let ordered = group.sorted { lhs, rhs in
+                if lhs.updatedAt == rhs.updatedAt {
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            for duplicate in ordered.dropFirst() {
+                mainContext.delete(duplicate)
+                changed = true
+            }
+        }
+
+        let categories = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        for group in Dictionary(
+            grouping: categories,
+            by: \.canonicalId
+        ).values where group.count > 1 {
+            let ordered = group.sorted { lhs, rhs in
+                if lhs.updatedAt == rhs.updatedAt {
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            for duplicate in ordered.dropFirst() {
+                mainContext.delete(duplicate)
+                changed = true
+            }
+        }
+
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        for group in Dictionary(
+            grouping: decisions,
+            by: \.transactionExternalId
+        ).values where group.count > 1 {
+            let ordered = group.sorted { lhs, rhs in
+                if lhs.updatedAt == rhs.updatedAt {
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            for duplicate in ordered.dropFirst() {
+                mainContext.delete(duplicate)
+                changed = true
+            }
+        }
+
+        let aliases = (try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []
+        for group in Dictionary(
+            grouping: aliases,
+            by: { "\($0.aliasKey)|\($0.payeeCanonicalId)" }
+        ).values where group.count > 1 {
+            let ordered = group.sorted { lhs, rhs in
+                if lhs.updatedAt == rhs.updatedAt {
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            for duplicate in ordered.dropFirst() {
+                mainContext.delete(duplicate)
+                changed = true
+            }
+        }
+
+        return changed
+    }
+
+    @discardableResult
+    public func syncAll() async -> Bool {
+        guard case .idle = phase else { return false }
+        phase = .syncing("Accounts")
+        do {
+            let itemsResponse = try await client.items()
+            upsertItems(itemsResponse.items)
+            resetDerivedTransactionDataIfNeeded()
+            let transactionItems = itemsResponse.items.filter {
+                ($0.products ?? []).contains("transactions")
+            }
+            let existingRows = (try? mainContext.fetch(
+                FetchDescriptor<CachedFinancialTransaction>()
+            )) ?? []
+            var existingByID = Dictionary(
+                uniqueKeysWithValues: existingRows.map { ($0.id, $0) }
+            )
+            for item in transactionItems {
+                phase = .syncing(item.institutionName)
+                guard await sync(
+                    item: item,
+                    existingByID: &existingByID
+                ) else {
+                    return false
+                }
+            }
+            reconcileHistoryIfNeeded()
+            applyCurrentCanonicalState()
+            guard mainContext.safeSave(
+                source: "plaidTransactions.applyCanonicalState"
+            ) else {
+                mainContext.rollback()
+                phase = .error("Saving banking data failed. Retry in a moment.")
+                return false
+            }
+            refreshCanonicalReviewCounts()
+            lastSyncedAt = .now
+            phase = .idle
+            return true
+        } catch let error as PlaidClientError {
+            mainContext.rollback()
+            if error == .cancelled {
+                phase = .idle
+            } else {
+                phase = .error(message(for: error))
+            }
+            return false
+        } catch is CancellationError {
+            mainContext.rollback()
+            phase = .idle
+            return false
+        } catch {
+            mainContext.rollback()
+            phase = .error("Banking sync failed. Try again.")
+            return false
+        }
+    }
+
+    public func mapAccount(plaidAccountId: String, toYNABAccountId ynabAccountId: String?) {
+        let bindings = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalAccountBinding>()
+        )) ?? []
+        guard let binding = bindings.first(where: { $0.plaidAccountId == plaidAccountId }) else {
+            return
+        }
+        binding.ynabAccountId = ynabAccountId
+        binding.reviewed = true
+        binding.updatedAt = .now
+        if let ynabAccountId {
+            let cardSettings = (try? mainContext.fetch(FetchDescriptor<DurableCardSettings>())) ?? []
+            for settings in cardSettings {
+                if settings.accountId == ynabAccountId {
+                    settings.canonicalAccountId = binding.canonicalAccountId
+                }
+                if settings.paymentAccountId == ynabAccountId {
+                    settings.canonicalPaymentAccountId = binding.canonicalAccountId
+                }
+            }
+            let cashOverrides = (try? mainContext.fetch(
+                FetchDescriptor<DurableProjectionCashAccountOverride>()
+            )) ?? []
+            for override in cashOverrides where override.accountId == ynabAccountId {
+                override.canonicalAccountId = binding.canonicalAccountId
+            }
+            let closedAccounts = (try? mainContext.fetch(
+                FetchDescriptor<DurableIncludedClosedAccount>()
+            )) ?? []
+            for account in closedAccounts where account.accountId == ynabAccountId {
+                account.canonicalAccountId = binding.canonicalAccountId
+            }
+        }
+        invalidateHistoricalReconciliation()
+        guard mainContext.safeSave(source: "plaidTransactions.mapAccount") else {
+            mainContext.rollback()
+            return
+        }
+        reconcileHistoryIfNeeded()
+    }
+
+    private func reconcileHistoryIfNeeded() {
+        let accounts = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialAccount>(
+                predicate: #Predicate { !$0.deleted }
+            )
+        )) ?? []
+        guard !accounts.isEmpty else { return }
+
+        let activePlaidIDs = Set(accounts.map(\.externalId))
+        let bindings = ((try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalAccountBinding>()
+        )) ?? []).filter { activePlaidIDs.contains($0.plaidAccountId) }
+        guard bindings.count == activePlaidIDs.count,
+              bindings.allSatisfy(\.reviewed) else {
+            return
+        }
+
+        let cursors = (try? mainContext.fetch(
+            FetchDescriptor<PlaidTransactionCursor>()
+        )) ?? []
+        guard !cursors.isEmpty,
+              cursors.allSatisfy(\.historicalImportComplete),
+              cursors.contains(where: {
+                  $0.historicalReconciliationVersion
+                      < Self.currentHistoricalReconciliationVersion
+              }) else {
+            return
+        }
+        reconcileHistory()
+    }
+
+    public func reconcileHistory() {
+        let bindings = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalAccountBinding>()
+        )) ?? []
+        let ynabMap = Dictionary(
+            uniqueKeysWithValues: bindings.compactMap { binding -> (String, String)? in
+                guard binding.reviewed, let ynabID = binding.ynabAccountId else { return nil }
+                return (ynabID, binding.canonicalAccountId)
+            }
+        )
+        guard !ynabMap.isEmpty else { return }
+        let canonicalPayees = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        let canonicalCategories = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        // A complete YNAB-derived directory is a prerequisite. Never clear or
+        // rewrite durable decisions when the disposable source cache is absent.
+        guard !canonicalPayees.isEmpty, !canonicalCategories.isEmpty else {
+            return
+        }
+
+        let oldMatches = (try? mainContext.fetch(
+            FetchDescriptor<LegacyTransactionMatchRow>()
+        )) ?? []
+        oldMatches.forEach(mainContext.delete)
+
+        let legacyRows = (try? mainContext.fetch(FetchDescriptor<CachedTransaction>())) ?? []
+        guard !legacyRows.isEmpty else { return }
+        let financialRows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []
+        let plaidSummaries = financialRows
+            .filter { !$0.deleted && !$0.pending && $0.sourceRaw == FinancialDataSource.plaid.rawValue }
+            .map { $0.toSummary() }
+        let matches = HistoricalTransactionMatcher().matches(
+            legacy: legacyRows.map { $0.toSummary() },
+            plaid: plaidSummaries,
+            canonicalAccountIdByYNABId: ynabMap
+        )
+        for match in matches {
+            mainContext.insert(
+                LegacyTransactionMatchRow(
+                    plaidTransactionId: match.plaidTransactionId,
+                    ynabTransactionId: match.legacyTransactionId,
+                    confidence: match.confidence,
+                    score: match.score,
+                    automatic: match.isAutomatic
+                )
+            )
+        }
+        applyCanonicalHistory(
+            matches: matches,
+            legacyRows: legacyRows,
+            financialRows: financialRows,
+            payees: canonicalPayees,
+            categories: canonicalCategories
+        )
+        markHistoricalReconciliationComplete()
+        guard mainContext.safeSave(
+            source: "plaidTransactions.canonicalReconciliation"
+        ) else {
+            mainContext.rollback()
+            return
+        }
+        refreshCanonicalReviewCounts()
+    }
+
+    /// One-time rebuild of all transaction-derived state. Raw YNAB and Plaid
+    /// source rows, account mappings, connections, settings, snapshots, and
+    /// manual assets remain untouched. Contacts and categories replay from
+    /// YNAB before the retained Plaid history is reconciled again.
+    private func resetDerivedTransactionDataIfNeeded() {
+        var settingsRows = (try? mainContext.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        )) ?? []
+        if settingsRows.isEmpty {
+            let settings = DurableUserSettings()
+            mainContext.insert(settings)
+            settingsRows = [settings]
+        }
+        guard settingsRows.contains(where: {
+            $0.canonicalTransactionDataVersion
+                < Self.currentCanonicalTransactionDataVersion
+        }) else {
+            return
+        }
+
+        ((try? mainContext.fetch(
+            FetchDescriptor<DurableMerchantRule>()
+        )) ?? []).forEach(mainContext.delete)
+        ((try? mainContext.fetch(
+            FetchDescriptor<DurableTransactionCategory>()
+        )) ?? []).forEach(mainContext.delete)
+        ((try? mainContext.fetch(
+            FetchDescriptor<DurableTransactionOverride>()
+        )) ?? []).forEach(mainContext.delete)
+        ((try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []).forEach(mainContext.delete)
+        ((try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []).forEach(mainContext.delete)
+        ((try? mainContext.fetch(
+            FetchDescriptor<LegacyTransactionMatchRow>()
+        )) ?? []).forEach(mainContext.delete)
+        ((try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []).forEach(mainContext.delete)
+        ((try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []).forEach(mainContext.delete)
+
+        let financialRows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []
+        for row in financialRows {
+            let summary = row.toSummary()
+            let sourceClassification = reviewClassification(
+                classifier.classify(summary, rules: []),
+                transaction: summary
+            )
+            row.displayName = sourceClassification.displayName
+            row.payeeCanonicalId = nil
+            row.categoryCanonicalId = nil
+            row.categoryName = nil
+            row.subtransactionsData = nil
+            row.nativeCategoryRaw =
+                sourceClassification.category.rawValue
+            row.forecastTreatmentRaw =
+                sourceClassification.treatment.rawValue
+            row.classificationConfidenceRaw =
+                sourceClassification.confidence.rawValue
+            row.requiresNameReview = !row.pending
+            row.requiresReview = !row.pending
+            row.classificationProvenanceRaw =
+                ClassificationProvenance.plaidEnrichment.rawValue
+            row.updatedAt = .now
+        }
+
+        // Force one authoritative YNAB replay before canonical matching.
+        let syncCursors = (try? mainContext.fetch(
+            FetchDescriptor<SyncCursor>()
+        )) ?? []
+        for cursor in syncCursors where
+            cursor.key.hasPrefix("transactions:")
+                || cursor.key.hasPrefix("payees:")
+                || cursor.key.hasPrefix("categories:") {
+            mainContext.delete(cursor)
+        }
+        invalidateHistoricalReconciliation()
+        // CloudKit can temporarily surface duplicate singleton settings rows.
+        // Mark every copy so row ordering cannot skip or repeat this reset.
+        for settings in settingsRows {
+            settings.lastSyncedAt = nil
+            settings.canonicalTransactionDataVersion =
+                Self.currentCanonicalTransactionDataVersion
+        }
+        guard mainContext.safeSave(
+            source: "plaidTransactions.resetDerivedTransactionData"
+        ) else {
+            mainContext.rollback()
+            return
+        }
+    }
+
+    private func applyCanonicalHistory(
+        matches: [HistoricalTransactionMatch],
+        legacyRows: [CachedTransaction],
+        financialRows: [CachedFinancialTransaction],
+        payees: [DurableCanonicalPayee],
+        categories: [DurableCanonicalCategory]
+    ) {
+        let legacyByID = Dictionary(
+            uniqueKeysWithValues: legacyRows.map { ($0.id, $0) }
+        )
+        let financialByID = Dictionary(
+            uniqueKeysWithValues: financialRows.map { ($0.id, $0) }
+        )
+        var payeeByYNABID: [String: DurableCanonicalPayee] = [:]
+        for payee in payees.sorted(by: { $0.updatedAt < $1.updatedAt }) {
+            if let ynabID = payee.ynabPayeeId {
+                payeeByYNABID[ynabID] = payee
+            }
+        }
+        let payeesByName = Dictionary(
+            grouping: payees.filter { !$0.archived },
+            by: {
+                FinancialTransactionSummary.normalizedDescription($0.name)
+            }
+        )
+        var categoryByYNABID: [String: DurableCanonicalCategory] = [:]
+        for category in categories.sorted(by: {
+            $0.updatedAt < $1.updatedAt
+        }) {
+            if let ynabID = category.ynabCategoryId {
+                categoryByYNABID[ynabID] = category
+            }
+        }
+        let ynabAccounts = (try? mainContext.fetch(
+            FetchDescriptor<CachedAccount>()
+        )) ?? []
+        let creditCardIDs = Set(
+            ynabAccounts.filter { $0.kind.isCreditCardLike }.map(\.id)
+        )
+        let persistedDecisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        // YNAB-derived decisions are a reproducible cache of the current
+        // reconciliation, not user data. Rebuild them from the authoritative
+        // source while preserving explicit user confirmations.
+        for decision in persistedDecisions where
+            decision.provenanceRaw
+                != ClassificationProvenance.user.rawValue {
+            mainContext.delete(decision)
+        }
+        var decisions = persistedDecisions.filter {
+            $0.provenanceRaw == ClassificationProvenance.user.rawValue
+        }
+        var decisionByTransactionID =
+            latestCanonicalDecisionsByTransactionID(decisions)
+        let persistedAliases = (try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []
+        for alias in persistedAliases where
+            alias.provenanceRaw
+                != ClassificationProvenance.user.rawValue {
+            mainContext.delete(alias)
+        }
+        let existingAliases = persistedAliases.filter {
+            $0.provenanceRaw == ClassificationProvenance.user.rawValue
+        }
+        var aliasesByKey = Dictionary(
+            grouping: existingAliases,
+            by: \.aliasKey
+        )
+        var learnedPayeesByEvidence: [String: Set<String>] = [:]
+        var evidenceByKey: [String: PayeeIdentityEvidence] = [:]
+        let encoder = JSONEncoder()
+
+        for match in matches where match.isAutomatic {
+            guard let legacy = legacyByID[match.legacyTransactionId],
+                  let financial = financialByID[match.plaidTransactionId]
+            else {
+                continue
+            }
+            let payee = canonicalPayee(
+                for: legacy,
+                payeeByYNABID: payeeByYNABID,
+                payeesByName: payeesByName
+            )
+            let category = legacy.categoryId.flatMap {
+                categoryByYNABID[$0]
+            }
+            let payeeName = payee?.name
+                ?? legacy.payeeName?.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                ?? financial.toSummary().fallbackDisplayName
+            let splitData = legacy.subtransactions.isEmpty
+                ? nil
+                : try? encoder.encode(legacy.subtransactions)
+            let treatment = historicalTreatment(
+                for: legacy,
+                creditCardIDs: creditCardIDs
+            )
+
+            let decision: DurableCanonicalTransactionDecision
+            if let existing = decisionByTransactionID[
+                financial.externalId
+            ] {
+                decision = existing
+                // Explicit user edits always outrank a later history rebuild.
+                if decision.provenanceRaw
+                    != ClassificationProvenance.user.rawValue {
+                    decision.ynabTransactionId = legacy.id
+                    decision.payeeCanonicalId = payee?.canonicalId
+                    decision.payeeNameSnapshot = payeeName
+                    decision.categoryCanonicalId = category?.canonicalId
+                    decision.categoryNameSnapshot =
+                        category?.name ?? legacy.categoryName
+                    decision.amountSign =
+                        Int(financial.amountMilliunits.signum())
+                    decision.forecastTreatment = treatment
+                    decision.subtransactionsData = splitData
+                    decision.reviewed = true
+                    decision.provenanceRaw =
+                        ClassificationProvenance.historicalMatch.rawValue
+                    decision.updatedAt = .now
+                }
+            } else {
+                decision = DurableCanonicalTransactionDecision(
+                    transactionExternalId: financial.externalId,
+                    ynabTransactionId: legacy.id,
+                    payeeCanonicalId: payee?.canonicalId,
+                    payeeNameSnapshot: payeeName,
+                    categoryCanonicalId: category?.canonicalId,
+                    categoryNameSnapshot: category?.name
+                        ?? legacy.categoryName,
+                    amountSign: Int(
+                        financial.amountMilliunits.signum()
+                    ),
+                    forecastTreatment: treatment,
+                    subtransactionsData: splitData,
+                    reviewed: true,
+                    provenance: .historicalMatch
+                )
+                mainContext.insert(decision)
+                decisions.append(decision)
+                decisionByTransactionID[financial.externalId] = decision
+            }
+            applyCanonicalDecision(decision, to: financial)
+
+            if let payee {
+                for evidence in financial.toSummary()
+                    .payeeIdentityEvidence {
+                    learnedPayeesByEvidence[
+                        evidence.key,
+                        default: []
+                    ].insert(payee.canonicalId)
+                    evidenceByKey[evidence.key] = evidence
+                }
+            }
+        }
+
+        // An alias is learned only when every exact historical example for
+        // that evidence key points to the same YNAB payee.
+        for (key, payeeIDs) in learnedPayeesByEvidence
+        where payeeIDs.count == 1 {
+            guard let payeeID = payeeIDs.first,
+                  let evidence = evidenceByKey[key] else {
+                continue
+            }
+            let existingPayeeIDs = Set(
+                (aliasesByKey[key] ?? []).map(\.payeeCanonicalId)
+            )
+            guard existingPayeeIDs.isEmpty
+                    || existingPayeeIDs == [payeeID] else {
+                continue
+            }
+            let existingAliases = aliasesByKey[key] ?? []
+            guard !existingAliases.contains(where: \.suppressed) else {
+                continue
+            }
+            if let alias = existingAliases.first {
+                alias.payeeCanonicalId = payeeID
+                alias.displayValue = evidence.displayValue
+                alias.kindRaw = evidence.kind
+                alias.confirmed = true
+                alias.provenanceRaw =
+                    ClassificationProvenance.historicalMatch.rawValue
+                alias.updatedAt = .now
+            } else {
+                let alias = DurablePayeeAlias(
+                    aliasKey: key,
+                    payeeCanonicalId: payeeID,
+                    displayValue: evidence.displayValue,
+                    kindRaw: evidence.kind,
+                    provenance: .historicalMatch,
+                    confirmed: true
+                )
+                mainContext.insert(alias)
+                aliasesByKey[key] = [alias]
+            }
+        }
+
+        applyCanonicalDirectory(
+            to: financialRows,
+            payees: payees,
+            aliasesByKey: aliasesByKey,
+            decisions: decisions
+        )
+    }
+
+    private func canonicalPayee(
+        for transaction: CachedTransaction,
+        payeeByYNABID: [String: DurableCanonicalPayee],
+        payeesByName: [String: [DurableCanonicalPayee]]
+    ) -> DurableCanonicalPayee? {
+        if let payeeID = transaction.payeeId,
+           let payee = payeeByYNABID[payeeID] {
+            return payee
+        }
+        let normalized = FinancialTransactionSummary.normalizedDescription(
+            transaction.payeeName ?? ""
+        )
+        let matches = payeesByName[normalized] ?? []
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    private func applyCanonicalDirectory(
+        to rows: [CachedFinancialTransaction],
+        payees: [DurableCanonicalPayee],
+        aliasesByKey: [String: [DurablePayeeAlias]],
+        decisions: [DurableCanonicalTransactionDecision]
+    ) {
+        var payeeByID: [String: DurableCanonicalPayee] = [:]
+        for payee in payees.sorted(by: { $0.updatedAt < $1.updatedAt }) {
+            payeeByID[payee.canonicalId] = payee
+        }
+        var payeeIDsByName: [String: Set<String>] = [:]
+        var payeeIDsByLeadingPrefix: [String: Set<String>] = [:]
+        for payee in payees where !payee.archived {
+            let normalized =
+                FinancialTransactionSummary.normalizedDescription(
+                    payee.name
+                )
+            guard FinancialTransactionSummary.isSpecificIdentityText(
+                normalized
+            ) else {
+                continue
+            }
+            payeeIDsByName[normalized, default: []]
+                .insert(payee.canonicalId)
+            let tokens = normalized.split(separator: " ")
+            guard tokens.count > 1 else { continue }
+            for tokenCount in 1..<tokens.count {
+                let prefix = tokens.prefix(tokenCount)
+                    .joined(separator: " ")
+                guard prefix.count >= 5 else { continue }
+                payeeIDsByLeadingPrefix[prefix, default: []]
+                    .insert(payee.canonicalId)
+            }
+        }
+        let decisionByID = latestCanonicalDecisionsByTransactionID(
+            decisions
+        )
+        // Every confirmed transaction contributes evidence. Conflicting
+        // categories for the same payee intentionally prevent a prefill
+        // instead of allowing the most recent choice to become a global rule.
+        let categories = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        let reusableCategoryIDs = Set(
+            categories.filter {
+                !$0.hidden && !$0.deletedAtSource
+            }.map(\.canonicalId)
+        )
+        let reviewedDecisions = decisions.filter {
+            $0.reviewed
+                && $0.subtransactionsData == nil
+                && ($0.categoryCanonicalId == nil
+                    || reusableCategoryIDs.contains(
+                        $0.categoryCanonicalId ?? ""
+                    ))
+        }
+        let patternsByPayee = Dictionary(
+            grouping: reviewedDecisions.compactMap {
+                decision -> DurableCanonicalTransactionDecision? in
+                guard decision.payeeCanonicalId != nil else { return nil }
+                return decision
+            },
+            by: { $0.payeeCanonicalId ?? "" }
+        )
+
+        for row in rows where !row.deleted && !row.pending {
+            if let decision = decisionByID[row.externalId] {
+                applyCanonicalDecision(decision, to: row)
+                continue
+            }
+            let summary = row.toSummary()
+            var resolvedIDs = Set<String>()
+            var hasSuppressedIdentityEvidence = false
+            for evidence in summary.payeeIdentityEvidence {
+                let evidenceAliases =
+                    aliasesByKey[evidence.key] ?? []
+                if evidenceAliases.contains(where: \.suppressed) {
+                    hasSuppressedIdentityEvidence = true
+                }
+                resolvedIDs.formUnion(
+                    evidenceAliases
+                        .filter { $0.confirmed && !$0.suppressed }
+                        .map(\.payeeCanonicalId)
+                )
+            }
+            if resolvedIDs.isEmpty && !hasSuppressedIdentityEvidence {
+                for candidate in [
+                    summary.providerMerchantName,
+                    summary.counterpartyName,
+                    row.displayName
+                ].compactMap({ $0 }) {
+                    let normalized =
+                        FinancialTransactionSummary.normalizedDescription(
+                            candidate
+                        )
+                    guard FinancialTransactionSummary
+                        .isSpecificIdentityText(normalized) else {
+                        continue
+                    }
+                    var matchingIDs =
+                        payeeIDsByName[normalized] ?? []
+                    matchingIDs.formUnion(
+                        payeeIDsByLeadingPrefix[normalized] ?? []
+                    )
+                    let tokens = normalized.split(separator: " ")
+                    if tokens.count > 1 {
+                        for tokenCount in 1..<tokens.count {
+                            let prefix = tokens.prefix(tokenCount)
+                                .joined(separator: " ")
+                            guard prefix.count >= 5 else { continue }
+                            matchingIDs.formUnion(
+                                payeeIDsByName[prefix] ?? []
+                            )
+                        }
+                    }
+                    if matchingIDs.count == 1,
+                       let matchedID = matchingIDs.first {
+                        resolvedIDs.insert(matchedID)
+                    }
+                }
+            }
+
+            guard resolvedIDs.count == 1,
+                  let payeeID = resolvedIDs.first,
+                  let payee = payeeByID[payeeID] else {
+                row.payeeCanonicalId = nil
+                let hasModelNameSuggestion =
+                    row.classificationProvenanceRaw
+                        == ClassificationProvenance.appleModel.rawValue
+                    || row.classificationProvenanceRaw
+                        == ClassificationProvenance.claude.rawValue
+                if !hasModelNameSuggestion
+                    || row.displayName.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty {
+                    row.displayName = summary.fallbackDisplayName
+                }
+                row.categoryCanonicalId = nil
+                row.categoryName = nil
+                row.subtransactionsData = nil
+                row.requiresNameReview = true
+                row.requiresReview = true
+                continue
+            }
+
+            row.payeeCanonicalId = payeeID
+            row.displayName = payee.name
+            row.requiresNameReview = false
+            let patterns = patternsByPayee[payeeID] ?? []
+            let directionPatterns = patterns.filter {
+                $0.amountSign == Int(row.amountMilliunits.signum())
+            }
+            let patternKeys = Set(directionPatterns.map {
+                "\($0.categoryCanonicalId ?? "")|\($0.forecastTreatmentRaw)"
+            })
+            if patternKeys.count == 1,
+               let pattern = directionPatterns.first {
+                row.categoryCanonicalId = pattern.categoryCanonicalId
+                row.categoryName = pattern.categoryNameSnapshot
+                row.forecastTreatmentRaw = pattern.forecastTreatmentRaw
+                if let name = pattern.categoryNameSnapshot {
+                    row.nativeCategoryRaw =
+                        nativeCategory(forCategoryName: name).rawValue
+                }
+                row.classificationConfidenceRaw =
+                    ClassificationConfidence.high.rawValue
+                row.classificationProvenanceRaw =
+                    ClassificationProvenance.historicalMatch.rawValue
+            } else {
+                row.categoryCanonicalId = nil
+                row.categoryName = nil
+                row.subtransactionsData = nil
+            }
+            // Product rule: every newly posted transaction is confirmed by
+            // the user even when history provides a strong prefill.
+            row.requiresReview = true
+        }
+    }
+
+    private func applyCanonicalDecision(
+        _ decision: DurableCanonicalTransactionDecision,
+        to row: CachedFinancialTransaction
+    ) {
+        row.payeeCanonicalId = decision.payeeCanonicalId
+        row.displayName = decision.payeeNameSnapshot.isEmpty
+            ? row.toSummary().fallbackDisplayName
+            : decision.payeeNameSnapshot
+        row.categoryCanonicalId = decision.categoryCanonicalId
+        row.categoryName = decision.categoryNameSnapshot
+        row.forecastTreatmentRaw = decision.forecastTreatmentRaw
+        row.subtransactionsData = decision.subtransactionsData
+        if let categoryName = decision.categoryNameSnapshot {
+            row.nativeCategoryRaw =
+                nativeCategory(forCategoryName: categoryName).rawValue
+        } else {
+            row.nativeCategoryRaw = NativeTransactionCategory.other.rawValue
+        }
+        row.classificationConfidenceRaw =
+            ClassificationConfidence.high.rawValue
+        row.classificationProvenanceRaw = decision.provenanceRaw
+        row.requiresNameReview = decision.payeeCanonicalId == nil
+        row.requiresReview = !decision.reviewed
+        row.updatedAt = .now
+    }
+
+    private func latestCanonicalDecisionsByTransactionID(
+        _ decisions: [DurableCanonicalTransactionDecision]
+    ) -> [String: DurableCanonicalTransactionDecision] {
+        var result: [String: DurableCanonicalTransactionDecision] = [:]
+        for decision in decisions.sorted(by: {
+            if $0.updatedAt == $1.updatedAt {
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            return $0.updatedAt < $1.updatedAt
+        }) {
+            result[decision.transactionExternalId] = decision
+        }
+        return result
+    }
+
+    private func applyCurrentCanonicalState() {
+        let payees = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        guard !payees.isEmpty else { return }
+        let aliases = (try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []
+        applyCanonicalDirectory(
+            to: rows,
+            payees: payees,
+            aliasesByKey: Dictionary(grouping: aliases, by: \.aliasKey),
+            decisions: decisions
+        )
+    }
+
+    private func refreshCanonicalReviewCounts() {
+        let cursors = (try? mainContext.fetch(
+            FetchDescriptor<PlaidTransactionCursor>()
+        )) ?? []
+        guard !cursors.isEmpty,
+              cursors.allSatisfy(\.historicalImportComplete),
+              cursors.allSatisfy({
+                  $0.historicalReconciliationVersion
+                      >= Self.currentHistoricalReconciliationVersion
+              }) else {
+            canonicalReviewReady = false
+            pendingTransactionReviewCount = 0
+            unresolvedPayeeReviewCount = 0
+            return
+        }
+        canonicalReviewReady = true
+        let reviewDescriptor =
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    $0.requiresReview && !$0.deleted && !$0.pending
+                }
+            )
+        let payeeDescriptor =
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    $0.requiresNameReview && !$0.deleted && !$0.pending
+                }
+            )
+        pendingTransactionReviewCount =
+            (try? mainContext.fetchCount(reviewDescriptor)) ?? 0
+        unresolvedPayeeReviewCount =
+            (try? mainContext.fetchCount(payeeDescriptor)) ?? 0
+    }
+
+    private func invalidateHistoricalReconciliation() {
+        let cursors = (try? mainContext.fetch(
+            FetchDescriptor<PlaidTransactionCursor>()
+        )) ?? []
+        for cursor in cursors {
+            cursor.historicalReconciliationVersion = 0
+        }
+    }
+
+    private func markHistoricalReconciliationComplete() {
+        let cursors = (try? mainContext.fetch(
+            FetchDescriptor<PlaidTransactionCursor>()
+        )) ?? []
+        for cursor in cursors {
+            cursor.historicalReconciliationVersion =
+                Self.currentHistoricalReconciliationVersion
+        }
+    }
+
+    private func reviewCanonicalPayeeNames(
+        ids: [String],
+        displayName: String
+    ) {
+        guard !ids.isEmpty else { return }
+        let selectedIDs = ids
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                selectedIDs.contains($0.id) && !$0.deleted
+            }
+        )
+        guard let rows = try? mainContext.fetch(descriptor),
+              !rows.isEmpty else {
+            return
+        }
+        let cleanedName = displayName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !cleanedName.isEmpty,
+              let payee = resolveOrCreateCanonicalPayee(
+                named: cleanedName,
+                preferredCanonicalId: rows.compactMap(
+                    \.payeeCanonicalId
+                ).first
+              ) else {
+            return
+        }
+        assignAliases(for: rows, to: payee)
+        for row in rows {
+            row.payeeCanonicalId = payee.canonicalId
+            row.displayName = payee.name
+            row.requiresNameReview = false
+            row.updatedAt = .now
+        }
+        updateCachedPayeeName(payee)
+        applyCurrentCanonicalState()
+        guard mainContext.safeSave(
+            source: "plaidTransactions.canonicalPayeeReview"
+        ) else {
+            mainContext.rollback()
+            return
+        }
+        refreshCanonicalReviewCounts()
+    }
+
+    private func confirmCanonicalTransaction(
+        id: String,
+        displayName: String,
+        payeeCanonicalId: String?,
+        categoryName: String?,
+        treatment: ForecastTreatment,
+        categoryCanonicalId: String?
+    ) -> Bool {
+        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate { $0.id == id }
+        )
+        descriptor.fetchLimit = 1
+        guard let row = try? mainContext.fetch(descriptor).first,
+              !row.pending else {
+            return false
+        }
+        let cleanedName = displayName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !cleanedName.isEmpty,
+              let payee = resolveOrCreateCanonicalPayee(
+                named: cleanedName,
+                preferredCanonicalId:
+                    payeeCanonicalId ?? row.payeeCanonicalId
+              ) else {
+            return false
+        }
+        let requiresCategory =
+            treatment != .cardPayment && treatment != .internalTransfer
+        let category: DurableCanonicalCategory?
+        if requiresCategory {
+            guard let resolved = resolveCanonicalCategory(
+                canonicalId: categoryCanonicalId,
+                name: categoryName,
+                allowHidden: categoryCanonicalId != nil
+            ) else {
+                return false
+            }
+            category = resolved
+        } else {
+            category = nil
+        }
+
+        assignAliases(for: [row], to: payee)
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        let decision: DurableCanonicalTransactionDecision
+        if let existing = latestCanonicalDecisionsByTransactionID(
+            decisions
+        )[row.externalId] {
+            decision = existing
+            decision.ynabTransactionId = nil
+            decision.payeeCanonicalId = payee.canonicalId
+            decision.payeeNameSnapshot = payee.name
+            decision.categoryCanonicalId = category?.canonicalId
+            decision.categoryNameSnapshot = category?.name
+            decision.amountSign = Int(row.amountMilliunits.signum())
+            decision.forecastTreatment = treatment
+            decision.subtransactionsData = nil
+            decision.reviewed = true
+            decision.provenanceRaw =
+                ClassificationProvenance.user.rawValue
+            decision.updatedAt = .now
+        } else {
+            decision = DurableCanonicalTransactionDecision(
+                transactionExternalId: row.externalId,
+                payeeCanonicalId: payee.canonicalId,
+                payeeNameSnapshot: payee.name,
+                categoryCanonicalId: category?.canonicalId,
+                categoryNameSnapshot: category?.name,
+                amountSign: Int(row.amountMilliunits.signum()),
+                forecastTreatment: treatment,
+                reviewed: true,
+                provenance: .user
+            )
+            mainContext.insert(decision)
+        }
+        applyCanonicalDecision(decision, to: row)
+        updateCachedPayeeName(payee)
+        applyCurrentCanonicalState()
+        guard mainContext.safeSave(
+            source: "plaidTransactions.canonicalTransactionReview"
+        ) else {
+            mainContext.rollback()
+            return false
+        }
+        refreshCanonicalReviewCounts()
+        return true
+    }
+
+    private func confirmCanonicalSplitTransaction(
+        id: String,
+        displayName: String,
+        payeeCanonicalId: String?,
+        subtransactions: [SubTransactionSummary]
+    ) -> Bool {
+        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate { $0.id == id }
+        )
+        descriptor.fetchLimit = 1
+        guard let row = try? mainContext.fetch(descriptor).first,
+              !row.pending,
+              subtransactions.count >= 2,
+              subtransactions.allSatisfy({
+                  !$0.deleted && !$0.amount.isZero
+              }),
+              subtransactions.map(\.amount).sum().milliunits
+                  == row.amountMilliunits else {
+            return false
+        }
+        let cleanedName = displayName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !cleanedName.isEmpty,
+              let payee = resolveOrCreateCanonicalPayee(
+                named: cleanedName,
+                preferredCanonicalId:
+                    payeeCanonicalId ?? row.payeeCanonicalId
+              ) else {
+            return false
+        }
+        let isIncoming = row.amountMilliunits > 0
+        var canonicalSplits: [SubTransactionSummary] = []
+        for split in subtransactions {
+            if isIncoming {
+                guard let treatment = split.forecastTreatment,
+                      treatment == .income || treatment == .refund else {
+                    return false
+                }
+                canonicalSplits.append(SubTransactionSummary(
+                    id: split.id,
+                    amount: split.amount,
+                    categoryId: nil,
+                    categoryName: treatment == .income
+                        ? "Income"
+                        : "Reimbursement",
+                    forecastTreatment: treatment,
+                    transferAccountId: nil,
+                    payeeName: split.payeeName,
+                    memo: split.memo,
+                    deleted: split.deleted
+                ))
+                continue
+            }
+            guard let category = resolveCanonicalCategory(
+                canonicalId: split.categoryId.map {
+                    $0.hasPrefix("ynab:") || $0.hasPrefix("networth:")
+                        ? $0
+                        : "ynab:\($0)"
+                },
+                name: split.categoryName
+            ) else {
+                return false
+            }
+            canonicalSplits.append(SubTransactionSummary(
+                id: split.id,
+                amount: split.amount,
+                categoryId: category.canonicalId,
+                categoryName: category.name,
+                transferAccountId: split.transferAccountId,
+                payeeName: split.payeeName,
+                memo: split.memo,
+                deleted: split.deleted
+            ))
+        }
+        guard let splitData = try? JSONEncoder().encode(
+            canonicalSplits
+        ) else {
+            return false
+        }
+        let treatment: ForecastTreatment
+        if row.amountMilliunits < 0 {
+            treatment = .ordinarySpending
+        } else if canonicalSplits.allSatisfy({
+            $0.forecastTreatment == .income
+        }) {
+            treatment = .income
+        } else {
+            treatment = .refund
+        }
+        assignAliases(for: [row], to: payee)
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        let decision = latestCanonicalDecisionsByTransactionID(
+            decisions
+        )[row.externalId] ?? {
+            let created = DurableCanonicalTransactionDecision(
+                transactionExternalId: row.externalId
+            )
+            mainContext.insert(created)
+            return created
+        }()
+        decision.ynabTransactionId = nil
+        decision.payeeCanonicalId = payee.canonicalId
+        decision.payeeNameSnapshot = payee.name
+        decision.categoryCanonicalId = nil
+        decision.categoryNameSnapshot = "Split"
+        decision.amountSign = Int(row.amountMilliunits.signum())
+        decision.forecastTreatment = treatment
+        decision.subtransactionsData = splitData
+        decision.reviewed = true
+        decision.provenanceRaw = ClassificationProvenance.user.rawValue
+        decision.updatedAt = .now
+        applyCanonicalDecision(decision, to: row)
+        updateCachedPayeeName(payee)
+        applyCurrentCanonicalState()
+        guard mainContext.safeSave(
+            source: "plaidTransactions.canonicalSplitReview"
+        ) else {
+            mainContext.rollback()
+            return false
+        }
+        refreshCanonicalReviewCounts()
+        return true
+    }
+
+    private func resolveOrCreateCanonicalPayee(
+        named name: String,
+        preferredCanonicalId: String?
+    ) -> DurableCanonicalPayee? {
+        let payees = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        if let preferredCanonicalId,
+           let payee = payees.first(where: {
+               $0.canonicalId == preferredCanonicalId
+           }) {
+            if payee.name != name {
+                payee.name = name
+                payee.userEdited = true
+                payee.updatedAt = .now
+            }
+            return payee
+        }
+        let normalized =
+            FinancialTransactionSummary.normalizedDescription(name)
+        let exact = payees.filter {
+            !$0.archived
+                && FinancialTransactionSummary.normalizedDescription(
+                    $0.name
+                ) == normalized
+        }
+        if exact.count == 1 { return exact[0] }
+        guard !normalized.isEmpty else { return nil }
+        let canonicalId = "networth:\(UUID().uuidString.lowercased())"
+        let payee = DurableCanonicalPayee(
+            canonicalId: canonicalId,
+            name: name,
+            sourceName: name,
+            userEdited: true
+        )
+        mainContext.insert(payee)
+        return payee
+    }
+
+    private func resolveCanonicalCategory(
+        canonicalId: String?,
+        name: String?,
+        allowHidden: Bool = false
+    ) -> DurableCanonicalCategory? {
+        let categories = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        if let canonicalId,
+           let category = categories.first(where: {
+               $0.canonicalId == canonicalId
+                   && (allowHidden || !$0.hidden)
+                   && !$0.deletedAtSource
+           }) {
+            return category
+        }
+        let normalized = name?.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ) ?? ""
+        guard !normalized.isEmpty else { return nil }
+        let exact = categories.filter {
+            !$0.hidden
+                && !$0.deletedAtSource
+                && $0.name.localizedCaseInsensitiveCompare(normalized)
+                    == .orderedSame
+        }
+        return exact.count == 1 ? exact[0] : nil
+    }
+
+    private func assignAliases(
+        for rows: [CachedFinancialTransaction],
+        to payee: DurableCanonicalPayee
+    ) {
+        let aliases = (try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []
+        let aliasesByKey = Dictionary(grouping: aliases, by: \.aliasKey)
+        for evidence in rows.flatMap({
+            $0.toSummary().payeeIdentityEvidence
+        }) {
+            if let existing = aliasesByKey[evidence.key],
+               !existing.isEmpty {
+                for alias in existing {
+                    alias.payeeCanonicalId = payee.canonicalId
+                    alias.displayValue = evidence.displayValue
+                    alias.kindRaw = evidence.kind
+                    alias.confirmed = true
+                    alias.suppressed = false
+                    alias.provenanceRaw =
+                        ClassificationProvenance.user.rawValue
+                    alias.updatedAt = .now
+                }
+            } else {
+                mainContext.insert(DurablePayeeAlias(
+                    aliasKey: evidence.key,
+                    payeeCanonicalId: payee.canonicalId,
+                    displayValue: evidence.displayValue,
+                    kindRaw: evidence.kind,
+                    provenance: .user,
+                    confirmed: true
+                ))
+            }
+        }
+    }
+
+    private func updateCachedPayeeName(
+        _ payee: DurableCanonicalPayee
+    ) {
+        let canonicalId = payee.canonicalId
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    $0.payeeCanonicalId == canonicalId
+                }
+            )
+        )) ?? []
+        for row in rows {
+            row.displayName = payee.name
+            row.requiresNameReview = false
+            row.updatedAt = .now
+        }
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        for decision in decisions
+        where decision.payeeCanonicalId == payee.canonicalId {
+            decision.payeeNameSnapshot = payee.name
+            decision.updatedAt = .now
+        }
+    }
+
+    @discardableResult
+    public func createCanonicalPayee(name: String) -> Bool {
+        createCanonicalPayeeReturningId(name: name) != nil
+    }
+
+    public func createCanonicalPayeeReturningId(
+        name: String
+    ) -> String? {
+        let cleaned = name.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !cleaned.isEmpty else { return nil }
+        let canonicalId = "networth:\(UUID().uuidString.lowercased())"
+        mainContext.insert(DurableCanonicalPayee(
+            canonicalId: canonicalId,
+            name: cleaned,
+            sourceName: cleaned,
+            userEdited: true
+        ))
+        guard mainContext.safeSave(
+            source: "canonicalPayees.create"
+        ) else {
+            mainContext.rollback()
+            return nil
+        }
+        return canonicalId
+    }
+
+    @discardableResult
+    public func updateCanonicalPayee(
+        canonicalId: String,
+        name: String,
+        archived: Bool
+    ) -> Bool {
+        let cleaned = name.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !cleaned.isEmpty else { return false }
+        let payees = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        guard let payee = payees.first(where: {
+            $0.canonicalId == canonicalId
+        }) else {
+            return false
+        }
+        payee.name = cleaned
+        payee.archived = archived
+        payee.userEdited = true
+        payee.updatedAt = .now
+        updateCachedPayeeName(payee)
+        guard mainContext.safeSave(
+            source: "canonicalPayees.update"
+        ) else {
+            mainContext.rollback()
+            return false
+        }
+        refreshCanonicalReviewCounts()
+        return true
+    }
+
+    @discardableResult
+    public func reassignCanonicalAlias(
+        aliasId: UUID,
+        to payeeCanonicalId: String
+    ) -> Bool {
+        let aliases = (try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []
+        let payees = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        guard let alias = aliases.first(where: { $0.id == aliasId }),
+              payees.contains(where: {
+                  $0.canonicalId == payeeCanonicalId
+              }) else {
+            return false
+        }
+        alias.payeeCanonicalId = payeeCanonicalId
+        alias.confirmed = true
+        alias.suppressed = false
+        alias.provenanceRaw = ClassificationProvenance.user.rawValue
+        alias.updatedAt = .now
+        applyCurrentCanonicalState()
+        guard mainContext.safeSave(
+            source: "canonicalPayees.reassignAlias"
+        ) else {
+            mainContext.rollback()
+            return false
+        }
+        refreshCanonicalReviewCounts()
+        return true
+    }
+
+    @discardableResult
+    public func removeCanonicalAlias(aliasId: UUID) -> Bool {
+        let aliases = (try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []
+        guard let alias = aliases.first(where: { $0.id == aliasId }) else {
+            return false
+        }
+        alias.confirmed = false
+        alias.suppressed = true
+        alias.provenanceRaw = ClassificationProvenance.user.rawValue
+        alias.updatedAt = .now
+        applyCurrentCanonicalState()
+        guard mainContext.safeSave(
+            source: "canonicalPayees.removeAlias"
+        ) else {
+            mainContext.rollback()
+            return false
+        }
+        refreshCanonicalReviewCounts()
+        return true
+    }
+
+    @discardableResult
+    public func mergeCanonicalPayees(
+        sourceCanonicalId: String,
+        destinationCanonicalId: String
+    ) -> Bool {
+        guard sourceCanonicalId != destinationCanonicalId else {
+            return false
+        }
+        let payees = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        )) ?? []
+        guard let source = payees.first(where: {
+                  $0.canonicalId == sourceCanonicalId
+              }),
+              let destination = payees.first(where: {
+                  $0.canonicalId == destinationCanonicalId
+              }) else {
+            return false
+        }
+        let aliases = (try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []
+        for alias in aliases
+        where alias.payeeCanonicalId == sourceCanonicalId {
+            alias.payeeCanonicalId = destinationCanonicalId
+            alias.provenanceRaw = ClassificationProvenance.user.rawValue
+            alias.confirmed = true
+            alias.updatedAt = .now
+        }
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        for decision in decisions
+        where decision.payeeCanonicalId == sourceCanonicalId {
+            decision.payeeCanonicalId = destinationCanonicalId
+            decision.payeeNameSnapshot = destination.name
+            decision.provenanceRaw = ClassificationProvenance.user.rawValue
+            decision.updatedAt = .now
+        }
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []
+        for row in rows where row.payeeCanonicalId == sourceCanonicalId {
+            row.payeeCanonicalId = destinationCanonicalId
+            row.displayName = destination.name
+            row.updatedAt = .now
+        }
+        source.archived = true
+        source.userEdited = true
+        source.updatedAt = .now
+        guard mainContext.safeSave(
+            source: "canonicalPayees.merge"
+        ) else {
+            mainContext.rollback()
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    public func createCanonicalCategory(
+        name: String,
+        groupName: String
+    ) -> Bool {
+        createCanonicalCategoryReturningId(
+            name: name,
+            groupName: groupName
+        ) != nil
+    }
+
+    public func createCanonicalCategoryReturningId(
+        name: String,
+        groupName: String
+    ) -> String? {
+        let cleanedName = name.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let cleanedGroup = groupName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !cleanedName.isEmpty else { return nil }
+        let canonicalId = "networth:\(UUID().uuidString.lowercased())"
+        mainContext.insert(DurableCanonicalCategory(
+            canonicalId: canonicalId,
+            name: cleanedName,
+            groupName: cleanedGroup.isEmpty
+                ? "Networth Categories"
+                : cleanedGroup,
+            sourceName: cleanedName,
+            sourceGroupName: cleanedGroup.isEmpty
+                ? "Networth Categories"
+                : cleanedGroup,
+            userEdited: true
+        ))
+        guard mainContext.safeSave(
+            source: "canonicalCategories.create"
+        ) else {
+            mainContext.rollback()
+            return nil
+        }
+        return canonicalId
+    }
+
+    @discardableResult
+    public func updateCanonicalCategory(
+        canonicalId: String,
+        name: String,
+        groupName: String,
+        hidden: Bool
+    ) -> Bool {
+        let categories = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        guard let category = categories.first(where: {
+                  $0.canonicalId == canonicalId
+              }) else {
+            return false
+        }
+        let cleanedName = name.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let cleanedGroup = groupName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !cleanedName.isEmpty, !cleanedGroup.isEmpty else {
+            return false
+        }
+        category.name = cleanedName
+        category.groupName = cleanedGroup
+        category.hidden = hidden
+        category.userEdited = true
+        category.updatedAt = .now
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        for decision in decisions
+        where decision.categoryCanonicalId == canonicalId {
+            decision.categoryNameSnapshot = cleanedName
+            decision.updatedAt = .now
+        }
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []
+        for row in rows where row.categoryCanonicalId == canonicalId {
+            row.categoryName = cleanedName
+            row.nativeCategoryRaw =
+                nativeCategory(forCategoryName: cleanedName).rawValue
+            row.updatedAt = .now
+        }
+        guard mainContext.safeSave(
+            source: "canonicalCategories.update"
+        ) else {
+            mainContext.rollback()
+            return false
+        }
+        return true
+    }
+
+    public func reviewMerchantName(
+        id: String,
+        displayName: String
+    ) {
+        reviewCanonicalPayeeNames(ids: [id], displayName: displayName)
+    }
+
+    public func reviewMerchantNames(
+        ids: [String],
+        displayName: String
+    ) {
+        reviewCanonicalPayeeNames(ids: ids, displayName: displayName)
+    }
+
+    @discardableResult
+    public func confirmTransaction(
+        id: String,
+        displayName: String,
+        payeeCanonicalId: String? = nil,
+        categoryName: String?,
+        treatment: ForecastTreatment,
+        categoryCanonicalId: String? = nil
+    ) -> Bool {
+        return confirmCanonicalTransaction(
+            id: id,
+            displayName: displayName,
+            payeeCanonicalId: payeeCanonicalId,
+            categoryName: categoryName,
+            treatment: treatment,
+            categoryCanonicalId: categoryCanonicalId
+        )
+    }
+
+    @discardableResult
+    public func reviewSplitTransaction(
+        id: String,
+        displayName: String,
+        payeeCanonicalId: String? = nil,
+        subtransactions: [SubTransactionSummary]
+    ) -> Bool {
+        return confirmCanonicalSplitTransaction(
+            id: id,
+            displayName: displayName,
+            payeeCanonicalId: payeeCanonicalId,
+            subtransactions: subtransactions
+        )
+    }
+
+    private func sync(
+        item: PlaidItemDTO,
+        existingByID: inout [String: CachedFinancialTransaction]
+    ) async -> Bool {
+        let cursorRows = (try? mainContext.fetch(
+            FetchDescriptor<PlaidTransactionCursor>()
+        )) ?? []
+        let cursorRow = cursorRows.first(where: { $0.itemId == item.id })
+            ?? {
+                let row = PlaidTransactionCursor(itemId: item.id)
+                mainContext.insert(row)
+                return row
+            }()
+        let isHistoricalImport = !cursorRow.historicalImportComplete
+        let settings = (try? mainContext.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ))?.first
+        var cursor = cursorRow.cursor
+        var hasMore = true
+        while hasMore {
+            let response = try? await client.transactions(
+                itemId: item.id,
+                cursor: cursor,
+                count: 500
+            )
+            guard let response else {
+                mainContext.rollback()
+                phase = .error("Banking sync failed for \(item.institutionName).")
+                return false
+            }
+            let canonicalByPlaidID = ensureBindingsAndAccounts(
+                response.accounts,
+                itemId: item.id
+            )
+            for (index, transaction) in (response.added + response.modified).enumerated() {
+                guard let canonicalID = canonicalByPlaidID[transaction.accountId],
+                      let summary = transaction.financialSummary(
+                        canonicalAccountId: canonicalID
+                      ) else {
+                    continue
+                }
+                let suggestion = await classification(
+                    for: summary,
+                    allowModelInference: !isHistoricalImport,
+                    claudeFallbackEnabled: settings?.claudeFallbackEnabled == true
+                )
+                let classification = reviewClassification(
+                    suggestion,
+                    transaction: summary
+                )
+                upsert(
+                    summary,
+                    classification: classification,
+                    subtransactionsData: nil,
+                    requiresNameReview: !summary.pending,
+                    reviewOriginRaw: isHistoricalImport ? "historical" : "new",
+                    existingByID: &existingByID
+                )
+                if let pendingID = summary.pendingTransactionId {
+                    markDeleted(
+                        id: "plaid:\(pendingID)",
+                        existingByID: existingByID
+                    )
+                }
+                if index.isMultiple(of: 100) {
+                    await Task.yield()
+                }
+            }
+            for removedID in response.removed {
+                markDeleted(id: "plaid:\(removedID)", existingByID: existingByID)
+            }
+            cursor = response.nextCursor
+            cursorRow.cursor = cursor
+            cursorRow.updateStatus = response.updateStatus
+            cursorRow.updatedAt = .now
+            hasMore = response.hasMore
+            guard mainContext.safeSave(source: "plaidTransactions.page") else {
+                mainContext.rollback()
+                phase = .error("Saving banking data failed. Retry in a moment.")
+                return false
+            }
+        }
+        return true
+    }
+
+    private func ensureBindingsAndAccounts(
+        _ accounts: [PlaidAccountDTO],
+        itemId: String
+    ) -> [String: String] {
+        let bindings = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalAccountBinding>()
+        )) ?? []
+        var bindingByPlaidID = Dictionary(
+            uniqueKeysWithValues: bindings.map { ($0.plaidAccountId, $0) }
+        )
+        let cached = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        )) ?? []
+        var cachedByCanonicalID = Dictionary(
+            uniqueKeysWithValues: cached.map { ($0.canonicalAccountId, $0) }
+        )
+
+        var returnedPlaidAccountIDs = Set<String>()
+        for account in accounts {
+            let provisional = account.financialSummary(canonicalAccountId: UUID().uuidString)
+            // Transactions replaces YNAB only for banking and card data.
+            // Investments retain their dedicated Plaid path; loans retain
+            // their existing local/legacy sources.
+            guard provisional.type != .investment, provisional.type != .loan else {
+                continue
+            }
+            returnedPlaidAccountIDs.insert(account.id)
+            let binding: DurableCanonicalAccountBinding
+            if let existing = bindingByPlaidID[account.id] {
+                binding = existing
+                binding.itemId = account.itemId
+                binding.institutionName = account.institutionName
+                binding.accountName = account.name
+                binding.mask = account.mask
+                binding.accountType = provisional.type
+                binding.updatedAt = .now
+            } else {
+                binding = DurableCanonicalAccountBinding(
+                    canonicalAccountId: provisional.id,
+                    plaidAccountId: account.id,
+                    itemId: account.itemId,
+                    institutionName: account.institutionName,
+                    accountName: account.name,
+                    mask: account.mask,
+                    accountType: provisional.type
+                )
+                mainContext.insert(binding)
+                bindingByPlaidID[account.id] = binding
+            }
+            let summary = account.financialSummary(
+                canonicalAccountId: binding.canonicalAccountId
+            )
+            if let row = cachedByCanonicalID[binding.canonicalAccountId] {
+                apply(summary, to: row)
+            } else {
+                let row = CachedFinancialAccount(
+                    canonicalAccountId: summary.id,
+                    externalId: summary.externalId,
+                    itemId: summary.itemId,
+                    source: summary.source,
+                    institutionName: summary.institutionName,
+                    name: summary.name,
+                    officialName: summary.officialName,
+                    mask: summary.mask,
+                    type: summary.type,
+                    subtype: summary.subtype,
+                    currentBalanceMilliunits: summary.currentBalance?.milliunits,
+                    availableBalanceMilliunits: summary.availableBalance?.milliunits,
+                    creditLimitMilliunits: summary.creditLimit?.milliunits,
+                    isoCurrencyCode: summary.isoCurrencyCode
+                )
+                mainContext.insert(row)
+                cachedByCanonicalID[summary.id] = row
+            }
+        }
+        for row in cached where row.itemId == itemId {
+            row.deleted = !returnedPlaidAccountIDs.contains(row.externalId)
+            if row.deleted { row.updatedAt = .now }
+        }
+        return Dictionary(
+            uniqueKeysWithValues: bindingByPlaidID.compactMap {
+                guard returnedPlaidAccountIDs.contains($0.key) else { return nil }
+                return ($0.key, $0.value.canonicalAccountId)
+            }
+        )
+    }
+
+    private func classification(
+        for transaction: FinancialTransactionSummary,
+        allowModelInference: Bool,
+        claudeFallbackEnabled: Bool
+    ) async -> TransactionClassification {
+        let providerResult = classifier.classify(
+            transaction,
+            rules: []
+        )
+        guard providerResult.requiresReview,
+              allowModelInference else {
+            return providerResult
+        }
+
+        let apple = await inferenceProvider.suggestion(for: transaction)
+        if apple?.confidence == .high {
+            return classifier.classify(
+                transaction,
+                rules: [],
+                modelSuggestion: apple
+            )
+        }
+        if claudeFallbackEnabled {
+            let claudeDTO = try? await client.inferTransaction(
+                PlaidInferenceRequestDTO(transaction: transaction)
+            )
+            if let claude = claudeDTO?.suggestion(provenance: .claude) {
+                return classifier.classify(
+                    transaction,
+                    rules: [],
+                    modelSuggestion: claude
+                )
+            }
+        }
+        return classifier.classify(
+            transaction,
+            rules: [],
+            modelSuggestion: apple
+        )
+    }
+
+    private func reviewClassification(
+        _ suggestion: TransactionClassification,
+        transaction: FinancialTransactionSummary
+    ) -> TransactionClassification {
+        TransactionClassification(
+            displayName: suggestion.displayName,
+            category: suggestion.category,
+            categoryName: suggestion.categoryName,
+            treatment: suggestion.treatment,
+            confidence: suggestion.confidence,
+            provenance: suggestion.provenance,
+            requiresReview: !transaction.pending
+        )
+    }
+
+    private func upsert(
+        _ summary: FinancialTransactionSummary,
+        classification: TransactionClassification,
+        subtransactionsData: Data?,
+        requiresNameReview: Bool,
+        reviewOriginRaw: String,
+        existingByID: inout [String: CachedFinancialTransaction]
+    ) {
+        if let row = existingByID[summary.id] {
+            apply(
+                summary,
+                classification: classification,
+                subtransactionsData: subtransactionsData,
+                requiresNameReview: requiresNameReview,
+                to: row
+            )
+        } else {
+            let row = CachedFinancialTransaction(
+                summary: summary,
+                classification: classification,
+                subtransactionsData: subtransactionsData,
+                requiresNameReview: requiresNameReview,
+                reviewOriginRaw: reviewOriginRaw
+            )
+            mainContext.insert(row)
+            existingByID[summary.id] = row
+        }
+    }
+
+    private func markDeleted(
+        id: String,
+        existingByID: [String: CachedFinancialTransaction]
+    ) {
+        if let row = existingByID[id] {
+            row.deleted = true
+            row.updatedAt = .now
+        }
+    }
+
+    private func historicalTreatment(
+        for transaction: CachedTransaction,
+        creditCardIDs: Set<String>
+    ) -> ForecastTreatment {
+        if let transferAccountID = transaction.transferAccountId {
+            return creditCardIDs.contains(transaction.accountId)
+                || creditCardIDs.contains(transferAccountID)
+                ? .cardPayment
+                : .internalTransfer
+        }
+        if transaction.amountMilliunits < 0 {
+            return .ordinarySpending
+        }
+        if transaction.categoryName?.localizedCaseInsensitiveContains("income") == true {
+            return .income
+        }
+        return .refund
+    }
+
+    private func upsertItems(_ items: [PlaidItemDTO]) {
+        let rows = (try? mainContext.fetch(FetchDescriptor<CachedPlaidItem>())) ?? []
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        for item in items {
+            if let row = byID[item.id] {
+                row.institutionName = item.institutionName
+                row.status = item.status
+                row.lastSyncedAt = item.lastSyncedAt
+                row.productsRaw = (item.products ?? []).sorted().joined(separator: ",")
+            } else {
+                mainContext.insert(
+                    CachedPlaidItem(
+                        id: item.id,
+                        institutionName: item.institutionName,
+                        status: item.status,
+                        lastSyncedAt: item.lastSyncedAt,
+                        products: item.products ?? []
+                    )
+                )
+            }
+        }
+    }
+
+    private func apply(_ summary: FinancialAccountSummary, to row: CachedFinancialAccount) {
+        row.externalId = summary.externalId
+        row.itemId = summary.itemId
+        row.sourceRaw = summary.source.rawValue
+        row.institutionName = summary.institutionName
+        row.name = summary.name
+        row.officialName = summary.officialName
+        row.mask = summary.mask
+        row.typeRaw = summary.type.rawValue
+        row.subtype = summary.subtype
+        row.currentBalanceMilliunits = summary.currentBalance?.milliunits
+        row.availableBalanceMilliunits = summary.availableBalance?.milliunits
+        row.creditLimitMilliunits = summary.creditLimit?.milliunits
+        row.isoCurrencyCode = summary.isoCurrencyCode
+        row.deleted = false
+        row.updatedAt = .now
+    }
+
+    private func apply(
+        _ summary: FinancialTransactionSummary,
+        classification: TransactionClassification,
+        subtransactionsData: Data?,
+        requiresNameReview: Bool,
+        to row: CachedFinancialTransaction
+    ) {
+        let preservesCompletedHistoricalNameReview =
+            !row.pending
+                && row.reviewOriginRaw == "historical"
+                && !row.requiresNameReview
+        row.externalId = summary.externalId
+        row.sourceRaw = summary.source.rawValue
+        row.canonicalAccountId = summary.accountId
+        row.postedDate = summary.postedDate
+        row.authorizedDate = summary.authorizedDate
+        row.amountMilliunits = summary.amount.milliunits
+        row.pending = summary.pending
+        row.pendingTransactionId = summary.pendingTransactionId
+        row.rawDescription = summary.rawDescription
+        row.originalDescription = summary.originalDescription
+        row.providerMerchantName = summary.providerMerchantName
+        row.merchantEntityId = summary.merchantEntityId
+        row.counterpartyName = summary.counterpartyName
+        row.counterpartyType = summary.counterpartyType
+        row.counterpartyEntityId = summary.counterpartyEntityId
+        row.counterpartyConfidence = summary.counterpartyConfidence
+        row.paymentChannel = summary.paymentChannel
+        row.providerCategoryPrimary = summary.providerCategoryPrimary
+        row.providerCategoryDetailed = summary.providerCategoryDetailed
+        row.providerCategoryConfidence = summary.providerCategoryConfidence
+        row.transactionCode = summary.transactionCode
+        row.displayName = classification.displayName
+        row.nativeCategoryRaw = classification.category.rawValue
+        row.categoryName = classification.categoryName
+        row.forecastTreatmentRaw = classification.treatment.rawValue
+        row.subtransactionsData = subtransactionsData
+        row.classificationConfidenceRaw = classification.confidence.rawValue
+        row.classificationProvenanceRaw = classification.provenance.rawValue
+        row.requiresReview = classification.requiresReview
+        row.requiresNameReview = requiresNameReview
+            && !preservesCompletedHistoricalNameReview
+        row.deleted = false
+        row.updatedAt = .now
+    }
+
+    private func nativeCategory(forCategoryName name: String) -> NativeTransactionCategory {
+        if let exact = NativeTransactionCategory.allCases.first(where: {
+            $0.displayName.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }) {
+            return exact
+        }
+        return classifier.nativeCategory(primary: name, detailed: name) ?? .other
+    }
+
+    private func message(for error: PlaidClientError) -> String {
+        switch error {
+        case .missingConfiguration: "Plaid backend setup is incomplete."
+        case .unauthorized: "The Plaid backend token was rejected."
+        case .invalidResponse: "The banking service returned an error."
+        case .decoding: "The banking response could not be read."
+        case .transport: "The banking service could not be reached."
+        case .cancelled: ""
+        }
+    }
+}
+
+public enum ClaudeDataSyncPhase: Sendable, Equatable {
+    case idle
+    case syncing
+    case success(Date)
+    case error(String)
+}
+
+public enum ClaudeDataSyncError: Error, LocalizedError {
+    case settingsUnavailable
+    case syncDisabled
+    case snapshotUnavailable
+    case saveFailed
+
+    public var errorDescription: String? {
+        switch self {
+        case .settingsUnavailable:
+            "Networth settings are unavailable."
+        case .syncDisabled:
+            "Turn on Claude.ai data access first."
+        case .snapshotUnavailable:
+            "Sync the financial copy successfully before connecting Claude.ai."
+        case .saveFailed:
+            "The Claude.ai sync setting could not be saved."
+        }
+    }
+}
+
+/// Full-replacement, read-only snapshot sync for the personal Claude.ai MCP
+/// connector. A successful app save schedules one upload after a short
+/// debounce. The snapshot deliberately excludes secrets, provider IDs,
+/// account masks, notes, raw bank descriptions, and unreviewed transactions.
+@MainActor
+@Observable
+public final class ClaudeDataSyncCoordinator {
+    public private(set) var phase: ClaudeDataSyncPhase = .idle
+
+    private let client: any PlaidClient
+    private let mainContext: ModelContext
+    private var observerToken: NSObjectProtocol?
+    private var debounceTask: Task<Void, Never>?
+    private var isRunning = false
+    private let logger = Logger(
+        subsystem: "com.bluelava.me.networth",
+        category: "claude-data-sync"
+    )
+
+    public init(
+        client: any PlaidClient,
+        mainContext: ModelContext
+    ) {
+        self.client = client
+        self.mainContext = mainContext
+    }
+
+    public func start() {
+        guard observerToken == nil else { return }
+        observerToken = NotificationCenter.default.addObserver(
+            forName: .networthModelContextSaved,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.scheduleSync()
+            }
+        }
+    }
+
+    public func setEnabled(_ enabled: Bool) async throws {
+        guard let settings = userSettings else {
+            throw ClaudeDataSyncError.settingsUnavailable
+        }
+        if enabled {
+            settings.claudeDataSyncEnabled = true
+            settings.claudeDataSyncConsentAt = .now
+            guard mainContext.safeSave(
+                source: "settings.claudeDataSync.enable",
+                notifyDataSync: false
+            ) else {
+                mainContext.rollback()
+                throw ClaudeDataSyncError.saveFailed
+            }
+            await runOnce()
+            return
+        }
+
+        // Keep the local opt-in state intact until the remote copy and OAuth
+        // grants have actually been removed, so the UI never claims a wipe
+        // succeeded when the backend was unreachable.
+        try await client.revokeClaudeAccess()
+        settings.claudeDataSyncEnabled = false
+        settings.claudeDataSyncConsentAt = nil
+        settings.claudeDataLastSyncedAt = nil
+        guard mainContext.safeSave(
+            source: "settings.claudeDataSync.disable",
+            notifyDataSync: false
+        ) else {
+            mainContext.rollback()
+            throw ClaudeDataSyncError.saveFailed
+        }
+        phase = .idle
+    }
+
+    public func runOnce() async {
+        guard isEnabled, !isRunning else { return }
+        isRunning = true
+        phase = .syncing
+        defer { isRunning = false }
+
+        do {
+            let generatedAt = Date.now
+            let snapshot = try ClaudeFinancialSnapshotBuilder.build(
+                mainContext: mainContext,
+                generatedAt: generatedAt
+            )
+            try await client.uploadClaudeSnapshot(snapshot)
+            if let settings = userSettings {
+                settings.claudeDataLastSyncedAt = generatedAt
+                guard mainContext.safeSave(
+                    source: "claudeDataSync.lastSyncedAt",
+                    notifyDataSync: false
+                ) else {
+                    mainContext.rollback()
+                    throw ClaudeDataSyncError.saveFailed
+                }
+            }
+            phase = .success(generatedAt)
+        } catch {
+            logger.error(
+                "Claude.ai snapshot sync failed: \(error.localizedDescription, privacy: .public)"
+            )
+            phase = .error("The Claude.ai copy could not be updated.")
+        }
+    }
+
+    public func generateConnectCode() async throws
+        -> ClaudeConnectCodeResponseDTO {
+        guard isEnabled else {
+            throw ClaudeDataSyncError.syncDisabled
+        }
+        guard userSettings?.claudeDataLastSyncedAt != nil else {
+            throw ClaudeDataSyncError.snapshotUnavailable
+        }
+        return try await client.generateClaudeConnectCode()
+    }
+
+    private var userSettings: DurableUserSettings? {
+        try? mainContext.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ).first
+    }
+
+    private var isEnabled: Bool {
+        userSettings?.claudeDataSyncEnabled == true
+    }
+
+    private func scheduleSync() {
+        guard isEnabled else { return }
+        debounceTask?.cancel()
+        debounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(1_500))
+            guard !Task.isCancelled else { return }
+            await self?.runOnce()
+        }
+    }
+}
+
+@MainActor
+enum ClaudeFinancialSnapshotBuilder {
+    static func build(
+        mainContext: ModelContext,
+        generatedAt: Date = .now
+    ) throws -> ClaudeFinancialSnapshotDTO {
+        let settings = try mainContext.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ).first
+        let primarySource = settings?.primaryFinancialDataSource ?? .ynab
+        let manualAssets = try mainContext.fetch(
+            FetchDescriptor<DurableManualAsset>()
+        ).filter { !$0.deleted }
+        let plaidAccounts = try mainContext.fetch(
+            FetchDescriptor<CachedPlaidAccount>()
+        )
+        let plaidTreatments = try mainContext.fetch(
+            FetchDescriptor<DurablePlaidAccountTreatment>()
+        )
+        let resolver = PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualAssets
+        )
+
+        return ClaudeFinancialSnapshotDTO(
+            generatedAt: generatedAt,
+            primarySource: primarySource.rawValue,
+            accounts: try accountDTOs(
+                mainContext: mainContext,
+                source: primarySource,
+                budgetID: settings?.selectedBudgetId
+            ),
+            manualAssets: manualAssets
+                .map {
+                    ClaudeManualAssetDTO(
+                        name: $0.name,
+                        groupName: $0.groupName?.trimmed.nilIfEmpty,
+                        type: $0.kind.rawValue,
+                        currentValueMilliunits:
+                            resolver.effectiveValue(for: $0).milliunits,
+                        lastUpdatedAt: $0.lastUpdatedAt
+                    )
+                }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending },
+            holdings: try holdingDTOs(
+                mainContext: mainContext,
+                accounts: plaidAccounts,
+                includedAccountIDs:
+                    resolver.contributingPlaidAccountIDs
+            ),
+            transactions: try transactionDTOs(
+                mainContext: mainContext,
+                source: primarySource,
+                budgetID: settings?.selectedBudgetId
+            ),
+            netWorthHistory: try netWorthDTOs(
+                mainContext: mainContext
+            )
+        )
+    }
+
+    private static func accountDTOs(
+        mainContext: ModelContext,
+        source: FinancialDataSource,
+        budgetID: String?
+    ) throws -> [ClaudeAccountDTO] {
+        if source == .plaid {
+            return try mainContext.fetch(
+                FetchDescriptor<CachedFinancialAccount>()
+            )
+            .filter { !$0.deleted }
+            .map {
+                ClaudeAccountDTO(
+                    name: $0.name,
+                    institutionName:
+                        $0.institutionName?.trimmed.nilIfEmpty,
+                    type: $0.type.rawValue,
+                    balanceMilliunits: $0.balance.milliunits,
+                    availableBalanceMilliunits:
+                        $0.availableBalanceMilliunits,
+                    closed: false
+                )
+            }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+
+        return try mainContext.fetch(
+            FetchDescriptor<CachedAccount>()
+        )
+        .filter {
+            !$0.deleted
+                && (budgetID == nil || $0.budgetId == budgetID)
+        }
+        .map {
+            ClaudeAccountDTO(
+                name: $0.name,
+                institutionName: nil,
+                type: $0.kind.rawValue,
+                balanceMilliunits: $0.balanceMilliunits,
+                availableBalanceMilliunits: nil,
+                closed: $0.closed
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private static func holdingDTOs(
+        mainContext: ModelContext,
+        accounts: [CachedPlaidAccount],
+        includedAccountIDs: Set<String>
+    ) throws -> [ClaudeHoldingDTO] {
+        let accountByID = Dictionary(
+            uniqueKeysWithValues: accounts.compactMap {
+                includedAccountIDs.contains($0.id)
+                    ? ($0.id, $0)
+                    : nil
+            }
+        )
+        let securities = try mainContext.fetch(
+            FetchDescriptor<CachedPlaidSecurity>()
+        )
+        let securityByID = Dictionary(
+            uniqueKeysWithValues: securities.map { ($0.id, $0) }
+        )
+        return try mainContext.fetch(
+            FetchDescriptor<CachedPlaidHolding>()
+        )
+        .compactMap { holding in
+            guard let account = accountByID[holding.accountId],
+                  let security = securityByID[holding.securityId] else {
+                return nil
+            }
+            let securityName =
+                security.name?.trimmed.nilIfEmpty
+                ?? security.tickerSymbol?.trimmed.nilIfEmpty
+                ?? "Unknown security"
+            return ClaudeHoldingDTO(
+                accountName: account.name,
+                institutionName:
+                    account.institutionName.trimmed.nilIfEmpty,
+                securityName: securityName,
+                tickerSymbol:
+                    security.tickerSymbol?.trimmed.nilIfEmpty,
+                securityType: security.typeRaw?.trimmed.nilIfEmpty,
+                quantity: holding.quantityDecimalString,
+                valueMilliunits: holding.institutionValueMilliunits,
+                costBasisMilliunits: holding.costBasisMilliunits,
+                asOf: holding.asOf
+            )
+        }
+        .sorted {
+            if $0.accountName == $1.accountName {
+                return $0.securityName.localizedStandardCompare(
+                    $1.securityName
+                ) == .orderedAscending
+            }
+            return $0.accountName.localizedStandardCompare(
+                $1.accountName
+            ) == .orderedAscending
+        }
+    }
+
+    private static func transactionDTOs(
+        mainContext: ModelContext,
+        source: FinancialDataSource,
+        budgetID: String?
+    ) throws -> [ClaudeTransactionDTO] {
+        if source == .plaid {
+            let accounts = try mainContext.fetch(
+                FetchDescriptor<CachedFinancialAccount>()
+            )
+            let accountNameByID = Dictionary(
+                uniqueKeysWithValues: accounts.map {
+                    ($0.canonicalAccountId, $0.name)
+                }
+            )
+            return try mainContext.fetch(
+                FetchDescriptor<CachedFinancialTransaction>()
+            )
+            .filter {
+                !$0.deleted
+                    && !$0.pending
+                    && !$0.requiresReview
+                    && !$0.requiresNameReview
+            }
+            .map {
+                ClaudeTransactionDTO(
+                    date: $0.postedDate,
+                    accountName:
+                        accountNameByID[$0.canonicalAccountId]
+                        ?? "Unknown account",
+                    contactName: $0.displayName,
+                    categoryName: $0.isSplit
+                        ? "Split"
+                        : $0.categoryName?.trimmed.nilIfEmpty,
+                    treatment: $0.forecastTreatment.rawValue,
+                    amountMilliunits: $0.amountMilliunits,
+                    splits: $0.subtransactions.map {
+                        ClaudeTransactionSplitDTO(
+                            categoryName:
+                                $0.categoryName?.trimmed.nilIfEmpty,
+                            treatment:
+                                $0.forecastTreatment?.rawValue,
+                            amountMilliunits: $0.amount.milliunits
+                        )
+                    }
+                )
+            }
+            .sorted { $0.date > $1.date }
+        }
+
+        let accounts = try mainContext.fetch(
+            FetchDescriptor<CachedAccount>()
+        )
+        let accountNameByID = Dictionary(
+            uniqueKeysWithValues: accounts.map { ($0.id, $0.name) }
+        )
+        return try mainContext.fetch(
+            FetchDescriptor<CachedTransaction>()
+        )
+        .filter {
+            !$0.deleted
+                && (budgetID == nil || $0.budgetId == budgetID)
+        }
+        .map {
+            let treatment: String
+            if $0.transferAccountId != nil {
+                treatment = ForecastTreatment.internalTransfer.rawValue
+            } else if $0.amountMilliunits >= 0 {
+                treatment = ForecastTreatment.income.rawValue
+            } else {
+                treatment = ForecastTreatment.ordinarySpending.rawValue
+            }
+            return ClaudeTransactionDTO(
+                date: $0.date,
+                accountName:
+                    accountNameByID[$0.accountId] ?? "Unknown account",
+                contactName:
+                    $0.payeeName?.trimmed.nilIfEmpty ?? "Unknown",
+                categoryName: $0.subtransactions.isEmpty
+                    ? $0.categoryName?.trimmed.nilIfEmpty
+                    : "Split",
+                treatment: treatment,
+                amountMilliunits: $0.amountMilliunits,
+                splits: $0.subtransactions.map {
+                    ClaudeTransactionSplitDTO(
+                        categoryName:
+                            $0.categoryName?.trimmed.nilIfEmpty,
+                        treatment: $0.forecastTreatment?.rawValue,
+                        amountMilliunits: $0.amount.milliunits
+                    )
+                }
+            )
+        }
+        .sorted { $0.date > $1.date }
+    }
+
+    private static func netWorthDTOs(
+        mainContext: ModelContext
+    ) throws -> [ClaudeNetWorthPointDTO] {
+        let snapshots = try mainContext.fetch(
+            FetchDescriptor<DurableNetWorthSnapshot>()
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        var byDay: [Date: DurableNetWorthSnapshot] = [:]
+        for snapshot in snapshots {
+            let day = calendar.startOfDay(for: snapshot.date)
+            guard let existing = byDay[day] else {
+                byDay[day] = snapshot
+                continue
+            }
+            let shouldReplace =
+                snapshot.source == .live && existing.source != .live
+                || snapshot.source == existing.source
+                    && snapshot.createdAt > existing.createdAt
+            if shouldReplace {
+                byDay[day] = snapshot
+            }
+        }
+        return byDay.map { day, snapshot in
+            ClaudeNetWorthPointDTO(
+                date: day,
+                assetsMilliunits: snapshot.assetsMilliunits,
+                liabilitiesMilliunits:
+                    snapshot.liabilitiesMilliunits
+            )
+        }
+        .sorted { $0.date < $1.date }
+    }
+}
+
+private extension String {
+    var trimmed: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

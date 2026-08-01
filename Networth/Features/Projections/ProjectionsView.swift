@@ -8,9 +8,13 @@ import NetworthCore
 struct ProjectionsView: View {
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
+    @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
     @Query(sort: \CachedScheduledTransaction.nextDate) private var scheduled: [CachedScheduledTransaction]
     @Query private var allTransactions: [CachedTransaction]
+    @Query private var financialTransactions: [CachedFinancialTransaction]
     @Query private var categories: [CachedCategory]
+    @Query(sort: \DurableCanonicalCategory.name)
+    private var canonicalCategories: [DurableCanonicalCategory]
     @Query private var cardSettings: [DurableCardSettings]
     @Query private var userSettings: [DurableUserSettings]
     @Query private var exclusions: [DurableExcludedSpendCategory]
@@ -22,7 +26,7 @@ struct ProjectionsView: View {
     @State private var selectedPayment: UpcomingCardPayment?
     @State private var scrubbedProjectionDate: Date?
     @State private var showingAllUpcomingActivity = false
-    @State private var showingCalculationDetails = false
+    @State private var showingDiscretionaryBreakdown = false
 
     init() {
         let cutoff = Calendar(identifier: .gregorian)
@@ -31,6 +35,17 @@ struct ProjectionsView: View {
             filter: #Predicate<CachedTransaction> { $0.date >= cutoff && !$0.deleted },
             sort: [SortDescriptor(\CachedTransaction.date, order: .reverse)]
         )
+        _financialTransactions = Query(
+            filter: #Predicate<CachedFinancialTransaction> {
+                $0.postedDate >= cutoff && !$0.deleted && !$0.pending
+            },
+            sort: [
+                SortDescriptor(
+                    \CachedFinancialTransaction.postedDate,
+                    order: .reverse
+                )
+            ]
+        )
     }
 
     var body: some View {
@@ -38,22 +53,21 @@ struct ProjectionsView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                    discretionaryBudgetCard
                     priorityNotice(data)
 
                     if data.selectedCashAccounts.isEmpty {
                         NwEmptyState(
-                            title: accounts.isEmpty ? "Sync your accounts" : "Choose your cash accounts",
-                            message: accounts.isEmpty
-                                ? "Add your YNAB token in Settings."
+                            title: availableAccountSnapshots.isEmpty ? "Sync your accounts" : "Choose your cash accounts",
+                            message: availableAccountSnapshots.isEmpty
+                                ? "Connect your financial accounts in Settings."
                                 : "Select cash accounts in Settings.",
                             icon: .projections
                         )
                         .frame(minHeight: 300)
                     } else {
-                        statusCard(data)
                         cashChart(data)
                         timeline(data)
-                        cashFlowBridge(data)
                     }
                 }
                 .padding(.horizontal, NwSpacing.screenPadding)
@@ -78,7 +92,198 @@ struct ProjectionsView: View {
             .sheet(item: $selectedPayment) { payment in
                 CardPaymentDetailSheet(payment: payment)
             }
+            .sheet(isPresented: $showingDiscretionaryBreakdown) {
+                let budget = discretionaryBudgetData
+                DiscretionaryBudgetDetailSheet(
+                    snapshot: budget.snapshot,
+                    categories: budget.categories,
+                    historicalMonthlyAverage:
+                        budget.historicalMonthlyAverage,
+                    historicalMonthCount: budget.historicalMonthCount,
+                    historicalCategoryTotals:
+                        budget.historicalCategoryTotals
+                )
+            }
         }
+    }
+
+    private var discretionaryBudgetCard: some View {
+        let budget = discretionaryBudgetData
+        let snapshot = budget.snapshot
+        let hasTarget = snapshot.target > .zero
+        let remainingDisplay = snapshot.isOverTarget
+            ? snapshot.remaining.absolute
+            : snapshot.remaining
+        return Button {
+            showingDiscretionaryBreakdown = true
+        } label: {
+            NwCard(style: .primary) {
+                VStack(alignment: .leading, spacing: NwSpacing.md) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Budget")
+                            .font(NwTypography.titleSmall)
+                            .foregroundStyle(NwAppColors.textPrimary)
+                        Spacer()
+                        Text(Date.now, format: .dateTime.month(.wide))
+                            .font(NwTypography.bodyEmphasis)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                        NwIcon.chevron.image
+                            .font(NwTypography.bodyEmphasis)
+                            .foregroundStyle(NwAppColors.primary)
+                    }
+
+                    if hasTarget {
+                        HStack(alignment: .firstTextBaseline, spacing: NwSpacing.sm) {
+                            NwAmountText(
+                                remainingDisplay,
+                                variant: .large,
+                                showCents: false,
+                                color: snapshot.isOverTarget
+                                    ? NwAppColors.liability
+                                    : NwAppColors.positive
+                            )
+                            Text(snapshot.isOverTarget
+                                ? "over target"
+                                : "remaining")
+                                .font(NwTypography.bodyEmphasis)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                        }
+
+                        ProgressView(value: discretionaryProgress(snapshot))
+                            .tint(snapshot.isOverTarget
+                                ? NwAppColors.liability
+                                : snapshot.isOverPace
+                                    ? NwAppColors.caution
+                                    : NwAppColors.positive)
+                            .scaleEffect(x: 1, y: 1.5)
+
+                        ViewThatFits(in: .horizontal) {
+                            HStack {
+                                discretionarySpentLabel(snapshot)
+                                Spacer()
+                                discretionaryPaceStatus(snapshot)
+                            }
+                            VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                                discretionarySpentLabel(snapshot)
+                                discretionaryPaceStatus(snapshot)
+                            }
+                        }
+                    } else {
+                        Text("Set a monthly target in Settings → Budget & Forecast.")
+                            .font(NwTypography.body)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    }
+
+                    if budget.historicalMonthlyAverage > .zero {
+                        Text(historicalAverageLabel(
+                            average: budget.historicalMonthlyAverage,
+                            monthCount: budget.historicalMonthCount
+                        ))
+                        .font(NwTypography.callout)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func discretionarySpentLabel(
+        _ snapshot: DiscretionaryBudgetSnapshot
+    ) -> some View {
+        Text(
+            "\(CurrencyFormatter.compact(snapshot.spent)) of "
+                + "\(CurrencyFormatter.compact(snapshot.target)) spent"
+        )
+        .font(NwTypography.callout)
+        .foregroundStyle(NwAppColors.textSecondary)
+    }
+
+    private func discretionaryPaceStatus(
+        _ snapshot: DiscretionaryBudgetSnapshot
+    ) -> some View {
+        let difference = snapshot.paceDifference.absolute
+        let label: String
+        if snapshot.paceDifference.isZero {
+            label = "On pace"
+        } else if snapshot.isOverPace {
+            label = "\(CurrencyFormatter.compact(difference)) over pace"
+        } else {
+            label = "\(CurrencyFormatter.compact(difference)) under pace"
+        }
+        return Text(label)
+            .font(NwTypography.callout)
+            .foregroundStyle(snapshot.isOverPace
+                ? NwAppColors.caution
+                : NwAppColors.positive)
+    }
+
+    private func discretionaryProgress(
+        _ snapshot: DiscretionaryBudgetSnapshot
+    ) -> Double {
+        guard snapshot.target.milliunits > 0 else { return 0 }
+        return min(
+            1,
+            max(
+                0,
+                Double(snapshot.spent.milliunits)
+                    / Double(snapshot.target.milliunits)
+            )
+        )
+    }
+
+    private func historicalAverageLabel(
+        average: Money,
+        monthCount: Int
+    ) -> String {
+        "\(monthCount)-mo avg \(CurrencyFormatter.compact(average))"
+    }
+
+    private var discretionaryBudgetData: (
+        snapshot: DiscretionaryBudgetSnapshot,
+        categories: [DiscretionaryCategorySpend],
+        historicalMonthlyAverage: Money,
+        historicalMonthCount: Int,
+        historicalCategoryTotals: [DiscretionaryCategorySpend]
+    ) {
+        let activeOptions = DiscretionaryCategoryResolver.options(
+            canonical: canonicalCategories,
+            cached: categories,
+            activeOnly: true
+        )
+        let allOptions = DiscretionaryCategoryResolver.options(
+            canonical: canonicalCategories,
+            cached: categories,
+            activeOnly: false
+        )
+        let selectedIds = DiscretionaryCategoryResolver.selectedIds(
+            settings: userSettings.first,
+            activeOptions: activeOptions
+        )
+        let accepted = DiscretionaryCategoryResolver.acceptedCategories(
+            selectedIds: selectedIds,
+            allOptions: allOptions
+        )
+        let transactions = usesPlaidTransactions
+            ? financialTransactions.compactMap { $0.toProjectionSummary() }
+            : allTransactions.map { $0.toSummary() }
+        let report = DiscretionaryBudgetCalculator().report(
+            transactions: transactions,
+            discretionaryCategoryIds: accepted.ids,
+            discretionaryCategoryNames: accepted.names,
+            target: Money(
+                milliunits: userSettings.first?
+                    .discretionaryMonthlyTargetMilliunits ?? 0
+            )
+        )
+        return (
+            report.snapshot,
+            report.categories,
+            report.historicalMonthlyAverage,
+            report.historicalMonthCount,
+            report.historicalCategoryTotals
+        )
     }
 
     @ViewBuilder
@@ -140,129 +345,13 @@ struct ProjectionsView: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private func statusCard(_ data: ProjectionData) -> some View {
-        if data.canShowSpendingRoomDetails {
-            Button {
-                showingSafeToSpendDetails = true
-            } label: {
-                projectionHeroCard(data, showsDisclosure: true)
-            }
-            .buttonStyle(.plain)
-        } else {
-            projectionHeroCard(data, showsDisclosure: false)
-        }
-    }
-
-    private func projectionHeroCard(
-        _ data: ProjectionData,
-        showsDisclosure: Bool
-    ) -> some View {
-        NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.md) {
-                if data.canLeadWithSpendingRoom,
-                   let estimate = data.result.safeToSpend {
-                    HStack {
-                        Text("AVAILABLE FOR EXTRA SPENDING")
-                            .font(NwTypography.caption)
-                            .foregroundStyle(NwAppColors.textSecondary)
-                        Spacer()
-                        if showsDisclosure {
-                            NwIcon.chevron.image
-                                .foregroundStyle(NwAppColors.primary)
-                        }
-                    }
-
-                    NwAmountText(
-                        estimate.amount,
-                        variant: .hero,
-                        showCents: false,
-                        color: NwAppColors.positive
-                    )
-                    Text("One-time amount through \(estimate.lowPointDate.formatted(.dateTime.month(.abbreviated).day()))")
-                        .font(NwTypography.bodyEmphasis)
-                        .foregroundStyle(NwAppColors.textPrimary)
-
-                    Divider()
-
-                    HStack(spacing: NwSpacing.sm) {
-                        NwIcon.success.image
-                            .foregroundStyle(NwAppColors.positive)
-                        Text(data.headlineTitle)
-                            .font(NwTypography.bodyEmphasis)
-                            .foregroundStyle(NwAppColors.positive)
-                    }
-                    Text("Low \(CurrencyFormatter.compact(estimate.projectedLowBalance)) on \(estimate.lowPointDate.formatted(.dateTime.month(.abbreviated).day())) · \(CurrencyFormatter.compact(estimate.minimumCashBuffer)) buffer")
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    HStack(alignment: .top) {
-                        Text(data.headlineTitle)
-                            .font(NwTypography.title)
-                            .foregroundStyle(data.statusColor)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: NwSpacing.sm)
-                        if showsDisclosure {
-                            NwIcon.chevron.image
-                                .foregroundStyle(NwAppColors.primary)
-                        }
-                    }
-
-                    if let amount = data.headlineAmount {
-                        NwAmountText(
-                            amount,
-                            variant: .large,
-                            showCents: false,
-                            color: data.statusColor
-                        )
-                    }
-                    if let subtitle = data.headlineSubtitle {
-                        Text(subtitle)
-                            .font(NwTypography.bodyEmphasis)
-                            .foregroundStyle(NwAppColors.textPrimary)
-                    }
-                    if let explanation = data.headlineExplanation {
-                        Text(explanation)
-                            .font(NwTypography.callout)
-                            .foregroundStyle(NwAppColors.textSecondary)
-                    }
-
-                    Divider()
-                    projectionContextRow(
-                        "Starting cash",
-                        amount: data.result.startingBalance
-                    )
-                    projectionContextRow(
-                        "Cash buffer target",
-                        amount: minimumCashBuffer
-                    )
-                }
-            }
-        }
-    }
-
-    private func projectionContextRow(_ label: String, amount: Money) -> some View {
-        HStack {
-            Text(label)
-                .font(NwTypography.footnote)
-                .foregroundStyle(.secondary)
-            Spacer()
-            NwAmountText(amount, variant: .body, showCents: false)
-        }
-    }
-
     private func cashChart(_ data: ProjectionData) -> some View {
         let selectedPoint = selectedProjectionPoint(data)
         return NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Cash Outlook")
-                            .font(NwTypography.headline)
-                        Text("\(horizonDays) days · \(CurrencyFormatter.compact(data.result.expectedSpend.estimatedMonthlyAmount))/month spending")
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("Outlook")
+                        .font(NwTypography.headline)
                     Spacer()
                     Button {
                         showingAssumptions = true
@@ -273,6 +362,10 @@ struct ProjectionsView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Projection assumptions")
                 }
+
+                projectionSummaryRow(data)
+
+                Divider()
 
                 if let selectedPoint {
                     HStack(alignment: .firstTextBaseline) {
@@ -357,6 +450,55 @@ struct ProjectionsView: View {
         }
     }
 
+    @ViewBuilder
+    private func projectionSummaryRow(_ data: ProjectionData) -> some View {
+        if data.canLeadWithSpendingRoom,
+           let estimate = data.result.safeToSpend {
+            Button {
+                showingSafeToSpendDetails = true
+            } label: {
+                HStack(alignment: .center, spacing: NwSpacing.md) {
+                    Text("Available")
+                        .font(NwTypography.bodyEmphasis)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                    Spacer(minLength: NwSpacing.sm)
+                    NwAmountText(
+                        estimate.amount,
+                        variant: .large,
+                        showCents: false,
+                        color: NwAppColors.positive
+                    )
+                    NwIcon.chevron.image
+                        .foregroundStyle(NwAppColors.primary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            HStack(alignment: .center, spacing: NwSpacing.md) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(data.headlineTitle)
+                        .font(NwTypography.bodyEmphasis)
+                        .foregroundStyle(data.statusColor)
+                    if let subtitle = data.headlineSubtitle {
+                        Text(subtitle)
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                }
+                Spacer(minLength: NwSpacing.sm)
+                if let amount = data.headlineAmount {
+                    NwAmountText(
+                        amount,
+                        variant: .compact,
+                        showCents: false,
+                        color: data.statusColor
+                    )
+                }
+            }
+        }
+    }
+
     private func selectedProjectionPoint(_ data: ProjectionData) -> CashPositionPoint? {
         guard let scrubbedProjectionDate else { return data.result.expectedLowPoint }
         let calendar = Calendar(identifier: .gregorian)
@@ -364,68 +506,6 @@ struct ProjectionsView: View {
         return data.result.expectedPoints.min { lhs, rhs in
             abs(calendar.startOfDay(for: lhs.date).timeIntervalSince(target))
                 < abs(calendar.startOfDay(for: rhs.date).timeIntervalSince(target))
-        }
-    }
-
-    private func cashFlowBridge(_ data: ProjectionData) -> some View {
-        NwCard(style: .primary) {
-            VStack(spacing: NwSpacing.md) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showingCalculationDetails.toggle()
-                    }
-                } label: {
-                    HStack(spacing: NwSpacing.md) {
-                        NwIcon.info.image
-                            .foregroundStyle(NwAppColors.primary)
-                        Text("How this is calculated")
-                            .font(NwTypography.bodyEmphasis)
-                            .foregroundStyle(NwAppColors.textPrimary)
-                        Spacer()
-                        Image(systemName: showingCalculationDetails ? "chevron.up" : "chevron.down")
-                            .font(NwTypography.footnoteEm)
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                if showingCalculationDetails {
-                    Divider()
-                    bridgeRow("Starting cash", amount: data.result.startingBalance)
-                    bridgeRow("Income & transfers in", amount: data.result.knownInflows, signed: true)
-                    bridgeRow("Scheduled outflows", amount: -data.result.scheduledOutflows, signed: true)
-                    bridgeRow("Card payments", amount: -data.result.cardPaymentOutflows, signed: true)
-                    bridgeRow("Everyday spending reserve", amount: -data.result.expectedSpendingReserve, signed: true)
-                    Divider()
-                    bridgeRow("Projected ending cash", amount: data.result.projectedEndingBalance)
-                    bridgeRow(
-                        "Lowest projected cash",
-                        amount: data.result.expectedLowPoint?.balance ?? data.result.startingBalance,
-                        emphasized: true
-                    )
-                }
-            }
-        }
-    }
-
-    private func bridgeRow(
-        _ label: String,
-        amount: Money,
-        signed: Bool = false,
-        emphasized: Bool = false
-    ) -> some View {
-        HStack(spacing: NwSpacing.md) {
-            Text(label)
-                .font(emphasized ? NwTypography.bodyEmphasis : NwTypography.body)
-                .foregroundStyle(emphasized ? NwAppColors.textPrimary : NwAppColors.textSecondary)
-            Spacer()
-            NwAmountText(
-                amount,
-                variant: signed ? .signed : .body,
-                showCents: false,
-                color: emphasized ? NwAppColors.primary : nil
-            )
         }
     }
 
@@ -485,12 +565,6 @@ struct ProjectionsView: View {
                 Text(event.title)
                     .font(NwTypography.body)
                     .foregroundStyle(NwAppColors.textPrimary)
-                if event.kind == .cardPayment,
-                   let account = data.selectedCashAccounts.first(where: { $0.id == event.accountId }) {
-                    Text("From \(account.name)")
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                }
             }
             Spacer()
             NwAmountText(event.amount, variant: .body,
@@ -647,18 +721,37 @@ struct ProjectionsView: View {
     }
 
     private func makeProjectionData() -> ProjectionData {
-        let openCash = accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
+        let availableAccounts = availableAccountSnapshots
+        let openCash = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
         var overrideMap: [String: Bool] = [:]
-        cashAccountOverrides.forEach { overrideMap[$0.accountId] = $0.included }
+        cashAccountOverrides.forEach {
+            let id = usesPlaidTransactions ? ($0.canonicalAccountId ?? $0.accountId) : $0.accountId
+            overrideMap[id] = $0.included
+        }
         let selectedCash = openCash.filter { overrideMap[$0.id] ?? $0.onBudget }
         let selectedIds = Set(selectedCash.map(\.id))
 
-        let openCards = accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCreditCardLike }
-        let configured: [(CachedAccount, DurableCardSettings)] = openCards.compactMap { card in
-            guard let setting = cardSettings.first(where: { $0.accountId == card.id }),
-                  setting.statementCycleDay >= 1,
-                  setting.paymentDueDay >= 1,
-                  setting.paymentAccountId?.isEmpty == false else { return nil }
+        let openCards = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCreditCardLike }
+        let configured: [(AccountSnapshot, CardStatementSettings)] = openCards.compactMap { card in
+            guard let stored = cardSettings.first(where: {
+                usesPlaidTransactions
+                    ? ($0.canonicalAccountId ?? $0.accountId) == card.id
+                    : $0.accountId == card.id
+            }),
+                  let paymentAccountID = usesPlaidTransactions
+                    ? (stored.canonicalPaymentAccountId ?? stored.paymentAccountId)
+                    : stored.paymentAccountId,
+                  stored.statementCycleDay >= 1,
+                  stored.paymentDueDay >= 1,
+                  !paymentAccountID.isEmpty else { return nil }
+            let setting = CardStatementSettings(
+                accountId: card.id,
+                statementCycleDay: stored.statementCycleDay,
+                paymentDueDay: stored.paymentDueDay,
+                paymentAccountId: paymentAccountID,
+                minimumPaymentPercent: stored.minimumPaymentPercent,
+                minimumPaymentFloor: stored.minimumPaymentFloor
+            )
             return (card, setting)
         }
         let configuredIds = Set(configured.map { $0.0.id })
@@ -668,15 +761,19 @@ struct ProjectionsView: View {
                   !selectedIds.contains(paymentAccountId) else { return nil }
             return card.name
         }
-        let history = allTransactions.map { $0.toSummary() }
-        let scheduledSummaries = scheduled.filter { !$0.deleted }.map { $0.toSummary() }
-        let spendIds = Set(accounts.filter { !$0.deleted && $0.kind.isSpendAccount }.map(\.id))
+        let history = usesPlaidTransactions
+            ? financialTransactions.compactMap { $0.toProjectionSummary() }
+            : allTransactions.map { $0.toSummary() }
+        let scheduledSummaries = usesPlaidTransactions
+            ? []
+            : scheduled.filter { !$0.deleted }.map { $0.toSummary() }
+        let spendIds = Set(availableAccounts.filter { !$0.deleted && $0.kind.isSpendAccount }.map(\.id))
 
         let forecaster = CCPaymentForecaster()
         let payments = configured.flatMap { card, setting in
             forecaster.upcomingPayments(
-                card: card.toSnapshot(),
-                settings: setting.toCore(),
+                card: card,
+                settings: setting,
                 scheduled: scheduledSummaries,
                 historicalTransactions: history,
                 spendAccountIds: spendIds,
@@ -691,7 +788,7 @@ struct ProjectionsView: View {
             return card.id
         })
         let result = CashPositionProjector().project(
-            cashAccounts: openCash.map { $0.toSnapshot() },
+            cashAccounts: openCash,
             selectedCashAccountIds: selectedIds,
             cardAccountIds: Set(openCards.map(\.id)),
             fundedCardAccountIds: fundedCardIds,
@@ -710,7 +807,7 @@ struct ProjectionsView: View {
         return ProjectionData(
             result: result,
             payments: payments,
-            selectedCashAccounts: selectedCash.map { $0.toSnapshot() },
+            selectedCashAccounts: selectedCash,
             missingCardNames: missingCards,
             unfundedCardNames: unfundedCards,
             excludedCategoryNames: categories
@@ -719,6 +816,19 @@ struct ProjectionsView: View {
                 .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
             limitedHistory: result.expectedSpend.historyDays < 30
         )
+    }
+
+    private var usesPlaidTransactions: Bool {
+        userSettings.first?.primaryFinancialDataSource == .plaid
+    }
+
+    private var availableAccountSnapshots: [AccountSnapshot] {
+        if usesPlaidTransactions {
+            return financialAccounts
+                .filter { !$0.deleted }
+                .map { $0.toAccountSnapshot() }
+        }
+        return accounts.map { $0.toSnapshot() }
     }
 
     private var horizonDays: Int { userSettings.first?.projectionHorizonDays ?? 90 }
@@ -744,6 +854,217 @@ struct ProjectionsView: View {
     private var lastUpdatedText: String {
         guard let date = userSettings.first?.lastSyncedAt else { return "never" }
         return date.formatted(.relative(presentation: .named))
+    }
+}
+
+private struct DiscretionaryBudgetDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let snapshot: DiscretionaryBudgetSnapshot
+    let categories: [DiscretionaryCategorySpend]
+    let historicalMonthlyAverage: Money
+    let historicalMonthCount: Int
+    let historicalCategoryTotals: [DiscretionaryCategorySpend]
+
+    var body: some View {
+        NwModalLayout(
+            title: "Discretionary Spending",
+            onClose: { dismiss() }
+        ) {
+            NwCard(style: .primary) {
+                VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                    Text(Date.now, format: .dateTime.month(.wide).year())
+                        .font(NwTypography.titleSmall)
+                        .foregroundStyle(NwAppColors.textPrimary)
+
+                    VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                        Text("Spent this month")
+                            .font(NwTypography.bodyEmphasis)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                        NwAmountText(
+                            snapshot.spent,
+                            variant: .hero,
+                            showCents: false
+                        )
+                    }
+
+                    if snapshot.target > .zero {
+                        HStack(spacing: NwSpacing.lg) {
+                            summaryMetric(
+                                "Target",
+                                amount: snapshot.target
+                            )
+                            summaryMetric(
+                                snapshot.isOverTarget
+                                    ? "Over"
+                                    : "Remaining",
+                                amount: snapshot.remaining.absolute,
+                                color: snapshot.isOverTarget
+                                    ? NwAppColors.liability
+                                    : NwAppColors.positive
+                            )
+                        }
+
+                        HStack(spacing: NwSpacing.sm) {
+                            Image(systemName: snapshot.isOverPace
+                                ? "gauge.with.dots.needle.67percent"
+                                : "checkmark.circle.fill")
+                                .font(NwTypography.bodyEmphasis)
+                                .foregroundStyle(snapshot.isOverPace
+                                    ? NwAppColors.caution
+                                    : NwAppColors.positive)
+                            Text(paceText)
+                                .font(NwTypography.body)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                        }
+                    } else {
+                        Text("No monthly target is set.")
+                            .font(NwTypography.body)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
+                Text("This month")
+                    .font(NwTypography.titleSmall)
+                    .foregroundStyle(NwAppColors.textPrimary)
+
+                if categories.isEmpty {
+                    NwEmptyState(
+                        title: "No discretionary spending",
+                        message: "No selected discretionary category has spending this month.",
+                        icon: .empty
+                    )
+                    .frame(minHeight: 180)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(categories) { category in
+                            categoryRow(
+                                category,
+                                total: snapshot.spent
+                            )
+                            if category.id != categories.last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                    .padding(.horizontal, NwSpacing.md)
+                    .background(NwAppColors.cardSurface)
+                    .clipShape(RoundedRectangle(
+                        cornerRadius: NwCornerRadius.card,
+                        style: .continuous
+                    ))
+                }
+            }
+
+            if !historicalCategoryTotals.isEmpty {
+                VStack(alignment: .leading, spacing: NwSpacing.md) {
+                    Text("Last \(historicalMonthCount) months")
+                        .font(NwTypography.titleSmall)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                    Text(
+                        "\(CurrencyFormatter.compact(historicalTotal)) total"
+                            + " · "
+                            + "\(CurrencyFormatter.compact(historicalMonthlyAverage)) avg"
+                    )
+                    .font(NwTypography.body)
+                    .foregroundStyle(NwAppColors.textSecondary)
+
+                    VStack(spacing: 0) {
+                        ForEach(historicalCategoryTotals) { category in
+                            categoryRow(
+                                category,
+                                total: historicalTotal
+                            )
+                            if category.id
+                                != historicalCategoryTotals.last?.id {
+                                Divider()
+                            }
+                        }
+                    }
+                    .padding(.horizontal, NwSpacing.md)
+                    .background(NwAppColors.cardSurface)
+                    .clipShape(RoundedRectangle(
+                        cornerRadius: NwCornerRadius.card,
+                        style: .continuous
+                    ))
+                }
+            }
+        }
+    }
+
+    private func summaryMetric(
+        _ label: String,
+        amount: Money,
+        color: Color = NwAppColors.textPrimary
+    ) -> some View {
+        VStack(alignment: .leading, spacing: NwSpacing.xs) {
+            Text(label)
+                .font(NwTypography.body)
+                .foregroundStyle(NwAppColors.textSecondary)
+            NwAmountText(
+                amount,
+                variant: .compact,
+                showCents: false,
+                color: color
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func categoryRow(
+        _ category: DiscretionaryCategorySpend,
+        total: Money
+    ) -> some View {
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(category.name)
+                    .font(NwTypography.headline)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                Spacer(minLength: NwSpacing.md)
+                Text(CurrencyFormatter.currency(
+                    category.amount,
+                    showCents: false
+                ))
+                    .font(NwTypography.titleSmall)
+                    .monospacedDigit()
+                    .foregroundStyle(NwAppColors.textPrimary)
+            }
+            ProgressView(value: categoryShare(
+                category,
+                total: total
+            ))
+                .tint(NwAppColors.accent)
+        }
+        .padding(.vertical, NwSpacing.md)
+    }
+
+    private func categoryShare(
+        _ category: DiscretionaryCategorySpend,
+        total: Money
+    ) -> Double {
+        guard total.milliunits > 0 else { return 0 }
+        return min(
+            1,
+            Double(category.amount.milliunits)
+                / Double(total.milliunits)
+        )
+    }
+
+    private var historicalTotal: Money {
+        historicalCategoryTotals.map(\.amount).sum()
+    }
+
+    private var paceText: String {
+        let difference = snapshot.paceDifference.absolute
+        if snapshot.paceDifference.isZero {
+            return "On pace for today."
+        }
+        if snapshot.isOverPace {
+            return "\(CurrencyFormatter.compact(difference)) over today's pace."
+        }
+        return "\(CurrencyFormatter.compact(difference)) under today's pace."
     }
 }
 

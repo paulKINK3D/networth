@@ -68,29 +68,46 @@ extension ScheduledTransactionSummary {
         through end: Date,
         calendar: Calendar = Calendar(identifier: .gregorian)
     ) -> [Date] {
-        guard start <= end else { return [] }
-        let effectiveStart = max(start, firstDate ?? start)
-        guard effectiveStart <= end else { return [] }
+        let rangeStart = calendar.startOfDay(for: start)
+        let rangeEnd = calendar.startOfDay(for: end)
+        guard rangeStart <= rangeEnd else { return [] }
+
+        // YNAB's yyyy-MM-dd values are decoded at midnight UTC. Rebuild those
+        // civil-date components in the projection calendar before comparing
+        // them with local day boundaries. Otherwise, a July 31 occurrence is
+        // July 30 at 5 PM in Pacific time and can be skipped as "before"
+        // the July 31 projection cutoff.
+        let anchor = dateOnly(nextDate, in: calendar)
+        let normalizedFirstDate = firstDate.map { dateOnly($0, in: calendar) }
+        let effectiveStart = max(rangeStart, normalizedFirstDate ?? rangeStart)
+        guard effectiveStart <= rangeEnd else { return [] }
         if frequency == .never {
-            return (nextDate >= effectiveStart && nextDate <= end) ? [nextDate] : []
+            return (anchor >= effectiveStart && anchor <= rangeEnd) ? [anchor] : []
         }
         var dates: [Date] = []
 
         // 1. Walk backward from nextDate (inclusive) collecting occurrences in range.
-        var backCursor: Date? = nextDate
+        var backCursor: Date? = anchor
         while let c = backCursor, c >= effectiveStart {
-            if c <= end { dates.append(c) }
+            if c <= rangeEnd { dates.append(c) }
             backCursor = step(c, calendar: calendar, direction: -1)
         }
 
         // 2. Walk forward from the occurrence after nextDate.
-        var fwdCursor: Date? = step(nextDate, calendar: calendar, direction: 1)
-        while let c = fwdCursor, c <= end {
+        var fwdCursor: Date? = step(anchor, calendar: calendar, direction: 1)
+        while let c = fwdCursor, c <= rangeEnd {
             if c >= effectiveStart { dates.append(c) }
             fwdCursor = step(c, calendar: calendar, direction: 1)
         }
 
         return dates.sorted()
+    }
+
+    private func dateOnly(_ date: Date, in calendar: Calendar) -> Date {
+        var sourceCalendar = Calendar(identifier: .gregorian)
+        sourceCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let components = sourceCalendar.dateComponents([.era, .year, .month, .day], from: date)
+        return calendar.date(from: components) ?? calendar.startOfDay(for: date)
     }
 
     /// Step the schedule by one period in the given direction (+1 forward, -1 back).

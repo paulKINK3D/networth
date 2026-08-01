@@ -107,11 +107,10 @@ struct ManualAssetForm: View {
 
                 if mode == .updateTotal || asset == nil {
                     TextField("Current Value", text: $amountText, prompt: Text("Current Value").foregroundStyle(.secondary))
-                        .keyboardType(.decimalPad)
+                        .nwCurrencyInput(text: $amountText)
                         .padding(NwSpacing.md)
                         .background(NwAppColors.cardSurface)
                         .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
-                        .onAppear { selectAllOnFirstTap() }
                 } else {
                     Picker("Sign", selection: $deltaSign) {
                         ForEach(DeltaSign.allCases) { s in Text(s.rawValue).tag(s) }
@@ -119,7 +118,7 @@ struct ManualAssetForm: View {
                     .pickerStyle(.segmented)
 
                     TextField("Amount", text: $deltaText, prompt: Text("Amount").foregroundStyle(.secondary))
-                        .keyboardType(.decimalPad)
+                        .nwCurrencyInput(text: $deltaText)
                         .padding(NwSpacing.md)
                         .background(NwAppColors.cardSurface)
                         .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
@@ -186,15 +185,13 @@ struct ManualAssetForm: View {
     }
 
     private var amountValue: Money? {
-        let trimmed = amountText.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, let decimal = Decimal(string: trimmed) else { return nil }
-        return Money.dollars(decimal)
+        CurrencyInputFormatter.money(from: amountText)
     }
 
     private var deltaValue: Money? {
-        let trimmed = deltaText.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, let decimal = Decimal(string: trimmed) else { return nil }
-        let unsigned = Money.dollars(decimal)
+        guard let unsigned = CurrencyInputFormatter.money(from: deltaText) else {
+            return nil
+        }
         return deltaSign == .deposit ? unsigned : Money(milliunits: -unsigned.milliunits)
     }
 
@@ -227,18 +224,13 @@ struct ManualAssetForm: View {
         guard let asset else { return }
         name = asset.name
         kind = asset.kind
-        amountText = String(describing: asset.currentValue.decimalValue)
+        amountText = CurrencyInputFormatter.text(for: asset.currentValue)
         note = asset.notes ?? ""
         groupName = asset.groupName ?? ""
         // A new balance edit should default to today. Reusing the latest
         // entry's date made Update Total look like an edit of that historical
         // point instead of a new valuation.
         recordedAt = .now
-    }
-
-    private func selectAllOnFirstTap() {
-        // Stub for the documented "first numeric tap replaces existing value" pattern.
-        // In practice we'd hook a UIResponder coordinator; deferring to v1.1 polish.
     }
 
     private func deleteHistoryEntry(_ entry: DurableManualAssetValue, on asset: DurableManualAsset) {

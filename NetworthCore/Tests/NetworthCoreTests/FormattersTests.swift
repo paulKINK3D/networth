@@ -22,4 +22,20 @@ struct FormattersTests {
         #expect(positive.hasPrefix("+"))
         #expect(negative.hasPrefix("−"))
     }
+
+    @Test func currencyInputShiftsDigitsIntoCents() {
+        var text = ""
+        for digit in "83898" {
+            text = CurrencyInputFormatter.formatted(text + String(digit))
+        }
+
+        #expect(text == "838.98")
+        #expect(CurrencyInputFormatter.money(from: text) == Money.dollars(838.98))
+    }
+
+    @Test func currencyInputSupportsDeletionAndPastedFormatting() {
+        #expect(CurrencyInputFormatter.formatted("838.9") == "83.89")
+        #expect(CurrencyInputFormatter.formatted("$1,234.56") == "1234.56")
+        #expect(CurrencyInputFormatter.formatted("") == "")
+    }
 }

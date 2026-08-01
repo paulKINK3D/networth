@@ -18,6 +18,8 @@ public final class AppContainerController {
     public let snapshotScheduler: SnapshotScheduler
     public let syncCoordinator: SyncCoordinator
     public let plaidSyncCoordinator: PlaidSyncCoordinator
+    public let plaidTransactionSyncCoordinator: PlaidTransactionSyncCoordinator
+    public let claudeDataSyncCoordinator: ClaudeDataSyncCoordinator
     public let ibrLoanStore: any IBRLoanStore
     public let ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore
 
@@ -38,6 +40,7 @@ public final class AppContainerController {
         biometricGate: any BiometricGate,
         ynabClient: any YNABClient,
         plaidClient: any PlaidClient = RecordedPlaidClient(),
+        transactionInferenceProvider: any OnDeviceTransactionInferring = RecordedTransactionInferenceProvider(),
         modelContainer: ModelContainer,
         ibrLoanStore: any IBRLoanStore = AppGroupIBRLoanStore(),
         ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore = InMemoryIBRLoanHistorySettingsStore()
@@ -55,6 +58,15 @@ public final class AppContainerController {
         self.snapshotScheduler = SnapshotScheduler(mainContext: ctx)
         self.syncCoordinator = SyncCoordinator(client: ynabClient, mainContext: ctx)
         self.plaidSyncCoordinator = PlaidSyncCoordinator(client: plaidClient, mainContext: ctx)
+        self.plaidTransactionSyncCoordinator = PlaidTransactionSyncCoordinator(
+            client: plaidClient,
+            inferenceProvider: transactionInferenceProvider,
+            mainContext: ctx
+        )
+        self.claudeDataSyncCoordinator = ClaudeDataSyncCoordinator(
+            client: plaidClient,
+            mainContext: ctx
+        )
 
         observePersistenceFailures()
     }
@@ -85,6 +97,7 @@ public final class AppContainerController {
             bearerToken: plaidToken
         )
         hasPlaidBackendToken = (plaidToken?.isEmpty == false)
+        claudeDataSyncCoordinator.start()
 
         let descriptor = FetchDescriptor<DurableUserSettings>()
         let ctx = modelContainer.mainContext
@@ -95,6 +108,7 @@ public final class AppContainerController {
             return s
         }()
         selectedBudgetId = settings.selectedBudgetId
+        plaidTransactionSyncCoordinator.runLocalMigrationsIfNeeded()
 
         // One-time migration: pre-default-flip installs had faceIDEnabled=false.
         // When biometric is available and we haven't migrated yet, enable it.
@@ -194,12 +208,18 @@ public final class AppContainerController {
     }
 
     public func createPlaidLinkToken() async throws -> String {
-        try await plaidClient.createLinkToken().linkToken
+        try await plaidClient.createLinkToken(
+            mode: .investments,
+            itemId: nil
+        ).linkToken
     }
 
     @discardableResult
     public func completePlaidLink(publicToken: String) async throws -> PlaidItemDTO {
-        let result = try await plaidClient.exchangePublicToken(publicToken)
+        let result = try await plaidClient.exchangePublicToken(
+            publicToken,
+            products: ["investments"]
+        )
         if await plaidSyncCoordinator.syncAll() {
             recordPlaidBalanceSnapshot()
             recordDailySnapshot()
@@ -207,12 +227,312 @@ public final class AppContainerController {
         return result.item
     }
 
+    public func createPlaidTransactionLinkToken() async throws -> String {
+        try await plaidClient.createLinkToken(
+            mode: .transactions,
+            itemId: nil
+        ).linkToken
+    }
+
+    public func createPlaidTransactionUpdateLinkToken(itemId: String) async throws -> String {
+        try await plaidClient.createLinkToken(
+            mode: .updateTransactions,
+            itemId: itemId
+        ).linkToken
+    }
+
+    @discardableResult
+    public func completePlaidTransactionLink(publicToken: String) async throws -> PlaidItemDTO {
+        let result = try await plaidClient.exchangePublicToken(
+            publicToken,
+            products: ["transactions"]
+        )
+        enablePlaidTransactionsSetting()
+        _ = await plaidTransactionSyncCoordinator.syncAll()
+        return result.item
+    }
+
+    public func completePlaidTransactionUpgrade(itemId: String) async throws {
+        _ = try await plaidClient.enableTransactions(itemId: itemId)
+        enablePlaidTransactionsSetting()
+        _ = await plaidTransactionSyncCoordinator.syncAll()
+    }
+
+    public func syncPlaidTransactions() async {
+        guard hasPlaidBackendToken, plaidBackendBaseURL != nil else { return }
+        _ = await plaidTransactionSyncCoordinator.syncAll()
+    }
+
+    public func mapPlaidAccount(_ plaidAccountId: String, toYNABAccount ynabAccountId: String?) {
+        plaidTransactionSyncCoordinator.mapAccount(
+            plaidAccountId: plaidAccountId,
+            toYNABAccountId: ynabAccountId
+        )
+    }
+
+    public func reviewPlaidMerchantNames(
+        ids: [String],
+        displayName: String
+    ) {
+        plaidTransactionSyncCoordinator.reviewMerchantNames(
+            ids: ids,
+            displayName: displayName
+        )
+    }
+
+    @discardableResult
+    public func confirmPlaidTransaction(
+        id: String,
+        displayName: String,
+        payeeCanonicalId: String? = nil,
+        categoryName: String?,
+        treatment: ForecastTreatment,
+        categoryCanonicalId: String? = nil
+    ) -> Bool {
+        plaidTransactionSyncCoordinator.confirmTransaction(
+            id: id,
+            displayName: displayName,
+            payeeCanonicalId: payeeCanonicalId,
+            categoryName: categoryName,
+            treatment: treatment,
+            categoryCanonicalId: categoryCanonicalId
+        )
+    }
+
+    @discardableResult
+    public func reviewPlaidSplitTransaction(
+        id: String,
+        displayName: String,
+        payeeCanonicalId: String? = nil,
+        subtransactions: [SubTransactionSummary]
+    ) -> Bool {
+        plaidTransactionSyncCoordinator.reviewSplitTransaction(
+            id: id,
+            displayName: displayName,
+            payeeCanonicalId: payeeCanonicalId,
+            subtransactions: subtransactions
+        )
+    }
+
+    @discardableResult
+    public func createCanonicalPayee(name: String) -> Bool {
+        plaidTransactionSyncCoordinator.createCanonicalPayee(name: name)
+    }
+
+    public func createCanonicalPayeeReturningId(
+        name: String
+    ) -> String? {
+        plaidTransactionSyncCoordinator.createCanonicalPayeeReturningId(
+            name: name
+        )
+    }
+
+    @discardableResult
+    public func updateCanonicalPayee(
+        canonicalId: String,
+        name: String,
+        archived: Bool
+    ) -> Bool {
+        plaidTransactionSyncCoordinator.updateCanonicalPayee(
+            canonicalId: canonicalId,
+            name: name,
+            archived: archived
+        )
+    }
+
+    @discardableResult
+    public func removeCanonicalAlias(aliasId: UUID) -> Bool {
+        plaidTransactionSyncCoordinator.removeCanonicalAlias(
+            aliasId: aliasId
+        )
+    }
+
+    @discardableResult
+    public func reassignCanonicalAlias(
+        aliasId: UUID,
+        to payeeCanonicalId: String
+    ) -> Bool {
+        plaidTransactionSyncCoordinator.reassignCanonicalAlias(
+            aliasId: aliasId,
+            to: payeeCanonicalId
+        )
+    }
+
+    @discardableResult
+    public func mergeCanonicalPayees(
+        sourceCanonicalId: String,
+        destinationCanonicalId: String
+    ) -> Bool {
+        plaidTransactionSyncCoordinator.mergeCanonicalPayees(
+            sourceCanonicalId: sourceCanonicalId,
+            destinationCanonicalId: destinationCanonicalId
+        )
+    }
+
+    @discardableResult
+    public func createCanonicalCategory(
+        name: String,
+        groupName: String
+    ) -> Bool {
+        plaidTransactionSyncCoordinator.createCanonicalCategory(
+            name: name,
+            groupName: groupName
+        )
+    }
+
+    public func createCanonicalCategoryReturningId(
+        name: String,
+        groupName: String
+    ) -> String? {
+        plaidTransactionSyncCoordinator
+            .createCanonicalCategoryReturningId(
+                name: name,
+                groupName: groupName
+            )
+    }
+
+    @discardableResult
+    public func updateCanonicalCategory(
+        canonicalId: String,
+        name: String,
+        groupName: String,
+        hidden: Bool
+    ) -> Bool {
+        plaidTransactionSyncCoordinator.updateCanonicalCategory(
+            canonicalId: canonicalId,
+            name: name,
+            groupName: groupName,
+            hidden: hidden
+        )
+    }
+
+    public func setClaudeFallbackEnabled(_ enabled: Bool) {
+        let descriptor = FetchDescriptor<DurableUserSettings>()
+        guard let settings = try? modelContainer.mainContext.fetch(descriptor).first else {
+            return
+        }
+        settings.claudeFallbackEnabled = enabled
+        settings.claudeFallbackConsentAt = enabled ? .now : nil
+        if !modelContainer.mainContext.safeSave(source: "settings.claudeFallback") {
+            modelContainer.mainContext.rollback()
+        }
+    }
+
+    public func setClaudeDataSyncEnabled(_ enabled: Bool) async throws {
+        try await claudeDataSyncCoordinator.setEnabled(enabled)
+    }
+
+    public func syncClaudeDataNow() async {
+        await claudeDataSyncCoordinator.runOnce()
+    }
+
+    public func generateClaudeConnectCode() async throws
+        -> ClaudeConnectCodeResponseDTO {
+        try await claudeDataSyncCoordinator.generateConnectCode()
+    }
+
+    public func makePlaidPrimary() async throws {
+        let context = modelContainer.mainContext
+        let bindings = (try? context.fetch(
+            FetchDescriptor<DurableCanonicalAccountBinding>()
+        )) ?? []
+        let accounts = (try? context.fetch(
+            FetchDescriptor<CachedFinancialAccount>(
+                predicate: #Predicate { !$0.deleted }
+            )
+        )) ?? []
+        let activePlaidAccountIDs = Set(accounts.map(\.externalId))
+        let activeBindings = bindings.filter {
+            activePlaidAccountIDs.contains($0.plaidAccountId)
+        }
+        var pendingDescriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.requiresReview && !$0.deleted
+            }
+        )
+        pendingDescriptor.fetchLimit = 1
+        var pendingNameDescriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.requiresNameReview && !$0.deleted
+            }
+        )
+        pendingNameDescriptor.fetchLimit = 1
+        guard let pendingTransactions = try? context.fetch(pendingDescriptor) else {
+            throw PlaidCutoverError.reconciliationIncomplete
+        }
+        guard let pendingNames = try? context.fetch(pendingNameDescriptor) else {
+            throw PlaidCutoverError.reconciliationIncomplete
+        }
+        let hasPendingTransactions = !pendingTransactions.isEmpty
+        let hasPendingNames = !pendingNames.isEmpty
+        var payeeDescriptor =
+            FetchDescriptor<DurableCanonicalPayee>(
+                predicate: #Predicate { !$0.deletedAtSource }
+            )
+        payeeDescriptor.fetchLimit = 1
+        var categoryDescriptor =
+            FetchDescriptor<DurableCanonicalCategory>(
+                predicate: #Predicate { !$0.deletedAtSource }
+            )
+        categoryDescriptor.fetchLimit = 1
+        let hasCanonicalPayees =
+            ((try? context.fetch(payeeDescriptor).isEmpty) == false)
+        let hasCanonicalCategories =
+            ((try? context.fetch(categoryDescriptor).isEmpty) == false)
+        let cursors = (try? context.fetch(FetchDescriptor<PlaidTransactionCursor>())) ?? []
+        guard !accounts.isEmpty,
+              hasCanonicalPayees,
+              hasCanonicalCategories,
+              !hasPendingTransactions,
+              !hasPendingNames,
+              !cursors.isEmpty,
+              cursors.allSatisfy(\.historicalImportComplete),
+              activeBindings.allSatisfy(\.reviewed) else {
+            throw PlaidCutoverError.reconciliationIncomplete
+        }
+        guard let settings = try? context.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ).first else {
+            throw PlaidCutoverError.settingsUnavailable
+        }
+        settings.primaryFinancialDataSource = .plaid
+        settings.plaidPrimaryCutoverAt = .now
+        guard context.safeSave(source: "settings.plaidCutover") else {
+            context.rollback()
+            throw PlaidCutoverError.saveFailed
+        }
+        do {
+            try await clearYNABToken()
+        } catch {
+            settings.primaryFinancialDataSource = .ynab
+            settings.plaidPrimaryCutoverAt = nil
+            _ = context.safeSave(source: "settings.plaidCutoverRollback")
+            throw PlaidCutoverError.tokenRemovalFailed
+        }
+        recordDailySnapshot()
+    }
+
     public func removePlaidItem(id: String) async throws {
+        let context = modelContainer.mainContext
+        let settings = try? context.fetch(FetchDescriptor<DurableUserSettings>()).first
+        let items = (try? context.fetch(FetchDescriptor<CachedPlaidItem>())) ?? []
+        let targetIsTransactions = items.first(where: { $0.id == id })?
+            .products.contains("transactions") == true
+        let remainingTransactions = items.contains {
+            $0.id != id && $0.products.contains("transactions")
+        }
+        if settings?.primaryFinancialDataSource == .plaid,
+           targetIsTransactions,
+           !remainingTransactions {
+            throw PlaidRemovalError.lastPrimaryConnection
+        }
         try await plaidClient.removeItem(id: id)
+        try removeLocalPlaidItem(id: id)
         if await plaidSyncCoordinator.syncAll() {
             recordPlaidBalanceSnapshot()
             recordDailySnapshot()
         }
+        _ = await plaidTransactionSyncCoordinator.syncAll()
     }
 
     public func recordPlaidBalanceSnapshot() {
@@ -285,10 +605,22 @@ public final class AppContainerController {
     }
 
     public func syncNow() async {
-        await syncCoordinator.syncAll(budgetId: selectedBudgetId)
+        if hasYNABToken {
+            await syncCoordinator.syncAll(budgetId: selectedBudgetId)
+            if syncCoordinator.canonicalHistoryChangedInLastSync {
+                plaidTransactionSyncCoordinator
+                    .invalidateHistoricalReconciliationForYNABChanges()
+            }
+        }
         if hasPlaidBackendToken, plaidBackendBaseURL != nil {
             if await plaidSyncCoordinator.syncAll() {
                 recordPlaidBalanceSnapshot()
+            }
+            let settings = try? modelContainer.mainContext.fetch(
+                FetchDescriptor<DurableUserSettings>()
+            ).first
+            if settings?.plaidTransactionsEnabled == true {
+                _ = await plaidTransactionSyncCoordinator.syncAll()
             }
         }
         recordDailySnapshot()
@@ -302,7 +634,7 @@ public final class AppContainerController {
     /// older than the requested age. Keeps foreground refreshes comfortably
     /// below YNAB's rate limit while making the projection useful on open.
     public func refreshIfStale(now: Date = .now, maxAge: TimeInterval = 15 * 60) async {
-        guard unlocked, hasYNABToken else { return }
+        guard unlocked, hasYNABToken || hasPlaidBackendToken else { return }
         if case .syncing = syncCoordinator.phase { return }
         let descriptor = FetchDescriptor<DurableUserSettings>()
         let lastSync = (try? modelContainer.mainContext.fetch(descriptor).first)?.lastSyncedAt
@@ -390,6 +722,7 @@ public final class AppContainerController {
             biometricGate: biometric,
             ynabClient: client,
             plaidClient: plaidClient,
+            transactionInferenceProvider: AppleTransactionInferenceProvider(),
             modelContainer: container,
             ibrLoanStore: AppGroupIBRLoanStore(),
             ibrLoanHistorySettingsStore: UserDefaultsIBRLoanHistorySettingsStore()
@@ -404,6 +737,7 @@ public final class AppContainerController {
             biometricGate: ScriptableBiometricGate(),
             ynabClient: RecordedYNABClient(),
             plaidClient: RecordedPlaidClient(),
+            transactionInferenceProvider: RecordedTransactionInferenceProvider(),
             modelContainer: container,
             ibrLoanStore: InMemoryIBRLoanStore(),
             ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore()
@@ -420,6 +754,101 @@ public final class AppContainerController {
         ) { [weak self] note in
             guard let payload = note.userInfo?["payload"] as? PersistenceFailure else { return }
             Task { @MainActor [weak self] in self?.lastPersistenceError = payload }
+        }
+    }
+
+    private func enablePlaidTransactionsSetting() {
+        let descriptor = FetchDescriptor<DurableUserSettings>()
+        guard let settings = try? modelContainer.mainContext.fetch(descriptor).first else {
+            return
+        }
+        settings.plaidTransactionsEnabled = true
+        if !modelContainer.mainContext.safeSave(source: "settings.enablePlaidTransactions") {
+            modelContainer.mainContext.rollback()
+        }
+    }
+
+    private func removeLocalPlaidItem(id: String) throws {
+        let context = modelContainer.mainContext
+        let plaidAccounts = ((try? context.fetch(
+            FetchDescriptor<CachedPlaidAccount>()
+        )) ?? []).filter { $0.itemId == id }
+        let plaidAccountIDs = Set(plaidAccounts.map(\.id))
+        let financialAccounts = ((try? context.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        )) ?? []).filter { $0.itemId == id }
+        let canonicalIDs = Set(financialAccounts.map(\.canonicalAccountId))
+        let financialTransactions = ((try? context.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []).filter { canonicalIDs.contains($0.canonicalAccountId) }
+        let transactionIDs = Set(financialTransactions.map(\.id))
+
+        ((try? context.fetch(FetchDescriptor<CachedPlaidItem>())) ?? [])
+            .filter { $0.id == id }
+            .forEach(context.delete)
+        ((try? context.fetch(FetchDescriptor<CachedPlaidHolding>())) ?? [])
+            .filter { plaidAccountIDs.contains($0.accountId) }
+            .forEach(context.delete)
+        plaidAccounts.forEach(context.delete)
+        financialTransactions.forEach(context.delete)
+        financialAccounts.forEach(context.delete)
+        ((try? context.fetch(FetchDescriptor<PlaidTransactionCursor>())) ?? [])
+            .filter { $0.itemId == id }
+            .forEach(context.delete)
+        ((try? context.fetch(FetchDescriptor<LegacyTransactionMatchRow>())) ?? [])
+            .filter { transactionIDs.contains($0.plaidTransactionId) }
+            .forEach(context.delete)
+        ((try? context.fetch(FetchDescriptor<DurableCanonicalAccountBinding>())) ?? [])
+            .filter { $0.itemId == id }
+            .forEach(context.delete)
+        ((try? context.fetch(FetchDescriptor<DurablePlaidAccountTreatment>())) ?? [])
+            .filter { plaidAccountIDs.contains($0.plaidAccountId) }
+            .forEach(context.delete)
+
+        let remainingTransactionItems = ((try? context.fetch(
+            FetchDescriptor<CachedPlaidItem>()
+        )) ?? []).contains { $0.products.contains("transactions") }
+        if !remainingTransactionItems,
+           let settings = try? context.fetch(FetchDescriptor<DurableUserSettings>()).first {
+            settings.plaidTransactionsEnabled = false
+        }
+        if !context.safeSave(source: "plaid.removeLocalItem") {
+            context.rollback()
+            throw PlaidRemovalError.localCleanupFailed
+        }
+    }
+}
+
+public enum PlaidCutoverError: LocalizedError {
+    case reconciliationIncomplete
+    case settingsUnavailable
+    case saveFailed
+    case tokenRemovalFailed
+
+    public var errorDescription: String? {
+        switch self {
+        case .reconciliationIncomplete:
+            "Complete the historical import, account mapping, and transaction review first."
+        case .settingsUnavailable:
+            "Networth settings are unavailable."
+        case .saveFailed:
+            "The Plaid cutover could not be saved."
+        case .tokenRemovalFailed:
+            "The YNAB token could not be removed, so YNAB remains primary."
+        }
+    }
+}
+
+public enum PlaidRemovalError: LocalizedError {
+    case lastPrimaryConnection
+    case localCleanupFailed
+
+    public var errorDescription: String? {
+        switch self {
+        case .lastPrimaryConnection:
+            "Switch to another banking source before removing the last Plaid Transactions connection."
+        case .localCleanupFailed:
+            "Plaid disconnected, but local cleanup did not finish. Try removing the connection again."
         }
     }
 }

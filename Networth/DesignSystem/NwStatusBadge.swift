@@ -31,7 +31,7 @@ public struct NwStatusBadge: View {
 
     public var body: some View {
         HStack(spacing: NwSpacing.xs) {
-            if let icon { icon.image.font(.system(size: 11, weight: .semibold)) }
+            if let icon { icon.image.font(NwTypography.footnoteEm) }
             Text(text)
                 .font(NwTypography.footnoteEm)
         }

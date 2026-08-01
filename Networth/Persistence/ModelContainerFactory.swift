@@ -6,8 +6,9 @@ public enum ModelContainerFactory {
     private static let logger = Logger(subsystem: "com.bluelava.me.networth", category: "persistence")
 
     /// Unified container with two configurations.
-    /// - Cache config (no CloudKit): YNAB-derived data we can always re-fetch.
-    /// - Durable config (CloudKit private DB): manual assets, snapshots, settings.
+    /// - Cache config (no CloudKit): re-fetchable YNAB and Plaid source data.
+    /// - Durable config (CloudKit private DB): user-authored assets, snapshots,
+    ///   settings, account mappings, and transaction classification decisions.
     public static func makeContainer(inMemory: Bool = false, cloudKitContainerId: String? = nil) throws -> ModelContainer {
         let cacheSchema = Schema([
             CachedBudget.self,
@@ -19,7 +20,11 @@ public enum ModelContainerFactory {
             CachedPlaidItem.self,
             CachedPlaidAccount.self,
             CachedPlaidSecurity.self,
-            CachedPlaidHolding.self
+            CachedPlaidHolding.self,
+            CachedFinancialAccount.self,
+            CachedFinancialTransaction.self,
+            PlaidTransactionCursor.self,
+            LegacyTransactionMatchRow.self
         ])
         let durableSchema = Schema([
             DurableManualAsset.self,
@@ -32,7 +37,15 @@ public enum ModelContainerFactory {
             DurableIncludedClosedAccount.self,
             DurableProjectionCashAccountOverride.self,
             DurablePlaidAccountTreatment.self,
-            DurablePlaidBalanceSnapshot.self
+            DurablePlaidBalanceSnapshot.self,
+            DurableCanonicalAccountBinding.self,
+            DurableCanonicalPayee.self,
+            DurablePayeeAlias.self,
+            DurableCanonicalCategory.self,
+            DurableCanonicalTransactionDecision.self,
+            DurableMerchantRule.self,
+            DurableTransactionCategory.self,
+            DurableTransactionOverride.self
         ])
 
         let cacheConfig = ModelConfiguration(
@@ -68,6 +81,10 @@ public enum ModelContainerFactory {
             CachedPlaidAccount.self,
             CachedPlaidSecurity.self,
             CachedPlaidHolding.self,
+            CachedFinancialAccount.self,
+            CachedFinancialTransaction.self,
+            PlaidTransactionCursor.self,
+            LegacyTransactionMatchRow.self,
             DurableManualAsset.self,
             DurableManualAssetValue.self,
             DurableNetWorthSnapshot.self,
@@ -78,7 +95,15 @@ public enum ModelContainerFactory {
             DurableIncludedClosedAccount.self,
             DurableProjectionCashAccountOverride.self,
             DurablePlaidAccountTreatment.self,
-            DurablePlaidBalanceSnapshot.self
+            DurablePlaidBalanceSnapshot.self,
+            DurableCanonicalAccountBinding.self,
+            DurableCanonicalPayee.self,
+            DurablePayeeAlias.self,
+            DurableCanonicalCategory.self,
+            DurableCanonicalTransactionDecision.self,
+            DurableMerchantRule.self,
+            DurableTransactionCategory.self,
+            DurableTransactionOverride.self
         ])
         return try ModelContainer(for: unified, configurations: [cacheConfig, durableConfig])
     }

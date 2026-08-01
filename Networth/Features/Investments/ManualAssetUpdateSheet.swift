@@ -70,7 +70,7 @@ struct ManualAssetUpdateSheet: View {
 
                 if mode == .updateTotal {
                     TextField("New Total", text: $totalText, prompt: Text("New Total").foregroundStyle(.secondary))
-                        .keyboardType(.decimalPad)
+                        .nwCurrencyInput(text: $totalText)
                         .padding(NwSpacing.md)
                         .background(NwAppColors.cardSurface)
                         .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
@@ -83,7 +83,7 @@ struct ManualAssetUpdateSheet: View {
                     .pickerStyle(.segmented)
 
                     TextField("Amount", text: $deltaText, prompt: Text("Amount").foregroundStyle(.secondary))
-                        .keyboardType(.decimalPad)
+                        .nwCurrencyInput(text: $deltaText)
                         .padding(NwSpacing.md)
                         .background(NwAppColors.cardSurface)
                         .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
@@ -141,15 +141,13 @@ struct ManualAssetUpdateSheet: View {
     }
 
     private var totalValue: Money? {
-        let trimmed = totalText.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, let decimal = Decimal(string: trimmed) else { return nil }
-        return Money.dollars(decimal)
+        CurrencyInputFormatter.money(from: totalText)
     }
 
     private var deltaValue: Money? {
-        let trimmed = deltaText.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, let decimal = Decimal(string: trimmed) else { return nil }
-        let unsigned = Money.dollars(decimal)
+        guard let unsigned = CurrencyInputFormatter.money(from: deltaText) else {
+            return nil
+        }
         return deltaSign == .deposit ? unsigned : Money(milliunits: -unsigned.milliunits)
     }
 
