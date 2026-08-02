@@ -1,6 +1,109 @@
 # WORKING
 
-## Current State (2026-07-31)
+## Current State (2026-08-02, second pass — Budget pivoted to Spending + Funds)
+
+The operating-budget model shipped earlier today was rejected by real-world
+use: the user does not budget with limits (pads generously, uses overflow,
+pays cards in full). His four stated needs: spending per category, sinking
+funds for big planned purchases, projected main-account balance (already the
+Projections tab), and overall health (already Net Worth/Investments). Monarch
+Money research set the funds design: opt-in earmarks, save-to-spend vs
+keep-filled, auto drains from linked categories — not YNAB envelopes.
+
+Rebuilt (`Networth/Features/Budget/BudgetView.swift`, tab label now
+"Spending"; type name unchanged):
+- Spending report: month nav (−12…current), total spent, per-category rows
+  (net of refunds; everything not income/excluded counts — unassigned
+  categories included by default), tap → transactions + 12-month category
+  history, single-series 12-month chart with tap-to-select-month.
+- Funds: `DurableSinkingFund` + `DurableFundEvent` (CloudKit-safe, registered
+  in ModelContainerFactory). Balance = manual ledger − net linked-category
+  spending since fund start. Save-to-spend funds tag their categories'
+  spending rows "from <Fund>". Set-aside hero, per-fund progress/on-track
+  status (`FundMath` in NetworthCore, tested), fund editor (target, date,
+  planned monthly, spend mode, linked categories, archive), quick
+  contribution/withdrawal entry, ledger with swipe-delete.
+- Exclusions: 4-step setup wizard deleted; no gating. One optional sheet
+  (⋯ menu) toggles excluded categories via existing
+  `DurableBudgetCategoryAssignment` rows (.excluded only; legacy .income rows
+  still suppress income from spending).
+- Core kept intact: aggregator/leg rules, breakdown, planner, income
+  analyzer, commitment detector (Projections may use later). New core:
+  `Funds.swift`, `spendingSummaries/categoryItems/linkedSpending` on the
+  aggregator. 132 tests green; Debug + Release generic builds green.
+
+Third pass (user feedback on device): month navigation was refetching the
+whole 26-month window per tap → report now builds once per data change with
+all months included; switching months is a pure lookup (rebuildKey no longer
+contains monthOffset). The 12-month chart was replaced by a Groups card
+(per-group budgeted vs spent for the selected month, proportion bars). The
+category list gained Budgeted | Spent columns — budgeted comes from a new
+read-only YNAB import: `monthDetail` on `YNABClient`
+(GET /budgets/{id}/months/{month}), cached in `CachedCategoryMonth`
+(cache store, registered in factory), synced by
+`SyncCoordinator.syncCategoryMonths` (current month every sync + one-time
+12-month backfill guarded by SyncCursor "categoryMonthsBackfill:{budget}").
+This intentionally reverses the earlier "no budgeted import" decision at the
+user's explicit request; still strictly read-only. Budgeted rows with no
+spending appear in the list; income/excluded categories are filtered from
+the budgeted map.
+
+## Prior State (2026-08-02, first pass)
+
+**Active branch:** `feature/budget-phase-1` (stacked on `feature/plaid-transactions`, which is committed and one commit ahead of origin).
+
+Phase 1 Monthly Budget is implemented and awaiting one manual step: add
+`Networth/Features/Budget/BudgetView.swift` to the Xcode project (drag into
+the navigator under Features), then run the generic-device Debug/Release
+builds. `NetworthCore` tests pass (117 tests, including the new Budget
+suites).
+
+What landed:
+- `NetworthCore` Budget domain: `Budget.swift` (buckets, `BudgetMonth`,
+  cadences, `FixedCommitment`, income phases/pattern, `MonthlyBudgetPlan`,
+  date math) plus `BudgetPlanner.swift`, `FixedCommitmentDetector.swift`,
+  `IncomeAnalyzer.swift` in the Projections target. Three new Swift Testing
+  suites pin refunds, splits, medical reimbursement credits, zero-month
+  medians, commitment-over-category precedence, cadence detection, amount
+  changes, three take-home phases, and the three-paycheck July case.
+- `TransactionSummary`/`SubTransactionSummary` gained optional canonical
+  payee/category identity (additive, decode-compatible). Plaid
+  `toProjectionSummary()` passes its stored canonical IDs through; a new
+  YNAB `toSummary(payeeCanonicalIdByYnabId:categoryCanonicalIdByYnabId:)`
+  overload resolves them from the durable directories.
+- Durable CloudKit-safe models: `DurableFixedCommitment`,
+  `DurableBudgetCategoryAssignment`, `DurableIncomePatternOverride`;
+  settings fields `budgetSetupCompletedAt` and
+  `budgetSurplusTargetMilliunits` (default $1,000). Registered in
+  `ModelContainerFactory`.
+- UI: tabs are now Net Worth · Budget · Projections · Investments.
+  Accounts moved behind an "All Accounts" card on Net Worth
+  (`AccountsView(embedded:)` skips its own NavigationStack when pushed).
+  `BudgetView` shows the month title only, margin hero, income bar,
+  allocation bar (shaded plan / solid actual / neutral typical tick /
+  muted-red overage), 12-month stacked chart with next-month projection,
+  segment detail sheets (Fixed detail carries the pending-candidate count
+  and confirm/disable actions), and the four-step setup review gate
+  (buckets seeded from group defaults, income pattern confirm + optional
+  per-paycheck pin, candidate confirmation, surplus target).
+
+Out of scope per plan: savings/reserves (Phase 2), YNAB budgeted amounts and
+schedules, Plaid recurring endpoints, coaching copy.
+
+Performance pass (same session): the user reported app-wide lag. Root cause:
+both sync coordinators are `@MainActor`, so parsing/upserts/reconciliation run
+on the UI thread. Mitigations landed: (1) Budget report/candidate/income
+assembly moved to a background `@ModelActor BudgetDataActor` with Sendable
+request values — nothing Budget-related runs on main anymore; (2) YNAB
+`upsertTransactions` now bulk-fetches existing rows once (was one point fetch
+per transaction) and yields every 200 rows; (3) auto-refresh after unlock is
+delayed 2.5 s so first render settles. Known remaining main-thread work if lag
+persists: the rest of `SyncCoordinator`/`PlaidTransactionSyncCoordinator`
+(would need a ModelActor refactor), `ClaudeDataSyncCoordinator` full snapshot
+rebuild after save bursts (only when Claude sync is enabled), and
+`NetWorthView.computeBreakdown` on every body eval.
+
+## Prior State (2026-07-31)
 The app foundation and the Net Worth, Projections, Accounts, Investments, sync, security, persistence, and tutorial workflows are implemented around the product north star in `docs/PLAN.md`: help the user understand upcoming cash obligations before they become a problem, with clear supporting reporting for the broader financial picture.
 
 **Active branch:** `feature/plaid-transactions`. The completed Plaid Investments work is merged. This branch adds a staged path for Plaid Transactions to replace YNAB as the source for non-investment, non-loan accounts and new transactions.

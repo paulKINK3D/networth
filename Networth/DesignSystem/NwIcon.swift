@@ -4,6 +4,7 @@ import SwiftUI
 public enum NwIcon: String, Sendable {
     // Navigation
     case netWorth     = "chart.line.uptrend.xyaxis"
+    case budget       = "dollarsign.circle"
     case projections  = "calendar.badge.clock"
     case accounts     = "building.columns"
     case settings     = "gearshape"

@@ -24,6 +24,14 @@ struct AccountsView: View {
     @State private var showingPlaidCutoverConfirm = false
     @State private var plaidCutoverError: String?
 
+    /// True when pushed from Net Worth, which already provides the
+    /// navigation stack. The tabless default owns its own stack.
+    private let embedded: Bool
+
+    init(embedded: Bool = false) {
+        self.embedded = embedded
+    }
+
     private enum SectionKind: String, CaseIterable, Identifiable {
         case cash
         case investments
@@ -69,7 +77,14 @@ struct AccountsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        if embedded {
+            accountsList
+        } else {
+            NavigationStack { accountsList }
+        }
+    }
+
+    private var accountsList: some View {
             List {
                 Section("Networth Data") {
                     NavigationLink {
@@ -362,7 +377,6 @@ struct AccountsView: View {
             } message: {
                 Text("Networth will use Plaid for cash, credit-card balances, and new transaction history. Your local YNAB history and reconciliation matches remain available; the YNAB token will be removed.")
             }
-        }
     }
 
     private var usesPlaidTransactions: Bool {

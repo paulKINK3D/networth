@@ -251,6 +251,12 @@ public final class DurableUserSettings {
     /// the former fingerprint/rule review state and rebuilds from canonical
     /// YNAB payees, categories, and transaction history.
     public var canonicalTransactionDataVersion: Int = 0
+    /// Set when the user finishes the one-time Budget setup review (buckets,
+    /// income pattern, fixed commitments, surplus target). Nil gates the
+    /// Budget tab behind setup. Additive defaulted fields are CloudKit-safe.
+    public var budgetSetupCompletedAt: Date? = nil
+    /// The single user-defined True Surplus envelope. Defaults to $1,000.
+    public var budgetSurplusTargetMilliunits: Int64 = 1_000_000
 
     public init(id: String = "singleton") { self.id = id }
 
@@ -938,6 +944,254 @@ public final class DurablePlaidBalanceSnapshot {
             isActive: active,
             recordedAt: recordedAt
         )
+    }
+}
+
+/// An opt-in sinking fund: money earmarked for a specific future purpose
+/// (travel, furniture, car). Backed by real balances wherever they live —
+/// nothing outside a fund is ever asked to justify itself. Every field
+/// defaults for CloudKit safety.
+@Model
+public final class DurableSinkingFund {
+    public var id: UUID = UUID()
+    public var name: String = ""
+    /// 0 = open-ended, no target.
+    public var targetMilliunits: Int64 = 0
+    public var targetDate: Date? = nil
+    /// Used only for on-track math; never auto-contributes. 0 = no plan.
+    public var plannedMonthlyMilliunits: Int64 = 0
+    public var spendModeRaw: String = FundSpendMode.saveToSpend.rawValue
+    /// JSON [String] of normalized category-name keys whose spending drains
+    /// this fund automatically.
+    public var linkedCategoryKeysData: Data? = nil
+    /// Linked-category spending before this date never drains the fund.
+    public var startDate: Date = Date.now
+    public var archived: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        name: String = "",
+        targetMilliunits: Int64 = 0,
+        targetDate: Date? = nil,
+        plannedMonthlyMilliunits: Int64 = 0,
+        spendMode: FundSpendMode = .saveToSpend,
+        linkedCategoryKeys: [String] = [],
+        startDate: Date = .now,
+        archived: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.targetMilliunits = targetMilliunits
+        self.targetDate = targetDate
+        self.plannedMonthlyMilliunits = plannedMonthlyMilliunits
+        self.spendModeRaw = spendMode.rawValue
+        self.linkedCategoryKeysData = try? JSONEncoder()
+            .encode(linkedCategoryKeys)
+        self.startDate = startDate
+        self.archived = archived
+    }
+
+    public var spendMode: FundSpendMode {
+        get { FundSpendMode(rawValue: spendModeRaw) ?? .saveToSpend }
+        set { spendModeRaw = newValue.rawValue }
+    }
+
+    public var linkedCategoryKeys: [String] {
+        get {
+            guard let linkedCategoryKeysData else { return [] }
+            return (try? JSONDecoder().decode(
+                [String].self, from: linkedCategoryKeysData
+            )) ?? []
+        }
+        set {
+            linkedCategoryKeysData = try? JSONEncoder().encode(newValue)
+        }
+    }
+
+    public func toCore() -> SinkingFund {
+        SinkingFund(
+            id: id.uuidString,
+            name: name,
+            target: Money(milliunits: targetMilliunits),
+            targetDate: targetDate,
+            plannedMonthly: Money(milliunits: plannedMonthlyMilliunits),
+            spendMode: spendMode,
+            linkedCategoryKeys: Set(linkedCategoryKeys),
+            startDate: startDate,
+            archived: archived
+        )
+    }
+}
+
+/// One explicit fund movement: positive = contribution, negative =
+/// withdrawal. The fund balance is the sum of these minus automatic
+/// linked-category drains.
+@Model
+public final class DurableFundEvent {
+    public var id: UUID = UUID()
+    public var fundId: UUID = UUID()
+    public var date: Date = Date.now
+    public var amountMilliunits: Int64 = 0
+    public var note: String? = nil
+    public var createdAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        fundId: UUID = UUID(),
+        date: Date = .now,
+        amountMilliunits: Int64 = 0,
+        note: String? = nil
+    ) {
+        self.id = id
+        self.fundId = fundId
+        self.date = date
+        self.amountMilliunits = amountMilliunits
+        self.note = note
+    }
+
+    public func toCore() -> FundLedgerEntry {
+        FundLedgerEntry(
+            id: id.uuidString,
+            fundId: fundId.uuidString,
+            date: date,
+            amount: Money(milliunits: amountMilliunits),
+            note: note
+        )
+    }
+}
+
+/// A user-confirmed fixed commitment for the monthly Budget. Confirmation is
+/// always explicit; detection only proposes candidates. Confirmed items stay
+/// active until explicitly disabled — missing activity is a quiet stale
+/// status, never an auto-disable. Every field defaults for CloudKit safety.
+@Model
+public final class DurableFixedCommitment {
+    public var id: UUID = UUID()
+    public var displayName: String = ""
+    /// Canonical payee ID when known, otherwise a normalized payee-name key.
+    public var payeeKey: String = ""
+    /// Optional category scoping; empty matches any category from the payee.
+    public var categoryKey: String? = nil
+    public var cadenceRaw: String = CommitmentCadence.monthly.rawValue
+    public var amountBasisRaw: String =
+        CommitmentAmountBasis.latestAmount.rawValue
+    /// Positive planned per-occurrence amount. When the user overrides the
+    /// suggested amount this stores their value and `userEditedAmount` locks
+    /// it against re-detection updates.
+    public var amountMilliunits: Int64 = 0
+    public var anchorDate: Date = Date.now
+    public var active: Bool = true
+    public var userEditedAmount: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        displayName: String = "",
+        payeeKey: String = "",
+        categoryKey: String? = nil,
+        cadence: CommitmentCadence = .monthly,
+        amountBasis: CommitmentAmountBasis = .latestAmount,
+        amountMilliunits: Int64 = 0,
+        anchorDate: Date = .now,
+        active: Bool = true,
+        userEditedAmount: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.payeeKey = payeeKey
+        self.categoryKey = categoryKey
+        self.cadenceRaw = cadence.rawValue
+        self.amountBasisRaw = amountBasis.rawValue
+        self.amountMilliunits = amountMilliunits
+        self.anchorDate = anchorDate
+        self.active = active
+        self.userEditedAmount = userEditedAmount
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var cadence: CommitmentCadence {
+        get { CommitmentCadence(rawValue: cadenceRaw) ?? .monthly }
+        set { cadenceRaw = newValue.rawValue }
+    }
+
+    public var amountBasis: CommitmentAmountBasis {
+        get { CommitmentAmountBasis(rawValue: amountBasisRaw) ?? .latestAmount }
+        set { amountBasisRaw = newValue.rawValue }
+    }
+
+    public func toCore() -> FixedCommitment {
+        FixedCommitment(
+            id: id.uuidString,
+            displayName: displayName,
+            payeeKey: payeeKey,
+            categoryKey: categoryKey?.isEmpty == true ? nil : categoryKey,
+            cadence: cadence,
+            amountBasis: amountBasis,
+            amount: Money(milliunits: amountMilliunits),
+            anchorDate: anchorDate,
+            active: active
+        )
+    }
+}
+
+/// One reviewed category → budget-bucket assignment. Keys are stable
+/// canonical category identities so source renames cannot move categories.
+@Model
+public final class DurableBudgetCategoryAssignment {
+    public var id: UUID = UUID()
+    public var categoryKey: String = ""
+    /// Display-name snapshot for audit and name-keyed matching of summaries
+    /// that lack a canonical identity.
+    public var categoryName: String = ""
+    public var bucketRaw: String = BudgetBucket.excluded.rawValue
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        categoryKey: String = "",
+        categoryName: String = "",
+        bucket: BudgetBucket = .excluded,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.categoryKey = categoryKey
+        self.categoryName = categoryName
+        self.bucketRaw = bucket.rawValue
+        self.updatedAt = updatedAt
+    }
+
+    public var bucket: BudgetBucket {
+        get { BudgetBucket(rawValue: bucketRaw) ?? .excluded }
+        set { bucketRaw = newValue.rawValue }
+    }
+}
+
+/// The user's confirmed income pattern. Detection proposes; this records the
+/// confirmation plus optional overrides so the plan never silently drifts.
+@Model
+public final class DurableIncomePatternOverride {
+    public var id: String = "singleton"
+    public var payeeKey: String = ""
+    public var displayName: String = ""
+    public var cadenceRaw: String = CommitmentCadence.biweekly.rawValue
+    public var confirmed: Bool = false
+    /// 0 = plan with the detected phase evidence; a positive value pins the
+    /// expected per-paycheck take-home instead.
+    public var perPaycheckOverrideMilliunits: Int64 = 0
+    public var confirmedAt: Date? = nil
+    public var updatedAt: Date = Date.now
+
+    public init(id: String = "singleton") { self.id = id }
+
+    public var cadence: CommitmentCadence {
+        get { CommitmentCadence(rawValue: cadenceRaw) ?? .biweekly }
+        set { cadenceRaw = newValue.rawValue }
     }
 }
 

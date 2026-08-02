@@ -91,6 +91,9 @@ public final class SyncCoordinator {
             upsertCategories(categoriesResp.category_groups, budgetId: useBudget)
             saveCursor(key: "categories:\(useBudget)", value: categoriesResp.server_knowledge)
 
+            phase = .syncing(label: "Category Months")
+            await syncCategoryMonths(budgetId: useBudget)
+
             phase = .syncing(label: "Scheduled")
             let schedCursor = cursor(key: "scheduled:\(useBudget)")
             let scheduledResp = try await client.scheduledTransactions(budgetId: useBudget, lastKnowledge: schedCursor)
@@ -102,7 +105,7 @@ public final class SyncCoordinator {
             let sinceDate: Date? = txnCursor == nil ? Calendar(identifier: .gregorian)
                 .date(byAdding: .month, value: -60, to: Date.now) : nil
             let txnResp = try await client.transactions(budgetId: useBudget, accountId: nil, sinceDate: sinceDate, lastKnowledge: txnCursor)
-            upsertTransactions(txnResp.transactions, budgetId: useBudget)
+            await upsertTransactions(txnResp.transactions, budgetId: useBudget)
             saveCursor(key: "transactions:\(useBudget)", value: txnResp.server_knowledge)
 
             guard mainContext.safeSave(source: "sync.cache") else {
@@ -473,14 +476,30 @@ public final class SyncCoordinator {
         }
     }
 
-    private func upsertTransactions(_ txns: [YNABTransactionDTO], budgetId: String) {
+    private func upsertTransactions(_ txns: [YNABTransactionDTO], budgetId: String) async {
         let encoder = JSONEncoder()
-        for t in txns {
+        // Large pages (initial sync, cursor resets) pay one bulk fetch instead
+        // of thousands of point lookups, and yield periodically so the main
+        // actor can keep drawing frames between batches.
+        var existingById: [String: CachedTransaction] = [:]
+        if txns.count >= 25 {
+            let rows = (try? mainContext.fetch(
+                FetchDescriptor<CachedTransaction>()
+            )) ?? []
+            existingById.reserveCapacity(rows.count)
+            for row in rows { existingById[row.id] = row }
+        }
+        for (index, t) in txns.enumerated() {
+            if index.isMultiple(of: 200), index > 0 {
+                await Task.yield()
+            }
             guard let parsed = YNABTransactionDTO.dateParser.date(from: t.date) else { continue }
             let subSummaries: [SubTransactionSummary] = (t.subtransactions ?? []).map { $0.toSummary() }
             let subData: Data? = subSummaries.isEmpty ? nil : (try? encoder.encode(subSummaries))
             let targetId = t.id
-            let existing = fetchOne(CachedTransaction.self, where: #Predicate { $0.id == targetId })
+            let existing = txns.count >= 25
+                ? existingById[targetId]
+                : fetchOne(CachedTransaction.self, where: #Predicate { $0.id == targetId })
             if let existing {
                 existing.amountMilliunits = t.amount
                 existing.cleared = t.cleared == "cleared" || t.cleared == "reconciled"
@@ -605,6 +624,70 @@ public final class SyncCoordinator {
                     transferAccountId: payee.transfer_account_id,
                     archived: payee.deleted,
                     deletedAtSource: payee.deleted
+                ))
+            }
+        }
+    }
+
+    /// Read-only import of per-category budgeted/activity/balance. The
+    /// current month refreshes on every sync (one request); the previous 12
+    /// months backfill once, marked by a cursor so the 200/hr budget is never
+    /// spent twice. Endpoint has no delta support.
+    private func syncCategoryMonths(budgetId: String) async {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-01"
+        formatter.timeZone = calendar.timeZone
+        let backfillKey = "categoryMonthsBackfill:\(budgetId)"
+        var months = [formatter.string(from: .now)]
+        let needsBackfill = cursor(key: backfillKey) == nil
+        if needsBackfill {
+            months += (1...12).compactMap { offset in
+                calendar.date(byAdding: .month, value: -offset, to: .now)
+                    .map { formatter.string(from: $0) }
+            }
+        }
+        var allSucceeded = true
+        for month in months {
+            guard let detail = try? await client.monthDetail(
+                budgetId: budgetId, month: month
+            ) else {
+                allSucceeded = false
+                continue
+            }
+            upsertCategoryMonth(detail, budgetId: budgetId)
+            await Task.yield()
+        }
+        if needsBackfill && allSucceeded {
+            saveCursor(key: backfillKey, value: 1)
+        }
+    }
+
+    private func upsertCategoryMonth(
+        _ detail: YNABMonthDetailDTO,
+        budgetId: String
+    ) {
+        let month = detail.month
+        let existingRows = (try? mainContext.fetch(FetchDescriptor<CachedCategoryMonth>(
+            predicate: #Predicate { $0.budgetId == budgetId && $0.month == month }
+        ))) ?? []
+        var byCategoryId: [String: CachedCategoryMonth] = [:]
+        for row in existingRows { byCategoryId[row.categoryId] = row }
+        for category in detail.categories where !category.deleted {
+            if let row = byCategoryId[category.id] {
+                row.budgetedMilliunits = category.budgeted
+                row.activityMilliunits = category.activity
+                row.balanceMilliunits = category.balance
+                row.updatedAt = .now
+            } else {
+                mainContext.insert(CachedCategoryMonth(
+                    budgetId: budgetId,
+                    month: month,
+                    categoryId: category.id,
+                    budgetedMilliunits: category.budgeted,
+                    activityMilliunits: category.activity,
+                    balanceMilliunits: category.balance
                 ))
             }
         }

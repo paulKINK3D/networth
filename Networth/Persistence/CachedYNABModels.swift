@@ -136,6 +136,44 @@ public final class CachedTransaction {
             subtransactions: subtransactions
         )
     }
+
+    /// Summary carrying stable canonical identities resolved from the durable
+    /// payee/category directories. The Budget engine keys recurrence and
+    /// bucket logic on these so YNAB renames cannot fragment history.
+    public func toSummary(
+        payeeCanonicalIdByYnabId: [String: String],
+        categoryCanonicalIdByYnabId: [String: String]
+    ) -> TransactionSummary {
+        TransactionSummary(
+            id: id, accountId: accountId, date: date,
+            amount: Money(milliunits: amountMilliunits),
+            cleared: cleared, approved: approved,
+            payeeName: payeeName,
+            categoryId: categoryId, categoryName: categoryName,
+            payeeCanonicalId: payeeId.flatMap {
+                payeeCanonicalIdByYnabId[$0]
+            },
+            categoryCanonicalId: categoryId.flatMap {
+                categoryCanonicalIdByYnabId[$0]
+            },
+            transferAccountId: transferAccountId,
+            memo: memo, deleted: deleted,
+            subtransactions: subtransactions.map { leg in
+                SubTransactionSummary(
+                    id: leg.id, amount: leg.amount,
+                    categoryId: leg.categoryId,
+                    categoryName: leg.categoryName,
+                    categoryCanonicalId: leg.categoryId.flatMap {
+                        categoryCanonicalIdByYnabId[$0]
+                    },
+                    forecastTreatment: leg.forecastTreatment,
+                    transferAccountId: leg.transferAccountId,
+                    payeeName: leg.payeeName,
+                    memo: leg.memo, deleted: leg.deleted
+                )
+            }
+        )
+    }
 }
 
 @Model
@@ -211,6 +249,42 @@ public final class CachedScheduledTransaction {
             transferAccountId: transferAccountId,
             memo: memo, deleted: deleted
         )
+    }
+}
+
+/// Per-month category envelope numbers from YNAB (budgeted/activity/balance).
+/// Read-only import powering the Spending report's Budgeted column and group
+/// summaries. Disposable cache — refetched on demand.
+@Model
+public final class CachedCategoryMonth {
+    /// "\(budgetId)|\(month)|\(categoryId)"
+    @Attribute(.unique) public var id: String
+    public var budgetId: String
+    /// First-of-month date string, e.g. "2026-08-01".
+    public var month: String
+    public var categoryId: String
+    public var budgetedMilliunits: Int64
+    public var activityMilliunits: Int64
+    public var balanceMilliunits: Int64
+    public var updatedAt: Date
+
+    public init(
+        budgetId: String,
+        month: String,
+        categoryId: String,
+        budgetedMilliunits: Int64,
+        activityMilliunits: Int64,
+        balanceMilliunits: Int64,
+        updatedAt: Date = .now
+    ) {
+        self.id = "\(budgetId)|\(month)|\(categoryId)"
+        self.budgetId = budgetId
+        self.month = month
+        self.categoryId = categoryId
+        self.budgetedMilliunits = budgetedMilliunits
+        self.activityMilliunits = activityMilliunits
+        self.balanceMilliunits = balanceMilliunits
+        self.updatedAt = updatedAt
     }
 }
 
@@ -690,6 +764,8 @@ public final class CachedFinancialTransaction {
                 ? nil
                 : "local:\(Self.categoryKey(categoryDisplayName))",
             categoryName: isSplit ? nil : categoryDisplayName,
+            payeeCanonicalId: payeeCanonicalId,
+            categoryCanonicalId: isSplit ? nil : categoryCanonicalId,
             forecastTreatment: forecastTreatment,
             transferAccountId: nil,
             memo: nil,

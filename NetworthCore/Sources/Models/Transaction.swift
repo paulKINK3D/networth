@@ -11,6 +11,11 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
     public let payeeName: String?
     public let categoryId: String?
     public let categoryName: String?
+    /// Stable canonical identities so Budget and Account surfaces resolve the
+    /// same payee/category across sources. Nil keeps YNAB-sourced and older
+    /// persisted payloads compatible.
+    public let payeeCanonicalId: String?
+    public let categoryCanonicalId: String?
     public let forecastTreatment: ForecastTreatment?
     public let transferAccountId: String?
     public let memo: String?
@@ -27,6 +32,8 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
         payeeName: String?,
         categoryId: String? = nil,
         categoryName: String?,
+        payeeCanonicalId: String? = nil,
+        categoryCanonicalId: String? = nil,
         forecastTreatment: ForecastTreatment? = nil,
         transferAccountId: String? = nil,
         memo: String?,
@@ -42,6 +49,8 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
         self.payeeName = payeeName
         self.categoryId = categoryId
         self.categoryName = categoryName
+        self.payeeCanonicalId = payeeCanonicalId
+        self.categoryCanonicalId = categoryCanonicalId
         self.forecastTreatment = forecastTreatment
         self.transferAccountId = transferAccountId
         self.memo = memo
@@ -58,6 +67,9 @@ public struct SubTransactionSummary: Sendable, Hashable, Codable, Identifiable {
     public let amount: Money
     public let categoryId: String?
     public let categoryName: String?
+    /// Stable canonical category identity for the leg. Nil keeps YNAB-sourced
+    /// and older persisted split payloads compatible.
+    public let categoryCanonicalId: String?
     /// Local Plaid reviews can classify each incoming split leg separately.
     /// Nil keeps YNAB-sourced and older persisted split payloads compatible.
     public let forecastTreatment: ForecastTreatment?
@@ -71,6 +83,7 @@ public struct SubTransactionSummary: Sendable, Hashable, Codable, Identifiable {
         amount: Money,
         categoryId: String?,
         categoryName: String?,
+        categoryCanonicalId: String? = nil,
         forecastTreatment: ForecastTreatment? = nil,
         transferAccountId: String? = nil,
         payeeName: String?,
@@ -81,6 +94,7 @@ public struct SubTransactionSummary: Sendable, Hashable, Codable, Identifiable {
         self.amount = amount
         self.categoryId = categoryId
         self.categoryName = categoryName
+        self.categoryCanonicalId = categoryCanonicalId
         self.forecastTreatment = forecastTreatment
         self.transferAccountId = transferAccountId
         self.payeeName = payeeName

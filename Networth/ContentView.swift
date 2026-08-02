@@ -55,7 +55,12 @@ struct ContentView: View {
             }
         }
         .task(id: container.unlocked) {
-            if container.unlocked { await container.refreshIfStale() }
+            guard container.unlocked else { return }
+            // Let the first screen render and settle before background
+            // refresh work starts competing for the main actor.
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled else { return }
+            await container.refreshIfStale()
         }
         .sheet(isPresented: $showingTutorial) {
             TutorialView().environment(container)
@@ -84,11 +89,11 @@ struct ContentView: View {
             NetWorthView()
                 .tabItem { Label("Net Worth", systemImage: NwIcon.netWorth.rawValue) }
                 .tag(0)
+            BudgetView()
+                .tabItem { Label("Spending", systemImage: NwIcon.budget.rawValue) }
+                .tag(1)
             ProjectionsView()
                 .tabItem { Label("Projections", systemImage: NwIcon.projections.rawValue) }
-                .tag(1)
-            AccountsView()
-                .tabItem { Label("Accounts", systemImage: NwIcon.accounts.rawValue) }
                 .tag(2)
             InvestmentsView()
                 .tabItem { Label("Investments", systemImage: NwIcon.investment.rawValue) }

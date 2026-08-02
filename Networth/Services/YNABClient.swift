@@ -29,6 +29,9 @@ public protocol YNABClient: Actor {
     func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse
     func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse
     func scheduledTransactions(budgetId: String, lastKnowledge: Int64?) async throws -> YNABScheduledTransactionsResponse
+    /// Per-category budgeted/activity/balance for one month. `month` is a
+    /// first-of-month date string ("2026-08-01") or "current". Read-only.
+    func monthDetail(budgetId: String, month: String) async throws -> YNABMonthDetailDTO
     func rateLimit() -> YNABRateLimitInfo?
 }
 
@@ -108,6 +111,13 @@ public actor LiveYNABClient: YNABClient {
         if let k = lastKnowledge { path += "?last_knowledge_of_server=\(k)" }
         let env: YNABEnvelope<YNABScheduledTransactionsResponse> = try await get(path)
         return env.data
+    }
+
+    public func monthDetail(budgetId: String, month: String) async throws -> YNABMonthDetailDTO {
+        let env: YNABEnvelope<YNABMonthDetailResponse> = try await get(
+            "/budgets/\(budgetId)/months/\(month)"
+        )
+        return env.data.month
     }
 
     /// How close we let the rolling counter get to YNAB's stated limit before
@@ -218,6 +228,9 @@ public actor RecordedYNABClient: YNABClient {
     public func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse { categoriesResult }
     public func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse { transactionsResult }
     public func scheduledTransactions(budgetId: String, lastKnowledge: Int64?) async throws -> YNABScheduledTransactionsResponse { scheduledResult }
+    public func monthDetail(budgetId: String, month: String) async throws -> YNABMonthDetailDTO {
+        YNABMonthDetailDTO(month: month, categories: [])
+    }
 }
 
 // MARK: - Plaid backend client

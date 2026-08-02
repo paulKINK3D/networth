@@ -244,6 +244,49 @@ public struct YNABCategoryDTO: Decodable, Sendable, Identifiable, Hashable {
     public let deleted: Bool
 }
 
+// MARK: - Month detail (per-category budgeted/activity/balance)
+
+public struct YNABMonthDetailResponse: Decodable, Sendable {
+    public let month: YNABMonthDetailDTO
+    public init(month: YNABMonthDetailDTO) { self.month = month }
+}
+
+public struct YNABMonthDetailDTO: Decodable, Sendable {
+    /// First-of-month date string, e.g. "2026-08-01".
+    public let month: String
+    public let categories: [YNABMonthCategoryDTO]
+
+    public init(month: String, categories: [YNABMonthCategoryDTO]) {
+        self.month = month
+        self.categories = categories
+    }
+}
+
+public struct YNABMonthCategoryDTO: Decodable, Sendable, Identifiable, Hashable {
+    public let id: String
+    public let name: String
+    public let budgeted: Int64
+    public let activity: Int64
+    public let balance: Int64
+    public let deleted: Bool
+
+    public init(
+        id: String,
+        name: String,
+        budgeted: Int64,
+        activity: Int64,
+        balance: Int64,
+        deleted: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.budgeted = budgeted
+        self.activity = activity
+        self.balance = balance
+        self.deleted = deleted
+    }
+}
+
 // MARK: - Scheduled transactions
 
 public struct YNABScheduledTransactionsResponse: Decodable, Sendable {

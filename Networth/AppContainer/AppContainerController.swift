@@ -101,12 +101,18 @@ public final class AppContainerController {
 
         let descriptor = FetchDescriptor<DurableUserSettings>()
         let ctx = modelContainer.mainContext
-        let settings = (try? ctx.fetch(descriptor).first) ?? {
+        let allSettingsRows = (try? ctx.fetch(descriptor)) ?? []
+        let settings: DurableUserSettings
+        if allSettingsRows.count == 1 {
+            settings = allSettingsRows[0]
+        } else if allSettingsRows.isEmpty {
             let s = DurableUserSettings()
             ctx.insert(s)
             ctx.safeSave(source: "bootstrap.settings")
-            return s
-        }()
+            settings = s
+        } else {
+            settings = Self.dedupeSettingsRows(allSettingsRows, context: ctx)
+        }
         selectedBudgetId = settings.selectedBudgetId
         plaidTransactionSyncCoordinator.runLocalMigrationsIfNeeded()
 
@@ -602,6 +608,97 @@ public final class AppContainerController {
             calendar: calendar,
             historyStartDate: effectiveLinkedIBRLoanHistoryStartDate(calendar: calendar)
         ) ?? .zero
+    }
+
+    /// CloudKit can duplicate the settings singleton when two devices race
+    /// their first write (or a restore re-imports it). Keep the most
+    /// progressed row, merge forward-only progress markers from the others,
+    /// and delete the duplicates. Idempotent: runs on every bootstrap.
+    private static func dedupeSettingsRows(
+        _ rows: [DurableUserSettings],
+        context: ModelContext
+    ) -> DurableUserSettings {
+        func score(_ row: DurableUserSettings) -> Int {
+            var value = row.settingsSchemaVersion
+            if row.budgetSetupCompletedAt != nil { value += 8 }
+            if row.discretionaryCategoryIdsData != nil { value += 2 }
+            if row.historyBackfillVersion > 0 { value += 2 }
+            if row.canonicalTransactionDataVersion > 0 { value += 2 }
+            if row.primaryFinancialDataSource == .plaid { value += 2 }
+            if row.plaidTransactionsEnabled { value += 1 }
+            if row.hasSeenTutorial { value += 1 }
+            if row.lastSyncedAt != nil { value += 1 }
+            return value
+        }
+        let ranked = rows.sorted { score($0) > score($1) }
+        let survivor = ranked[0]
+        for other in ranked.dropFirst() {
+            if survivor.budgetSetupCompletedAt == nil {
+                survivor.budgetSetupCompletedAt = other.budgetSetupCompletedAt
+            }
+            if survivor.budgetSurplusTargetMilliunits == 1_000_000,
+               other.budgetSurplusTargetMilliunits != 1_000_000 {
+                survivor.budgetSurplusTargetMilliunits =
+                    other.budgetSurplusTargetMilliunits
+            }
+            if other.hasSeenTutorial { survivor.hasSeenTutorial = true }
+            if survivor.discretionaryCategoryIdsData == nil {
+                survivor.discretionaryCategoryIdsData =
+                    other.discretionaryCategoryIdsData
+            }
+            if survivor.discretionaryMonthlyTargetMilliunits == 0 {
+                survivor.discretionaryMonthlyTargetMilliunits =
+                    other.discretionaryMonthlyTargetMilliunits
+            }
+            if survivor.selectedBudgetId == nil {
+                survivor.selectedBudgetId = other.selectedBudgetId
+            }
+            if survivor.chartStartDate == nil {
+                survivor.chartStartDate = other.chartStartDate
+            }
+            if other.plaidTransactionsEnabled {
+                survivor.plaidTransactionsEnabled = true
+            }
+            if survivor.plaidPrimaryCutoverAt == nil,
+               let cutover = other.plaidPrimaryCutoverAt {
+                survivor.plaidPrimaryCutoverAt = cutover
+                survivor.primaryFinancialDataSourceRaw =
+                    other.primaryFinancialDataSourceRaw
+            }
+            if other.claudeFallbackEnabled {
+                survivor.claudeFallbackEnabled = true
+                survivor.claudeFallbackConsentAt =
+                    survivor.claudeFallbackConsentAt
+                        ?? other.claudeFallbackConsentAt
+            }
+            if other.claudeDataSyncEnabled {
+                survivor.claudeDataSyncEnabled = true
+                survivor.claudeDataSyncConsentAt =
+                    survivor.claudeDataSyncConsentAt
+                        ?? other.claudeDataSyncConsentAt
+            }
+            survivor.settingsSchemaVersion = max(
+                survivor.settingsSchemaVersion, other.settingsSchemaVersion
+            )
+            survivor.historyBackfillVersion = max(
+                survivor.historyBackfillVersion, other.historyBackfillVersion
+            )
+            survivor.canonicalTransactionDataVersion = max(
+                survivor.canonicalTransactionDataVersion,
+                other.canonicalTransactionDataVersion
+            )
+            if let synced = other.lastSyncedAt,
+               (survivor.lastSyncedAt ?? .distantPast) < synced {
+                survivor.lastSyncedAt = synced
+            }
+            if let backfill = other.lastBackfillRunAt,
+               (survivor.lastBackfillRunAt ?? .distantPast) < backfill {
+                survivor.lastBackfillRunAt = backfill
+            }
+            context.delete(other)
+        }
+        context.safeSave(source: "bootstrap.dedupeSettings")
+        return survivor
     }
 
     public func syncNow() async {

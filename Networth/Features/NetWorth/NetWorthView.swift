@@ -122,6 +122,7 @@ struct NetWorthView: View {
                     heroCard
                     chartCard
                     balanceSheet
+                    allAccountsLink
                 }
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.lg)
@@ -173,6 +174,29 @@ struct NetWorthView: View {
     }
 
     // MARK: - Cards
+
+    /// Accounts left the tab bar for Budget; this is its home now.
+    private var allAccountsLink: some View {
+        NavigationLink {
+            AccountsView(embedded: true)
+        } label: {
+            NwCard(style: .primary) {
+                HStack(spacing: NwSpacing.sm) {
+                    NwIcon.accounts.image
+                        .font(NwTypography.headline)
+                        .foregroundStyle(NwAppColors.primary)
+                    Text("All Accounts")
+                        .font(NwTypography.headline)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                    Spacer()
+                    NwIcon.chevron.image
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
 
     private var breakdown: NetWorthBreakdown {
         container.snapshotScheduler.computeBreakdown(
