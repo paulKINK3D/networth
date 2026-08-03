@@ -72,6 +72,7 @@ public final class SyncCoordinator {
             // once, then never again because the categories cursor exists.
             resetCursorsIfPreCategoryCache(budgetId: useBudget)
             resetScheduledCursorIfMissingFirstDate(budgetId: useBudget)
+            resetTransactionsCursorForGhostPurge(budgetId: useBudget)
 
             phase = .syncing(label: "Contacts")
             let payeesCursor = cursor(key: "payees:\(useBudget)")
@@ -106,6 +107,13 @@ public final class SyncCoordinator {
                 .date(byAdding: .month, value: -60, to: Date.now) : nil
             let txnResp = try await client.transactions(budgetId: useBudget, accountId: nil, sinceDate: sinceDate, lastKnowledge: txnCursor)
             await upsertTransactions(txnResp.transactions, budgetId: useBudget)
+            if txnCursor == nil {
+                tombstoneMissingTransactions(
+                    fetched: txnResp.transactions,
+                    budgetId: useBudget,
+                    since: sinceDate
+                )
+            }
             saveCursor(key: "transactions:\(useBudget)", value: txnResp.server_knowledge)
 
             guard mainContext.safeSave(source: "sync.cache") else {
@@ -793,6 +801,50 @@ public final class SyncCoordinator {
         logger.info("Resetting scheduled cursor to backfill firstDate.")
     }
 
+    /// YNAB sends deletion tombstones only through delta sync. A full refetch
+    /// (no cursor) returns just the rows that still exist, so anything deleted
+    /// in YNAB while no cursor was active would otherwise survive locally as a
+    /// ghost and keep counting in Spending forever. After a full refetch,
+    /// retire every cached row inside the refetch window that the response no
+    /// longer contains.
+    private func tombstoneMissingTransactions(
+        fetched: [YNABTransactionDTO],
+        budgetId: String,
+        since: Date?
+    ) {
+        let fetchedIDs = Set(fetched.map(\.id))
+        // An empty response against a populated cache is a partial/failed
+        // fetch, not mass deletion — never wipe history on that signal.
+        guard !fetchedIDs.isEmpty else { return }
+        let cutoff = since ?? .distantPast
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedTransaction>(
+                predicate: #Predicate {
+                    $0.budgetId == budgetId && !$0.deleted && $0.date >= cutoff
+                }
+            )
+        )) ?? []
+        var retired = 0
+        for row in rows where !fetchedIDs.contains(row.id) {
+            row.deleted = true
+            retired += 1
+        }
+        if retired > 0 {
+            logger.info("Tombstoned \(retired) cached transactions no longer present in YNAB.")
+        }
+    }
+
+    /// Caches populated before full-refetch tombstoning existed can hold rows
+    /// deleted in YNAB during past cursor resets. Clear the transactions
+    /// cursor once so the next sync replays the window and purges any ghosts.
+    private func resetTransactionsCursorForGhostPurge(budgetId: String) {
+        let key = "transactionsGhostPurge:\(budgetId)"
+        guard cursor(key: key) == nil else { return }
+        clearCursor(key: "transactions:\(budgetId)")
+        saveCursor(key: key, value: 1)
+        logger.info("Resetting transactions cursor for one-time ghost purge.")
+    }
+
     private func saveCursor(key: String, value: Int64?) {
         guard let value else { return }
         if let existing = fetchOne(SyncCursor.self, where: #Predicate { $0.key == key }) {
@@ -1053,6 +1105,10 @@ public final class PlaidTransactionSyncCoordinator {
     private let inferenceProvider: any OnDeviceTransactionInferring
     private let mainContext: ModelContext
     private let classifier = TransactionClassifier()
+    private let logger = Logger(
+        subsystem: "com.bluelava.me.networth",
+        category: "plaid-transaction-sync"
+    )
 
     public init(
         client: any PlaidClient,
@@ -1068,6 +1124,7 @@ public final class PlaidTransactionSyncCoordinator {
     /// This must run at bootstrap so a recently completed sync cannot delay a
     /// newer reconciliation rule behind the 15-minute freshness window.
     public func runLocalMigrationsIfNeeded() {
+        reanchorCivilDatesIfNeeded()
         let deduplicated = deduplicateCanonicalDirectory()
         let backfilledDirection = backfillCanonicalDecisionDirection()
         let canonicalDirectoryChanged =
@@ -1080,6 +1137,13 @@ public final class PlaidTransactionSyncCoordinator {
             return
         }
         resetDerivedTransactionDataIfNeeded()
+        if markOrphanedTransactionsDeleted(),
+           !mainContext.safeSave(
+               source: "plaidTransactions.orphanedTransactions"
+           ) {
+            mainContext.rollback()
+            return
+        }
         if prepareMissingCanonicalDirectoryReplay(),
            !mainContext.safeSave(
                source: "plaidTransactions.canonicalDirectoryReplay"
@@ -1089,6 +1153,76 @@ public final class PlaidTransactionSyncCoordinator {
         }
         reconcileHistoryIfNeeded()
         refreshCanonicalReviewCounts()
+    }
+
+    /// One-time cache repair: civil dates were historically parsed at
+    /// midnight UTC, which local-timezone display renders as the previous
+    /// day anywhere west of UTC. Parsing now anchors to local midnight;
+    /// this shifts rows persisted under the old anchoring onto the same
+    /// civil day at local midnight. Each shift fires only for
+    /// exact-UTC-midnight values, so a re-run is a no-op even without the
+    /// cursor guard.
+    private func reanchorCivilDatesIfNeeded() {
+        let key = "civilDateAnchoring:v1"
+        let done = (try? mainContext.fetch(
+            FetchDescriptor<SyncCursor>(predicate: #Predicate { $0.key == key })
+        ).isEmpty == false) ?? false
+        guard !done else { return }
+
+        var changed = 0
+        for row in (try? mainContext.fetch(
+            FetchDescriptor<CachedTransaction>()
+        )) ?? [] {
+            if let fixed = CivilDate.reanchoredFromUTCMidnight(row.date) {
+                row.date = fixed
+                changed += 1
+            }
+        }
+        for row in (try? mainContext.fetch(
+            FetchDescriptor<CachedScheduledTransaction>()
+        )) ?? [] {
+            if let fixed = CivilDate.reanchoredFromUTCMidnight(row.nextDate) {
+                row.nextDate = fixed
+                changed += 1
+            }
+            if let first = row.firstDate,
+               let fixed = CivilDate.reanchoredFromUTCMidnight(first) {
+                row.firstDate = fixed
+                changed += 1
+            }
+        }
+        for row in (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? [] {
+            if let fixed = CivilDate.reanchoredFromUTCMidnight(row.postedDate) {
+                row.postedDate = fixed
+                changed += 1
+            }
+            if let authorized = row.authorizedDate,
+               let fixed = CivilDate.reanchoredFromUTCMidnight(authorized) {
+                row.authorizedDate = fixed
+                changed += 1
+            }
+        }
+        for row in (try? mainContext.fetch(
+            FetchDescriptor<DurableExcludedSpendTransaction>()
+        )) ?? [] {
+            if let fixed = CivilDate.reanchoredFromUTCMidnight(
+                row.transactionDate
+            ) {
+                row.transactionDate = fixed
+                changed += 1
+            }
+        }
+
+        mainContext.insert(SyncCursor(key: key, serverKnowledge: 1))
+        guard mainContext.safeSave(
+            source: "plaidTransactions.civilDateReanchor"
+        ) else {
+            mainContext.rollback()
+            return
+        }
+        logger.info("Re-anchored \(changed) civil dates to local midnight.")
     }
 
     /// A completed reconciliation is valid only for the YNAB cache it read.
@@ -1287,6 +1421,7 @@ public final class PlaidTransactionSyncCoordinator {
                     return false
                 }
             }
+            markOrphanedTransactionsDeleted()
             reconcileHistoryIfNeeded()
             applyCurrentCanonicalState()
             guard mainContext.safeSave(
@@ -3060,6 +3195,41 @@ public final class PlaidTransactionSyncCoordinator {
         }
     }
 
+    /// A transaction whose owning account row is gone or deleted is
+    /// unreachable from every account screen, yet the spending and
+    /// projection filters look only at the transaction's own fields, so it
+    /// would keep counting forever. Re-links mint a fresh canonical account
+    /// id for the same real-world account and item removal cleans only the
+    /// ids it can still reach, so orphans are possible; retire them.
+    @discardableResult
+    private func markOrphanedTransactionsDeleted() -> Bool {
+        let accounts = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        )) ?? []
+        let liveIDs = Set(
+            accounts.filter { !$0.deleted }.map(\.canonicalAccountId)
+        )
+        // An empty live set means a partial or pre-sync cache; retiring
+        // everything against it would erase real history irrecoverably now
+        // that deleted rows are never resurrected.
+        guard !liveIDs.isEmpty else { return false }
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate { !$0.deleted }
+            )
+        )) ?? []
+        var changed = false
+        for row in rows where !liveIDs.contains(row.canonicalAccountId) {
+            row.deleted = true
+            row.updatedAt = .now
+            changed = true
+        }
+        if changed {
+            logger.info("Retired orphaned Plaid transactions with no live account.")
+        }
+        return changed
+    }
+
     private func historicalTreatment(
         for transaction: CachedTransaction,
         creditCardIDs: Set<String>
@@ -3162,7 +3332,10 @@ public final class PlaidTransactionSyncCoordinator {
         row.requiresReview = classification.requiresReview
         row.requiresNameReview = requiresNameReview
             && !preservesCompletedHistoricalNameReview
-        row.deleted = false
+        // Never resurrect: local deletion only ever comes from a bank removal
+        // or a posted transaction superseding its pending authorization, and
+        // Plaid never un-removes an id. A later added/modified redelivery for
+        // the same id must not bring a dead row back into spending.
         row.updatedAt = .now
     }
 

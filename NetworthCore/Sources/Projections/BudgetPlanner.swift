@@ -10,6 +10,7 @@ struct BudgetLeg {
     let date: Date
     /// Signed: inflow positive, outflow negative (Networth convention).
     let amount: Money
+    let accountId: String?
     let payeeCanonicalId: String?
     let payeeName: String?
     let categoryCanonicalId: String?
@@ -90,6 +91,7 @@ enum BudgetLegExtractor {
                     results.append(BudgetLeg(
                         date: transaction.date,
                         amount: leg.amount,
+                        accountId: transaction.accountId,
                         payeeCanonicalId: transaction.payeeCanonicalId,
                         payeeName: leg.payeeName ?? transaction.payeeName,
                         categoryCanonicalId: leg.categoryCanonicalId,
@@ -108,6 +110,7 @@ enum BudgetLegExtractor {
             results.append(BudgetLeg(
                 date: transaction.date,
                 amount: transaction.amount,
+                accountId: transaction.accountId,
                 payeeCanonicalId: transaction.payeeCanonicalId,
                 payeeName: transaction.payeeName,
                 categoryCanonicalId: transaction.categoryCanonicalId,
@@ -179,12 +182,22 @@ public struct BudgetSpendItem: Identifiable, Hashable, Sendable {
     public let payeeName: String
     /// Positive spending; negative is a refund/credit.
     public let amount: Money
+    /// Source account, so a surprising charge can be traced to where it
+    /// lives. Nil for legs whose source row carried no account.
+    public let accountId: String?
 
-    public init(id: String, date: Date, payeeName: String, amount: Money) {
+    public init(
+        id: String,
+        date: Date,
+        payeeName: String,
+        amount: Money,
+        accountId: String? = nil
+    ) {
         self.id = id
         self.date = date
         self.payeeName = payeeName
         self.amount = amount
+        self.accountId = accountId
     }
 }
 
@@ -553,7 +566,8 @@ extension BudgetTransactionAggregator {
                 id: "\(month.id)|\(categoryKey)|\(items.count)",
                 date: leg.date,
                 payeeName: leg.payeeName ?? "Unknown",
-                amount: -leg.amount
+                amount: -leg.amount,
+                accountId: leg.accountId
             ))
         }
         return items.sorted {

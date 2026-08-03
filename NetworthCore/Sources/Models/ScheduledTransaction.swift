@@ -72,11 +72,9 @@ extension ScheduledTransactionSummary {
         let rangeEnd = calendar.startOfDay(for: end)
         guard rangeStart <= rangeEnd else { return [] }
 
-        // YNAB's yyyy-MM-dd values are decoded at midnight UTC. Rebuild those
-        // civil-date components in the projection calendar before comparing
-        // them with local day boundaries. Otherwise, a July 31 occurrence is
-        // July 30 at 5 PM in Pacific time and can be skipped as "before"
-        // the July 31 projection cutoff.
+        // Civil dates are anchored to local midnight at parse. Snap to the
+        // projection calendar's day boundary before comparing against range
+        // cutoffs so a mid-day drift can never skip an occurrence.
         let anchor = dateOnly(nextDate, in: calendar)
         let normalizedFirstDate = firstDate.map { dateOnly($0, in: calendar) }
         let effectiveStart = max(rangeStart, normalizedFirstDate ?? rangeStart)
@@ -104,10 +102,7 @@ extension ScheduledTransactionSummary {
     }
 
     private func dateOnly(_ date: Date, in calendar: Calendar) -> Date {
-        var sourceCalendar = Calendar(identifier: .gregorian)
-        sourceCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let components = sourceCalendar.dateComponents([.era, .year, .month, .day], from: date)
-        return calendar.date(from: components) ?? calendar.startOfDay(for: date)
+        calendar.startOfDay(for: date)
     }
 
     /// Step the schedule by one period in the given direction (+1 forward, -1 back).

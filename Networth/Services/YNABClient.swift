@@ -94,7 +94,9 @@ public actor LiveYNABClient: YNABClient {
         if let sinceDate {
             let f = DateFormatter()
             f.dateFormat = "yyyy-MM-dd"
-            f.timeZone = TimeZone(identifier: "UTC")
+            // Match the local-midnight anchoring used when parsing YNAB
+            // civil dates so the inclusive lower bound covers the same day.
+            f.timeZone = .current
             items.append(URLQueryItem(name: "since_date", value: f.string(from: sinceDate)))
         }
         if let k = lastKnowledge {

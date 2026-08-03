@@ -397,7 +397,11 @@ public struct PlaidTransactionDTO: Codable, Sendable, Equatable {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        // Plaid sends civil dates with no time or zone. Anchor to local
+        // midnight so device-calendar bucketing and display keep the day
+        // the bank reported (UTC midnight renders as the previous day in
+        // any timezone west of UTC).
+        formatter.timeZone = .current
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()

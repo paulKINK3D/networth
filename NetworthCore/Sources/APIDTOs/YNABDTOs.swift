@@ -152,7 +152,9 @@ public struct YNABTransactionDTO: Decodable, Sendable, Identifiable, Hashable {
     public static let dateParser: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
-        f.timeZone = TimeZone(identifier: "UTC")
+        // Civil dates anchor to local midnight (same convention as Plaid)
+        // so local-calendar display and day-bucketing keep YNAB's day.
+        f.timeZone = .current
         f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()

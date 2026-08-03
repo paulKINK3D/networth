@@ -381,6 +381,9 @@ struct CategoryDetailRequest: Sendable {
 
 struct CategoryDetailModel: Sendable {
     let items: [BudgetSpendItem]
+    /// Display name per source account id, so each row can say where the
+    /// charge lives.
+    let accountNamesById: [String: String]
 }
 
 /// Background executor for report assembly. Owns its own ModelContext so the
@@ -550,7 +553,38 @@ enum SpendingReportBuilder {
                 transactions: transactions,
                 assignments: request.assignments,
                 calendar: calendar
+            ),
+            accountNamesById: accountNames(
+                context: context, usesPlaid: request.usesPlaid
             )
+        )
+    }
+
+    private static func accountNames(
+        context: ModelContext,
+        usesPlaid: Bool
+    ) -> [String: String] {
+        if usesPlaid {
+            let rows = (try? context.fetch(
+                FetchDescriptor<CachedFinancialAccount>()
+            )) ?? []
+            return Dictionary(
+                rows.map { row in
+                    var name = row.name
+                    if let mask = row.mask, !mask.isEmpty {
+                        name += " ••\(mask)"
+                    }
+                    return (row.canonicalAccountId, name)
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+        let rows = (try? context.fetch(
+            FetchDescriptor<CachedAccount>()
+        )) ?? []
+        return Dictionary(
+            rows.map { ($0.id, $0.name) },
+            uniquingKeysWith: { first, _ in first }
         )
     }
 
@@ -1015,11 +1049,9 @@ private struct CategoryDetailSheet: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.payeeName)
                                     .font(NwTypography.body)
-                                Text(item.date.formatted(
-                                    .dateTime.month(.abbreviated).day()
-                                ))
-                                .font(NwTypography.caption)
-                                .foregroundStyle(.secondary)
+                                Text(subtitle(for: item, in: detail))
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(.secondary)
                             }
                             Spacer()
                             NwAmountText(
@@ -1054,6 +1086,18 @@ private struct CategoryDetailSheet: View {
             }
         }
         .task { await load() }
+    }
+
+    private func subtitle(
+        for item: BudgetSpendItem,
+        in detail: CategoryDetailModel
+    ) -> String {
+        let day = item.date.formatted(.dateTime.month(.abbreviated).day())
+        guard let accountId = item.accountId,
+              let account = detail.accountNamesById[accountId] else {
+            return day
+        }
+        return "\(day) · \(account)"
     }
 
     private func load() async {
@@ -1463,11 +1507,14 @@ private struct SpendingExclusionsSheet: View {
     private var cachedCategories: [CachedCategory]
 
     private var categoryOptions: [DiscretionaryCategoryOption] {
+        // Hidden categories stay pickable: YNAB hides savings/goal
+        // categories, and those are exactly the ones users exclude most.
         DiscretionaryCategoryResolver.options(
             canonical: canonicalCategories,
             cached: cachedCategories,
-            activeOnly: true
+            activeOnly: false
         )
+        .filter { !$0.deleted }
     }
 
     var body: some View {
@@ -1475,10 +1522,22 @@ private struct SpendingExclusionsSheet: View {
             Section {
                 ForEach(categoryOptions) { option in
                     Toggle(
-                        option.name,
                         isOn: excludedBinding(for: option)
-                    )
-                    .font(NwTypography.body)
+                    ) {
+                        HStack(spacing: NwSpacing.sm) {
+                            Text(option.name)
+                                .font(NwTypography.body)
+                            if option.hidden {
+                                Text("hidden")
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, NwSpacing.xs)
+                                    .padding(.vertical, 1)
+                                    .background(NwAppColors.strokeSubtle)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
                 }
             } footer: {
                 Text("Excluded categories never appear in spending. Transfers, card payments, and reimbursements are always excluded automatically.")

@@ -68,7 +68,6 @@ struct CashPositionProjectorTests {
         let asOf = pacific.date(
             from: DateComponents(year: 2026, month: 7, day: 30, hour: 12)
         )!
-        let ynabJuly31 = date(2026, 7, 31)
         let localJuly31 = pacific.date(
             from: DateComponents(year: 2026, month: 7, day: 31)
         )!
@@ -78,8 +77,10 @@ struct CashPositionProjectorTests {
         let deposit = ScheduledTransactionSummary(
             id: "paycheck",
             accountId: "checking",
-            firstDate: date(2026, 7, 17),
-            nextDate: ynabJuly31,
+            firstDate: pacific.date(
+                from: DateComponents(year: 2026, month: 7, day: 17)
+            )!,
+            nextDate: localJuly31,
             frequency: .everyOtherWeek,
             amount: Money(milliunits: 8_321_560),
             payeeName: "Paycheck"
