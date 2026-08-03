@@ -3,8 +3,10 @@ import SwiftData
 
 struct ContentView: View {
     @Environment(AppContainerController.self) private var container
+    @Environment(\.scenePhase) private var scenePhase
     @Query private var userSettings: [DurableUserSettings]
     @State private var selection: Int = 0
+    @State private var refreshTask: Task<Void, Never>?
     @State private var alertPayload: PersistenceFailure?
     @State private var showingTutorial = false
     @State private var showingSettings = false
@@ -55,12 +57,12 @@ struct ContentView: View {
             }
         }
         .task(id: container.unlocked) {
-            guard container.unlocked else { return }
-            // Let the first screen render and settle before background
-            // refresh work starts competing for the main actor.
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            guard !Task.isCancelled else { return }
-            await container.refreshIfStale()
+            if container.unlocked { scheduleRefresh() }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active, container.unlocked {
+                scheduleRefresh()
+            }
         }
         .sheet(isPresented: $showingTutorial) {
             TutorialView().environment(container)
@@ -81,6 +83,18 @@ struct ContentView: View {
             Button("OK", role: .cancel) { alertPayload = nil }
         } message: {
             Text(alertPayload?.message ?? "")
+        }
+    }
+
+    /// The app's single data-refresh trigger: unlock and foregrounding both
+    /// funnel here, debounced, with a settle delay so the first frames never
+    /// compete with sync work for the main actor.
+    private func scheduleRefresh() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled, container.unlocked else { return }
+            await container.refreshIfStale()
         }
     }
 

@@ -562,6 +562,82 @@ extension BudgetTransactionAggregator {
         }
     }
 
+    /// One-pass result: display-window summaries plus full-history fund
+    /// drains, so an old fund cannot force a second walk over years of legs.
+    public struct SpendingAggregation: Sendable {
+        public let summariesByMonth: [BudgetMonth: MonthlySpendingSummary]
+        public let linkedSpendingByFundId: [String: Money]
+
+        public init(
+            summariesByMonth: [BudgetMonth: MonthlySpendingSummary],
+            linkedSpendingByFundId: [String: Money]
+        ) {
+            self.summariesByMonth = summariesByMonth
+            self.linkedSpendingByFundId = linkedSpendingByFundId
+        }
+    }
+
+    /// Single pass over the legs: category summaries are built only for
+    /// months at or after `summariesStartingAt` (months the UI can show),
+    /// while fund drains accumulate over the full window.
+    public func spendingAggregation(
+        transactions: [TransactionSummary],
+        assignments: BudgetBucketAssignments,
+        funds: [SinkingFund] = [],
+        summariesStartingAt: BudgetMonth? = nil,
+        calendar: Calendar = .current
+    ) -> SpendingAggregation {
+        let activeFunds = funds.filter { !$0.linkedCategoryKeys.isEmpty }
+        var perMonth: [BudgetMonth: [String: (name: String, milliunits: Int64)]] = [:]
+        var drained: [String: Int64] = [:]
+        for leg in BudgetLegExtractor.legs(from: transactions)
+        where isSpendingLeg(leg, assignments: assignments) {
+            let identity = categoryIdentity(for: leg)
+            if !activeFunds.isEmpty {
+                let candidates = Set(
+                    [identity.key, leg.categoryCanonicalId, leg.categoryId]
+                        .compactMap { $0 }
+                )
+                for fund in activeFunds
+                where leg.date >= fund.startDate
+                    && !fund.linkedCategoryKeys.isDisjoint(with: candidates) {
+                    drained[fund.id, default: 0] -= leg.amount.milliunits
+                }
+            }
+            let month = BudgetMonth(containing: leg.date, calendar: calendar)
+            if let start = summariesStartingAt, month < start { continue }
+            let existing = perMonth[month]?[identity.key]
+            perMonth[month, default: [:]][identity.key] = (
+                name: existing?.name ?? identity.name,
+                milliunits: (existing?.milliunits ?? 0) - leg.amount.milliunits
+            )
+        }
+        var summaries: [BudgetMonth: MonthlySpendingSummary] = [:]
+        for (month, totals) in perMonth {
+            let categories = totals
+                .map { BudgetCategorySpendLine(
+                    id: $0.key, name: $0.value.name,
+                    amount: Money(milliunits: $0.value.milliunits)
+                ) }
+                .sorted {
+                    if $0.amount != $1.amount { return $0.amount > $1.amount }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name)
+                        == .orderedAscending
+                }
+            summaries[month] = MonthlySpendingSummary(
+                month: month,
+                total: categories.map(\.amount).sum(),
+                categories: categories
+            )
+        }
+        return SpendingAggregation(
+            summariesByMonth: summaries,
+            linkedSpendingByFundId: drained.mapValues {
+                Money(milliunits: $0)
+            }
+        )
+    }
+
     /// Net linked-category spending per fund since each fund's start date —
     /// the automatic drain side of fund balances. Refunds flow back in.
     public func linkedSpending(

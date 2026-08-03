@@ -26,7 +26,7 @@ struct NetworthApp: App {
                 .task {
                     if !bootstrapped {
                         await container.bootstrap()
-                        container.recordDailySnapshot()
+                        container.recordDailySnapshotOnActivation()
                         bootstrapped = true
                     }
                 }
@@ -34,8 +34,10 @@ struct NetworthApp: App {
                     switch newPhase {
                     case .active:
                         container.refreshLinkedIBRLoan()
-                        container.recordDailySnapshot()
-                        Task { await container.refreshIfStale() }
+                        container.recordDailySnapshotOnActivation()
+                        // Data refresh is owned by ContentView's single
+                        // debounced trigger — a second immediate kick here
+                        // defeated the post-launch settle delay.
                     case .background:
                         // Stamp the moment we lose the foreground so the
                         // biometric grace check on next bootstrap knows how

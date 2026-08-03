@@ -1,6 +1,87 @@
 # WORKING
 
-## Current State (2026-08-02, second pass — Budget pivoted to Spending + Funds)
+## Current State (2026-08-02, fourth pass — Codex perf audit implemented)
+
+Codex audited the lag (read-only). Root insight: all four tabs stay live in
+the TabView, and Projections/Net Worth/Investments recomputed heavy work in
+`body` on every evaluation — so sync churn made *every* tab feel laggy,
+including Spending. Implemented from its fix list:
+- Indexes: `CachedTransaction` ([date], [accountId, date]) and a date-only
+  index on `CachedFinancialTransaction` — date-window fetches no longer scan.
+- Spending: fetch window narrowed 26→14 months (widened only to the earliest
+  fund start); category detail fetches a single month and reuses report
+  history; rebuild key now includes `lastSyncedAt` (stale-report fix);
+  LazyVStack.
+- Projections: `ProjectionData` cached in @State; recomputed once initially
+  and on a 0.6 s-debounced `.networthModelContextSaved` publisher; chart
+  scrubbing now only reads the cache. Same pattern for Net Worth's
+  `computeBreakdown` and Investments' `historyPoints` (also on range change).
+- One refresh trigger: scene-activation no longer fires `refreshIfStale`
+  directly; ContentView owns a single debounced (2.5 s) trigger for unlock +
+  foregrounding.
+- Formatters: currency-symbol NumberFormatter cached (was per-render ×46 call
+  sites); DateDisplay formatters static.
+- Docs unstaled: AGENTS.md tab list, PLAN.md decision log entry for the
+  Spending IA change.
+
+Round two (Codex re-review, all seven findings implemented, uncommitted):
+- Visible-tab-only invalidation: Net Worth / Projections / Investments now
+  track visibility (onAppear/onDisappear); save events recompute only the
+  visible tab and mark hidden tabs dirty (fingerprint cleared, recompute on
+  return). Fingerprints (query counts + lastSyncedAt/chartStartDate) also
+  catch CloudKit-driven changes that never post the local save notification.
+- Cold loads render placeholders: no tab computes its heavy model inside
+  body anymore (`cached ?? compute` removed everywhere; NwLoadingState until
+  the cache fills).
+- Spending rebuild: 400 ms settle sleep collapses multi-save sync bursts
+  before any work; the detached build task handle is retained and cancelled
+  when superseded; the builder checks Task.isCancelled between stages.
+- Spending category rows render via LazyVStack inside the card.
+- Investments transactions @Query bounded to 62 months (5Y max range) so the
+  new date index actually reduces fetched rows.
+- Net Worth trend series (per-point IBR balance lookups) cached alongside
+  the breakdown; scrubbing reads the cache.
+
+Round three (three P1s, uncommitted): tab computation genuinely off-main.
+- ProjectionsDataActor / NetWorthDataActor / InvestmentsDataActor
+  (@ModelActor, created via Task.detached) fetch with their own contexts and
+  return Sendable models; refreshCache/refreshCaches now only spawn + publish.
+  NOTE: ProjectionsDataActor.build duplicates the in-view
+  makeProjectionData math (now uncalled) — retire the view copy in a
+  follow-up to avoid divergence. SnapshotScheduler.computeBreakdown gained a
+  nonisolated static context-taking variant.
+- Snapshot no-op writes eliminated: recordIfNeeded only saves when values or
+  duplicate rows actually changed (no more save→notification→recompute loop
+  on every foregrounding). Startup coalescing is scoped: only
+  recordDailySnapshotOnActivation() (NetworthApp bootstrap + scene .active)
+  is 60 s-throttled; mutation-driven recordDailySnapshot() callers (sync,
+  manual-asset edits, Settings) are never suppressed, and the throttle stamp
+  is set only when a snapshot actually recorded (a no-data launch cannot
+  block the first real one).
+- Spending single-pass: spendingAggregation (core, tested) builds
+  display-window summaries and full-history fund drains in one leg walk;
+  category-history rows older than the summary window are omitted, not faked
+  as zeros.
+
+Round four: main-side duplicate fetches removed. Projections dropped its
+year-long transaction @Querys, its in-view makeProjectionData (the actor is
+now the only forecast implementation) and compute helpers (minimumCashBuffer
+retained as display-only); Investments dropped its 62-month transaction
+@Query and in-view historyPoints; Net Worth dropped the all-snapshots @Query
+and buildTrendPoints (fallbacks are inert empty values; UI gates on cache).
+Invalidation: cache-store tables are local-only, so the debounced save
+notification fully covers them; fingerprints now carry only small
+CloudKit-synced durable tables + lastSyncedAt. Known gap: a CloudKit-only
+remote import of durable snapshot rows with no accompanying local save won't
+refresh caches until the next save/appear. spendingAggregation now has a
+direct equivalence + window test (133 tests).
+
+Deferred from the audit (larger refactors, not yet done): moving
+SyncCoordinator/PlaidTransactionSyncCoordinator/Claude snapshot assembly off
+the main actor onto background model actors; per-fetch batching for category
+and scheduled upserts; Instruments signpost verification on device.
+
+## Prior State (2026-08-02, second/third pass — Budget pivoted to Spending + Funds)
 
 The operating-budget model shipped earlier today was rejected by real-world
 use: the user does not budget with limits (pads generously, uses overflow,

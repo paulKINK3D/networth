@@ -32,11 +32,21 @@ public enum CurrencyFormatter {
         return amount.isNegative ? "−\(base)" : "+\(base)"
     }
 
+    /// Symbol lookup is cached — NumberFormatter construction is expensive
+    /// and `compact` runs inside row rendering across the app.
+    private static let symbolCacheLock = NSLock()
+    nonisolated(unsafe) private static var symbolCache: [String: String] = [:]
+
     private static func currencySymbol(for code: String) -> String {
+        symbolCacheLock.lock()
+        defer { symbolCacheLock.unlock() }
+        if let cached = symbolCache[code] { return cached }
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
         formatter.currencyCode = code
-        return formatter.currencySymbol ?? "$"
+        let symbol = formatter.currencySymbol ?? "$"
+        symbolCache[code] = symbol
+        return symbol
     }
 }
 
@@ -77,17 +87,33 @@ public enum CurrencyInputFormatter {
 }
 
 public enum DateDisplay {
-    public static func shortDate(_ date: Date) -> String {
+    // DateFormatter is expensive to build and thread-safe to *use* on modern
+    // OS releases, so each style is built once.
+    private static let shortDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
         f.timeStyle = .none
-        return f.string(from: date)
+        return f
+    }()
+
+    private static let monthYearFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM yyyy"
+        return f
+    }()
+
+    private static let weekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE"
+        return f
+    }()
+
+    public static func shortDate(_ date: Date) -> String {
+        shortDateFormatter.string(from: date)
     }
 
     public static func monthYear(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "MMM yyyy"
-        return f.string(from: date)
+        monthYearFormatter.string(from: date)
     }
 
     public static func relativeDay(_ date: Date, relativeTo reference: Date) -> String {
@@ -98,7 +124,7 @@ public enum DateDisplay {
         case 1:   return "Tomorrow"
         case -1:  return "Yesterday"
         case 2...6:
-            let f = DateFormatter(); f.dateFormat = "EEEE"; return f.string(from: date)
+            return weekdayFormatter.string(from: date)
         default:  return shortDate(date)
         }
     }

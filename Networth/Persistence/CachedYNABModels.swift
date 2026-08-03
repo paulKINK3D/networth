@@ -70,6 +70,10 @@ public final class CachedAccount {
 
 @Model
 public final class CachedTransaction {
+    // Date-window fetches (Spending report, Projections lookback) must not
+    // table-scan a multi-year transaction cache.
+    #Index<CachedTransaction>([\.date], [\.accountId, \.date])
+
     @Attribute(.unique) public var id: String
     public var budgetId: String
     public var accountId: String
@@ -570,7 +574,8 @@ public final class CachedFinancialAccount {
 @Model
 public final class CachedFinancialTransaction {
     #Index<CachedFinancialTransaction>(
-        [\.canonicalAccountId, \.deleted, \.pending, \.postedDate]
+        [\.canonicalAccountId, \.deleted, \.pending, \.postedDate],
+        [\.postedDate]
     )
 
     @Attribute(.unique) public var id: String

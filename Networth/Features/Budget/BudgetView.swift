@@ -19,6 +19,9 @@ struct BudgetView: View {
     /// Selected month relative to today: previous 12 months through current.
     @State private var monthOffset = 0
     @State private var report: SpendingReportModel?
+    @State private var buildTask: Task<SpendingReportModel, Never>?
+    @State private var isVisible = false
+    @State private var pendingRebuild = false
     @State private var activeCategory: SpendingCategorySelection?
     @State private var activeFundId: FundSelection?
     @State private var fundEditorTarget: FundEditorTarget?
@@ -44,14 +47,17 @@ struct BudgetView: View {
             "\(fundRows.count):\(fundStamp.timeIntervalSince1970)",
             "\(fundEventRows.count)",
             "\(assignmentRows.count):\(assignmentStamp.timeIntervalSince1970)",
-            "\(settings?.primaryFinancialDataSource.rawValue ?? "")"
+            "\(settings?.primaryFinancialDataSource.rawValue ?? "")",
+            // Sync completion stamps settings; without this a finished sync
+            // would leave the displayed report stale.
+            "\(settings?.lastSyncedAt?.timeIntervalSince1970 ?? 0)"
         ].joined(separator: "|")
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                LazyVStack(alignment: .leading, spacing: NwSpacing.lg) {
                     if let report {
                         let summary = report.summary(for: selectedMonth)
                         let available = report.available(for: selectedMonth)
@@ -91,7 +97,8 @@ struct BudgetView: View {
             .sheet(item: $activeCategory) { selection in
                 CategoryDetailSheet(
                     selection: selection,
-                    month: selectedMonth
+                    month: selectedMonth,
+                    history: categoryHistory(for: selection.key)
                 )
                 .environment(container)
             }
@@ -112,7 +119,23 @@ struct BudgetView: View {
                 SpendingExclusionsSheet()
                     .environment(container)
             }
-            .task(id: rebuildKey) { await rebuild() }
+            .task(id: rebuildKey) {
+                guard isVisible || report == nil else {
+                    // Hidden tab: don't burn a full scan the user can't see;
+                    // rebuild when they come back.
+                    pendingRebuild = true
+                    return
+                }
+                await rebuild()
+            }
+            .onAppear {
+                isVisible = true
+                if pendingRebuild {
+                    pendingRebuild = false
+                    Task { await rebuild() }
+                }
+            }
+            .onDisappear { isVisible = false }
         }
     }
 
@@ -219,7 +242,33 @@ struct BudgetView: View {
 
     // MARK: - Data
 
+    /// One category's history from the already-built report — opening a
+    /// category never re-aggregates. Months older than the report's summary
+    /// window are omitted rather than shown as fake zeros.
+    private func categoryHistory(
+        for key: String
+    ) -> [(month: BudgetMonth, amount: Money)] {
+        guard let report else { return [] }
+        let floor = currentMonth.advanced(by: -13)
+        return (0..<12)
+            .map { selectedMonth.advanced(by: -$0) }
+            .filter { $0 >= floor }
+            .map { month in
+                (
+                    month,
+                    report.summary(for: month).categories
+                        .first { $0.id == key }?.amount ?? .zero
+                )
+            }
+    }
+
     private func rebuild() async {
+        // Sync touches lastSyncedAt more than once; the settle sleep lets a
+        // burst of key changes collapse into one real build (a cancelled
+        // .task dies here for free, before any work starts).
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        guard !Task.isCancelled else { return }
+        buildTask?.cancel()
         let request = SpendingReportRequest(
             usesPlaid: settings?.primaryFinancialDataSource == .plaid,
             assignments: SpendingReportBuilder.assignments(
@@ -231,12 +280,16 @@ struct BudgetView: View {
         )
         // @ModelActor inherits the executor of the thread that creates it —
         // built on the main actor it would run the whole aggregation ON main.
-        // Detach so the actor (and its ModelContext) live off-main.
+        // Detach so the actor (and its ModelContext) live off-main. The
+        // handle is retained so a superseded build is cancelled, not just
+        // ignored.
         let modelContainer = container.modelContainer
-        let built = await Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .userInitiated) {
             let dataActor = BudgetDataActor(modelContainer: modelContainer)
             return await dataActor.spendingReport(request)
-        }.value
+        }
+        buildTask = task
+        let built = await task.value
         guard !Task.isCancelled else { return }
         report = built
     }
@@ -298,6 +351,16 @@ struct SpendingReportModel: Sendable {
     func available(for month: BudgetMonth) -> [String: EnvelopeCategory] {
         availableByMonthId[month.id] ?? [:]
     }
+
+    /// Placeholder result for cancelled builds — always discarded.
+    static let empty = SpendingReportModel(
+        summariesByMonth: [:],
+        availableByMonthId: [:],
+        groupNameByCategoryKey: [:],
+        fundSnapshots: [],
+        fundNameByCategoryKey: [:],
+        setAsideTotal: .zero
+    )
 }
 
 struct SpendingReportRequest: Sendable {
@@ -318,7 +381,6 @@ struct CategoryDetailRequest: Sendable {
 
 struct CategoryDetailModel: Sendable {
     let items: [BudgetSpendItem]
-    let history: [(month: BudgetMonth, amount: Money)]
 }
 
 /// Background executor for report assembly. Owns its own ModelContext so the
@@ -360,19 +422,34 @@ enum SpendingReportBuilder {
         context: ModelContext,
         calendar: Calendar = .current
     ) -> SpendingReportModel {
+        // 14 months covers the visible 12-month window plus refund drift;
+        // an older fund start date widens the window only as far as needed.
+        let displayCutoff = calendar.date(
+            byAdding: .month, value: -14, to: request.asOf
+        ) ?? request.asOf
+        let earliestFundStart = request.funds.map(\.startDate).min()
         let transactions = fetchTransactions(
             context: context,
             usesPlaid: request.usesPlaid,
-            monthsBack: 26,
-            asOf: request.asOf,
-            calendar: calendar
+            from: min(displayCutoff, earliestFundStart ?? displayCutoff),
+            until: nil
         )
+        if Task.isCancelled { return .empty }
         let aggregator = BudgetTransactionAggregator()
-        let summaries = aggregator.spendingSummaries(
+        let currentMonth = BudgetMonth(
+            containing: request.asOf, calendar: calendar
+        )
+        // One pass: summaries only for showable months, fund drains over the
+        // full window (an old fund widens the fetch, not the summary work).
+        let aggregation = aggregator.spendingAggregation(
             transactions: transactions,
             assignments: request.assignments,
+            funds: request.funds,
+            summariesStartingAt: currentMonth.advanced(by: -13),
             calendar: calendar
         )
+        let summaries = aggregation.summariesByMonth
+        if Task.isCancelled { return .empty }
 
         // Group + budgeted maps from the YNAB category cache.
         let cachedCategories = (try? context.fetch(
@@ -417,12 +494,7 @@ enum SpendingReportBuilder {
             )
         }
 
-        let linked = aggregator.linkedSpending(
-            for: request.funds,
-            transactions: transactions,
-            assignments: request.assignments,
-            calendar: calendar
-        )
+        let linked = aggregation.linkedSpendingByFundId
         let snapshots = request.funds
             .map { fund in
                 FundMath.snapshot(
@@ -457,57 +529,43 @@ enum SpendingReportBuilder {
         )
     }
 
+    /// Transactions for one category in one month — the fetch window is that
+    /// single month; history comes from the already-built report.
     static func categoryDetail(
         request: CategoryDetailRequest,
         context: ModelContext,
         calendar: Calendar = .current
     ) -> CategoryDetailModel {
+        let interval = request.month.interval(calendar: calendar)
         let transactions = fetchTransactions(
             context: context,
             usesPlaid: request.usesPlaid,
-            monthsBack: 14,
-            asOf: request.asOf,
-            calendar: calendar
+            from: interval.start,
+            until: interval.end
         )
-        let aggregator = BudgetTransactionAggregator()
-        let items = aggregator.categoryItems(
-            categoryKey: request.categoryKey,
-            in: request.month,
-            transactions: transactions,
-            assignments: request.assignments,
-            calendar: calendar
+        return CategoryDetailModel(
+            items: BudgetTransactionAggregator().categoryItems(
+                categoryKey: request.categoryKey,
+                in: request.month,
+                transactions: transactions,
+                assignments: request.assignments,
+                calendar: calendar
+            )
         )
-        let summaries = aggregator.spendingSummaries(
-            transactions: transactions,
-            assignments: request.assignments,
-            calendar: calendar
-        )
-        let history: [(BudgetMonth, Money)] = (0..<12)
-            .map { request.month.advanced(by: -$0) }
-            .map { month in
-                (
-                    month,
-                    summaries[month]?.categories
-                        .first { $0.id == request.categoryKey }?
-                        .amount ?? .zero
-                )
-            }
-        return CategoryDetailModel(items: items, history: history)
     }
 
     private static func fetchTransactions(
         context: ModelContext,
         usesPlaid: Bool,
-        monthsBack: Int,
-        asOf: Date,
-        calendar: Calendar
+        from cutoff: Date,
+        until end: Date?
     ) -> [TransactionSummary] {
-        let cutoff = calendar.date(
-            byAdding: .month, value: -monthsBack, to: asOf
-        ) ?? asOf
+        let upperBound = end ?? .distantFuture
         if usesPlaid {
             let descriptor = FetchDescriptor<CachedFinancialTransaction>(
-                predicate: #Predicate { $0.postedDate >= cutoff }
+                predicate: #Predicate {
+                    $0.postedDate >= cutoff && $0.postedDate < upperBound
+                }
             )
             let rows = (try? context.fetch(descriptor)) ?? []
             return rows.compactMap { $0.toProjectionSummary() }
@@ -531,7 +589,9 @@ enum SpendingReportBuilder {
             uniquingKeysWith: { first, _ in first }
         )
         let descriptor = FetchDescriptor<CachedTransaction>(
-            predicate: #Predicate { $0.date >= cutoff && !$0.deleted }
+            predicate: #Predicate {
+                $0.date >= cutoff && $0.date < upperBound && !$0.deleted
+            }
         )
         let rows = (try? context.fetch(descriptor)) ?? []
         return rows.map {
@@ -725,7 +785,10 @@ private struct CategoryListCard: View {
     var body: some View {
         let rows = self.rows
         NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            // Lazy so a long category list materializes rows only as they
+            // scroll into view — the outer LazyVStack sees the whole card as
+            // one child.
+            LazyVStack(alignment: .leading, spacing: NwSpacing.sm) {
                 HStack {
                     Text("Categories")
                         .font(NwTypography.headline)
@@ -926,6 +989,8 @@ private struct CategoryDetailSheet: View {
     @Query private var assignmentRows: [DurableBudgetCategoryAssignment]
     let selection: SpendingCategorySelection
     let month: BudgetMonth
+    /// From the already-built report — never re-aggregated here.
+    let history: [(month: BudgetMonth, amount: Money)]
     @State private var detail: CategoryDetailModel?
 
     var body: some View {
@@ -964,27 +1029,27 @@ private struct CategoryDetailSheet: View {
                         }
                     }
                 }
-                Section("History") {
-                    ForEach(detail.history, id: \.month) { entry in
-                        HStack {
-                            Text(entry.month.startDate().formatted(
-                                .dateTime.month(.wide).year()
-                            ))
-                            .font(NwTypography.body)
-                            Spacer()
-                            NwAmountText(
-                                entry.amount, variant: .compact,
-                                showCents: false
-                            )
-                        }
-                    }
-                }
             } else {
                 HStack {
                     ProgressView().controlSize(.small)
                     Text("Loading…")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
+                }
+            }
+            Section("History") {
+                ForEach(history, id: \.month) { entry in
+                    HStack {
+                        Text(entry.month.startDate().formatted(
+                            .dateTime.month(.wide).year()
+                        ))
+                        .font(NwTypography.body)
+                        Spacer()
+                        NwAmountText(
+                            entry.amount, variant: .compact,
+                            showCents: false
+                        )
+                    }
                 }
             }
         }

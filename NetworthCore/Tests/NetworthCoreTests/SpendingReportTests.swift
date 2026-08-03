@@ -112,6 +112,57 @@ struct SpendingReportTests {
         #expect(items.map(\.payeeName) == ["Market", "Corner Shop"])
     }
 
+    @Test("Single-pass aggregation matches the separate paths and skips pre-window months")
+    func singlePassAggregation() {
+        let travel = SinkingFund(
+            id: "travel", name: "Travel", target: .dollars(3_000),
+            linkedCategoryKeys: ["travel"],
+            startDate: date(2025, 2, 1)
+        )
+        let transactions = [
+            // Old months: must drain the fund but never build summaries.
+            txn(date: date(2025, 3, 10), amount: .dollars(-800),
+                payee: "Airline", category: "Travel"),
+            txn(date: date(2025, 3, 12), amount: .dollars(-50),
+                payee: "Market", category: "Groceries"),
+            // Inside the summary window.
+            txn(date: date(2026, 3, 5), amount: .dollars(-400),
+                payee: "Hotel", category: "Travel"),
+            txn(date: date(2026, 4, 8), amount: .dollars(-120),
+                payee: "Market", category: "Groceries")
+        ]
+        let windowStart = BudgetMonth(year: 2026, month: 3)
+        let combined = aggregator.spendingAggregation(
+            transactions: transactions,
+            assignments: assignments,
+            funds: [travel],
+            summariesStartingAt: windowStart,
+            calendar: utc
+        )
+        // Pre-window months are never constructed.
+        #expect(combined.summariesByMonth[BudgetMonth(year: 2025, month: 3)]
+            == nil)
+        // In-window summaries match the standalone path exactly.
+        let separate = aggregator.spendingSummaries(
+            transactions: transactions,
+            assignments: assignments,
+            calendar: utc
+        )
+        #expect(combined.summariesByMonth[windowStart]
+            == separate[windowStart])
+        #expect(combined.summariesByMonth[BudgetMonth(year: 2026, month: 4)]
+            == separate[BudgetMonth(year: 2026, month: 4)])
+        // Fund drains cover the full history and match the standalone path.
+        let separateDrains = aggregator.linkedSpending(
+            for: [travel],
+            transactions: transactions,
+            assignments: assignments,
+            calendar: utc
+        )
+        #expect(combined.linkedSpendingByFundId == separateDrains)
+        #expect(combined.linkedSpendingByFundId["travel"] == .dollars(1_200))
+    }
+
     @Test("Linked-category spending drains funds only after their start date")
     func fundDrains() {
         let travel = SinkingFund(

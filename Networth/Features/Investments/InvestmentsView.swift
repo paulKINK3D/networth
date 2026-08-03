@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import Charts
+import Combine
 import NetworthCore
 
 private enum InvestmentRange: String, CaseIterable, Identifiable {
@@ -90,7 +91,6 @@ private enum InvestmentHolding: Identifiable {
 struct InvestmentsView: View {
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
-    @Query(sort: \CachedTransaction.date) private var transactions: [CachedTransaction]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
     @Query private var userSettings: [DurableUserSettings]
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
@@ -101,6 +101,52 @@ struct InvestmentsView: View {
     @State private var range: InvestmentRange = .oneYear
     @State private var scrubbedDate: Date?
     @State private var showingPlaidReview = false
+    /// History cache: rebuilding daily balance histories from the transaction
+    /// table must never run per body evaluation (chart scrubbing re-evaluates
+    /// continuously). Refreshed on range change and once per debounced save
+    /// burst — and only while this tab is visible.
+    @State private var cachedPoints: [InvestmentHistoryBuilder.Point]?
+    @State private var cacheFingerprint = ""
+    @State private var isVisible = false
+
+    private static let saveEvents: AnyPublisher<Notification, Never> =
+        NotificationCenter.default
+            .publisher(for: .networthModelContextSaved)
+            .debounce(for: .seconds(0.6), scheduler: RunLoop.main)
+            .eraseToAnyPublisher()
+
+    private var inputFingerprint: String {
+        [
+            "\(accounts.count)",
+            "\(manualAssets.count)", "\(plaidBalanceSnapshots.count)",
+            "\(plaidAccounts.count)", "\(plaidTreatments.count)",
+            range.rawValue
+        ].joined(separator: "|")
+    }
+
+    @State private var refreshTask: Task<Void, Never>?
+
+    private func refreshCache(force: Bool = false) {
+        let fingerprint = inputFingerprint
+        guard force || cachedPoints == nil || cacheFingerprint != fingerprint
+        else { return }
+        cacheFingerprint = fingerprint
+        let rangeMonths = range.months
+        let modelContainer = container.modelContainer
+        refreshTask?.cancel()
+        refreshTask = Task {
+            // Detached: @ModelActor inherits the creating executor; built on
+            // main it would compute on main.
+            let points = await Task.detached(priority: .userInitiated) {
+                let dataActor = InvestmentsDataActor(
+                    modelContainer: modelContainer
+                )
+                return await dataActor.build(rangeMonths: rangeMonths)
+            }.value
+            guard !Task.isCancelled else { return }
+            cachedPoints = points
+        }
+    }
 
     private static let investmentManualKinds: Set<ManualAssetKind> = [
         .brokerage, .retirement, .crypto
@@ -151,7 +197,6 @@ struct InvestmentsView: View {
     private var isEmpty: Bool { holdings.isEmpty }
 
     var body: some View {
-        let points = historyPoints
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
@@ -180,11 +225,15 @@ struct InvestmentsView: View {
                             icon: .investment
                         )
                         .frame(minHeight: 320)
-                    } else {
+                    } else if let points = cachedPoints {
                         heroCard(history: points)
                         trendCard(history: points)
                         allocationSection
                         holdingsSection
+                    } else {
+                        // Cold load: history builds off the render path.
+                        NwLoadingState("Loading investments…")
+                            .frame(minHeight: 320)
                     }
                 }
                 .padding(.horizontal, NwSpacing.screenPadding)
@@ -194,6 +243,20 @@ struct InvestmentsView: View {
             .navigationTitle("Investments")
             .sheet(isPresented: $showingPlaidReview) {
                 PlaidAccountReviewSheet().environment(container)
+            }
+            .task { refreshCache() }
+            .onAppear {
+                isVisible = true
+                refreshCache()
+            }
+            .onDisappear { isVisible = false }
+            .onChange(of: range) { _, _ in refreshCache(force: true) }
+            .onReceive(Self.saveEvents) { _ in
+                if isVisible {
+                    refreshCache(force: true)
+                } else {
+                    cacheFingerprint = ""
+                }
             }
         }
     }
@@ -452,29 +515,6 @@ struct InvestmentsView: View {
         allocationShare(for: amount).formatted(.percent.precision(.fractionLength(0)))
     }
 
-    private var historyPoints: [InvestmentHistoryBuilder.Point] {
-        let calendar = Calendar(identifier: .gregorian)
-        guard let start = calendar.date(byAdding: .month, value: -range.months, to: .now) else {
-            return []
-        }
-        let summariesByAccount = Dictionary(grouping: transactions.lazy.filter { !$0.deleted }) {
-            $0.accountId
-        }
-        let inputs = historicalYNABInvestments.map { account in
-            InvestmentHistoryBuilder.Account(
-                id: account.id,
-                currentBalance: account.balance,
-                transactions: (summariesByAccount[account.id] ?? []).map { $0.toSummary() }
-            )
-        }
-        return InvestmentHistoryBuilder(calendar: calendar).build(
-            accounts: inputs,
-            manualAssets: manualInvestments.map { $0.toSnapshot() },
-            plaidSnapshots: plaidBalanceSnapshots.map { $0.toHistorySnapshot() },
-            from: start,
-            to: .now
-        )
-    }
 
     private func sampledHistoryPoints(
         from points: [InvestmentHistoryBuilder.Point]
@@ -819,5 +859,59 @@ private struct PlaidInvestmentAccountDetailView: View {
             values.append("\(NSDecimalNumber(decimal: quantity).stringValue) shares")
         }
         return values.isEmpty ? "Position" : values.joined(separator: " · ")
+    }
+}
+
+/// Off-main reconstruction of the investment balance history. Owns its own
+/// ModelContext; the view renders only finished results.
+@ModelActor
+private actor InvestmentsDataActor {
+    func build(rangeMonths: Int) -> [InvestmentHistoryBuilder.Point] {
+        let calendar = Calendar(identifier: .gregorian)
+        guard let start = calendar.date(
+            byAdding: .month, value: -rangeMonths, to: .now
+        ) else { return [] }
+        let context = modelContext
+        let transactions = (try? context.fetch(
+            FetchDescriptor<CachedTransaction>(
+                predicate: #Predicate { $0.date >= start && !$0.deleted }
+            )
+        )) ?? []
+        let accounts = (try? context.fetch(
+            FetchDescriptor<CachedAccount>()
+        )) ?? []
+        let manualAssets = (try? context.fetch(
+            FetchDescriptor<DurableManualAsset>()
+        )) ?? []
+        let plaidSnapshots = (try? context.fetch(
+            FetchDescriptor<DurablePlaidBalanceSnapshot>(
+                sortBy: [SortDescriptor(\.date)]
+            )
+        )) ?? []
+        let historicalInvestments = accounts.filter {
+            !$0.deleted && $0.kind == .investment
+        }
+        let manualInvestments = manualAssets.filter {
+            !$0.deleted
+                && [.brokerage, .retirement, .crypto].contains($0.kind)
+        }
+        let byAccount = Dictionary(
+            grouping: transactions
+        ) { $0.accountId }
+        let inputs = historicalInvestments.map { account in
+            InvestmentHistoryBuilder.Account(
+                id: account.id,
+                currentBalance: account.balance,
+                transactions: (byAccount[account.id] ?? [])
+                    .map { $0.toSummary() }
+            )
+        }
+        return InvestmentHistoryBuilder(calendar: calendar).build(
+            accounts: inputs,
+            manualAssets: manualInvestments.map { $0.toSnapshot() },
+            plaidSnapshots: plaidSnapshots.map { $0.toHistorySnapshot() },
+            from: start,
+            to: .now
+        )
     }
 }

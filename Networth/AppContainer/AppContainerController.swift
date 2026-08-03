@@ -545,9 +545,28 @@ public final class AppContainerController {
         snapshotScheduler.recordPlaidBalancesIfNeeded()
     }
 
+    /// Mutation-driven recording (sync completion, manual-asset edits):
+    /// never throttled — a data change must always be able to update today's
+    /// snapshot. The scheduler itself skips the save when nothing changed.
     public func recordDailySnapshot() {
-        snapshotScheduler.recordIfNeeded()
+        if snapshotScheduler.recordIfNeeded() != nil {
+            lastDailySnapshotAt = .now
+        }
     }
+
+    /// Startup/foreground path only: bootstrap and scene activation both
+    /// request a snapshot within the same breath on launch; one computation
+    /// is enough. The stamp is only set by a successful recording, so a
+    /// no-data launch can never block the first real snapshot.
+    public func recordDailySnapshotOnActivation() {
+        if let last = lastDailySnapshotAt,
+           Date.now.timeIntervalSince(last) < 60 {
+            return
+        }
+        recordDailySnapshot()
+    }
+
+    @ObservationIgnored private var lastDailySnapshotAt: Date?
 
     /// Refreshes IBR's opt-in, local-only App Group summary. The document is
     /// kept in memory and never copied into Networth's CloudKit-backed models.

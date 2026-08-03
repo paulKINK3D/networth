@@ -215,6 +215,7 @@ public final class SnapshotScheduler {
                 return lhs.createdAt > rhs.createdAt
             }
             let survivor = sorted.first!
+            var changed = sorted.count > 1
             for row in sorted.dropFirst() { mainContext.delete(row) }
             if survivor.assetsMilliunits != newAssets ||
                survivor.liabilitiesMilliunits != newLiabilities ||
@@ -222,7 +223,12 @@ public final class SnapshotScheduler {
                 survivor.assetsMilliunits = newAssets
                 survivor.liabilitiesMilliunits = newLiabilities
                 survivor.sourceRaw = SnapshotSource.live.rawValue
+                changed = true
             }
+            // An unchanged snapshot must not save: the save notification
+            // would immediately make the visible tab recompute the very
+            // numbers this method just derived.
+            guard changed else { return survivor }
             mainContext.safeSave(source: "snapshot.daily.refresh")
             return survivor
         }
@@ -421,6 +427,20 @@ public final class SnapshotScheduler {
     public func computeBreakdown(
         linkedIBRLoan: SharedIBRLoanSnapshot? = nil
     ) -> NetWorthBreakdown {
+        Self.computeBreakdown(
+            context: mainContext, linkedIBRLoan: linkedIBRLoan
+        )
+    }
+
+    /// Context-agnostic breakdown so background model actors can compute it
+    /// off the main thread with their own contexts.
+    public nonisolated static func computeBreakdown(
+        context: ModelContext,
+        linkedIBRLoan: SharedIBRLoanSnapshot? = nil
+    ) -> NetWorthBreakdown {
+        let settings = try? context
+            .fetch(FetchDescriptor<DurableUserSettings>()).first
+        let plaidPrimary = settings?.primaryFinancialDataSource == .plaid
         var cash = Money.zero
         var investments = Money.zero
         var otherAssets = Money.zero
@@ -431,12 +451,12 @@ public final class SnapshotScheduler {
         let accountDescriptor = FetchDescriptor<CachedAccount>(
             predicate: #Predicate { $0.deleted == false && $0.closed == false }
         )
-        let accounts = (try? mainContext.fetch(accountDescriptor)) ?? []
+        let accounts = (try? context.fetch(accountDescriptor)) ?? []
         let legacyLoanKinds: Set<AccountKind> = [
             .mortgage, .autoLoan, .studentLoan, .personalLoan,
             .medicalDebt, .otherDebt, .otherLiability
         ]
-        for account in accounts where !usesPlaidTransactions || legacyLoanKinds.contains(account.kind) {
+        for account in accounts where !plaidPrimary || legacyLoanKinds.contains(account.kind) {
             let kind = account.kind
             let balance = account.balance
             switch kind {
@@ -457,8 +477,8 @@ public final class SnapshotScheduler {
             }
         }
 
-        if usesPlaidTransactions {
-            let financialAccounts = (try? mainContext.fetch(
+        if plaidPrimary {
+            let financialAccounts = (try? context.fetch(
                 FetchDescriptor<CachedFinancialAccount>(
                     predicate: #Predicate { $0.deleted == false }
                 )
@@ -487,11 +507,11 @@ public final class SnapshotScheduler {
         let manualDescriptor = FetchDescriptor<DurableManualAsset>(
             predicate: #Predicate { $0.deleted == false }
         )
-        let manual = (try? mainContext.fetch(manualDescriptor)) ?? []
-        let treatments = (try? mainContext.fetch(
+        let manual = (try? context.fetch(manualDescriptor)) ?? []
+        let treatments = (try? context.fetch(
             FetchDescriptor<DurablePlaidAccountTreatment>()
         )) ?? []
-        let plaidAccounts = (try? mainContext.fetch(
+        let plaidAccounts = (try? context.fetch(
             FetchDescriptor<CachedPlaidAccount>()
         )) ?? []
         let plaidResolver = PlaidContributionResolver(

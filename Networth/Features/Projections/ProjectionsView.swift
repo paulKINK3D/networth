@@ -1,17 +1,24 @@
 import SwiftUI
 import SwiftData
 import Charts
+import Combine
 import NetworthCore
 
 /// The app's daily decision surface: what cash is available, what will move,
 /// and whether known obligations plus ordinary spending remain above buffer.
 struct ProjectionsView: View {
+    /// Debounced app-wide save events: the projection recomputes once per
+    /// burst of persistence activity instead of on every body evaluation.
+    private static let saveEvents: AnyPublisher<Notification, Never> =
+        NotificationCenter.default
+            .publisher(for: .networthModelContextSaved)
+            .debounce(for: .seconds(0.6), scheduler: RunLoop.main)
+            .eraseToAnyPublisher()
+
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
     @Query(sort: \CachedScheduledTransaction.nextDate) private var scheduled: [CachedScheduledTransaction]
-    @Query private var allTransactions: [CachedTransaction]
-    @Query private var financialTransactions: [CachedFinancialTransaction]
     @Query private var categories: [CachedCategory]
     @Query private var cardSettings: [DurableCardSettings]
     @Query private var userSettings: [DurableUserSettings]
@@ -24,30 +31,81 @@ struct ProjectionsView: View {
     @State private var selectedPayment: UpcomingCardPayment?
     @State private var scrubbedProjectionDate: Date?
     @State private var showingAllUpcomingActivity = false
-
-    init() {
-        let cutoff = Calendar(identifier: .gregorian)
-            .date(byAdding: .day, value: -370, to: .now) ?? .distantPast
-        _allTransactions = Query(
-            filter: #Predicate<CachedTransaction> { $0.date >= cutoff && !$0.deleted },
-            sort: [SortDescriptor(\CachedTransaction.date, order: .reverse)]
-        )
-        _financialTransactions = Query(
-            filter: #Predicate<CachedFinancialTransaction> {
-                $0.postedDate >= cutoff && !$0.deleted && !$0.pending
-            },
-            sort: [
-                SortDescriptor(
-                    \CachedFinancialTransaction.postedDate,
-                    order: .reverse
-                )
-            ]
-        )
-    }
+    /// Forecast cache: computing the projection is the single most expensive
+    /// render-path operation in the app; body must never do it per frame
+    /// (chart scrubbing re-evaluates body continuously).
+    @State private var cachedData: ProjectionData?
+    @State private var cacheFingerprint = ""
+    @State private var isVisible = false
 
     var body: some View {
-        let data = makeProjectionData()
         NavigationStack {
+            Group {
+                if let data = cachedData {
+                    content(data)
+                } else {
+                    // Never compute the forecast inside body: cold loads show
+                    // a placeholder until the first cache fill lands.
+                    NwLoadingState("Building projections…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(NwAppColors.background.ignoresSafeArea())
+                        .navigationTitle("Projections")
+                }
+            }
+            .task { refreshCache() }
+            .onAppear {
+                isVisible = true
+                refreshCache()
+            }
+            .onDisappear { isVisible = false }
+            .onReceive(Self.saveEvents) { _ in
+                if isVisible {
+                    refreshCache(force: true)
+                } else {
+                    // Hidden tab: mark stale, recompute on return.
+                    cacheFingerprint = ""
+                }
+            }
+        }
+    }
+
+    /// Cheap staleness signal. Transactions live in the local-only cache
+    /// store, so the save notification fully covers their changes; only
+    /// small durable tables (CloudKit-synced) contribute here.
+    private var inputFingerprint: String {
+        [
+            "\(accounts.count)", "\(financialAccounts.count)",
+            "\(scheduled.count)", "\(categories.count)",
+            "\(cardSettings.count)", "\(exclusions.count)",
+            "\(transactionExclusions.count)", "\(cashAccountOverrides.count)",
+            "\(userSettings.first?.lastSyncedAt?.timeIntervalSince1970 ?? 0)"
+        ].joined(separator: "|")
+    }
+
+    @State private var refreshTask: Task<Void, Never>?
+
+    private func refreshCache(force: Bool = false) {
+        let fingerprint = inputFingerprint
+        guard force || cachedData == nil || cacheFingerprint != fingerprint
+        else { return }
+        cacheFingerprint = fingerprint
+        let modelContainer = container.modelContainer
+        refreshTask?.cancel()
+        refreshTask = Task {
+            // Detached: @ModelActor inherits the creating executor; built on
+            // main it would compute on main.
+            let data = await Task.detached(priority: .userInitiated) {
+                let dataActor = ProjectionsDataActor(
+                    modelContainer: modelContainer
+                )
+                return await dataActor.build()
+            }.value
+            guard !Task.isCancelled else { return }
+            cachedData = data
+        }
+    }
+
+    private func content(_ data: ProjectionData) -> some View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
                     priorityNotice(data)
@@ -88,7 +146,6 @@ struct ProjectionsView: View {
             .sheet(item: $selectedPayment) { payment in
                 CardPaymentDetailSheet(payment: payment)
             }
-        }
     }
 
     @ViewBuilder
@@ -390,7 +447,7 @@ struct ProjectionsView: View {
 
     // MARK: - Data
 
-    fileprivate struct ProjectionData {
+    fileprivate struct ProjectionData: Sendable {
         let result: CashPositionProjector.Result
         let payments: [UpcomingCardPayment]
         let selectedCashAccounts: [AccountSnapshot]
@@ -525,104 +582,6 @@ struct ProjectionsView: View {
 
     }
 
-    private func makeProjectionData() -> ProjectionData {
-        let availableAccounts = availableAccountSnapshots
-        let openCash = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
-        var overrideMap: [String: Bool] = [:]
-        cashAccountOverrides.forEach {
-            let id = usesPlaidTransactions ? ($0.canonicalAccountId ?? $0.accountId) : $0.accountId
-            overrideMap[id] = $0.included
-        }
-        let selectedCash = openCash.filter { overrideMap[$0.id] ?? $0.onBudget }
-        let selectedIds = Set(selectedCash.map(\.id))
-
-        let openCards = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCreditCardLike }
-        let configured: [(AccountSnapshot, CardStatementSettings)] = openCards.compactMap { card in
-            guard let stored = cardSettings.first(where: {
-                usesPlaidTransactions
-                    ? ($0.canonicalAccountId ?? $0.accountId) == card.id
-                    : $0.accountId == card.id
-            }),
-                  let paymentAccountID = usesPlaidTransactions
-                    ? (stored.canonicalPaymentAccountId ?? stored.paymentAccountId)
-                    : stored.paymentAccountId,
-                  stored.statementCycleDay >= 1,
-                  stored.paymentDueDay >= 1,
-                  !paymentAccountID.isEmpty else { return nil }
-            let setting = CardStatementSettings(
-                accountId: card.id,
-                statementCycleDay: stored.statementCycleDay,
-                paymentDueDay: stored.paymentDueDay,
-                paymentAccountId: paymentAccountID,
-                minimumPaymentPercent: stored.minimumPaymentPercent,
-                minimumPaymentFloor: stored.minimumPaymentFloor
-            )
-            return (card, setting)
-        }
-        let configuredIds = Set(configured.map { $0.0.id })
-        let missingCards = openCards.filter { !configuredIds.contains($0.id) }.map(\.name)
-        let unfundedCards = configured.compactMap { card, setting -> String? in
-            guard let paymentAccountId = setting.paymentAccountId,
-                  !selectedIds.contains(paymentAccountId) else { return nil }
-            return card.name
-        }
-        let history = usesPlaidTransactions
-            ? financialTransactions.compactMap { $0.toProjectionSummary() }
-            : allTransactions.map { $0.toSummary() }
-        let scheduledSummaries = usesPlaidTransactions
-            ? []
-            : scheduled.filter { !$0.deleted }.map { $0.toSummary() }
-        let spendIds = Set(availableAccounts.filter { !$0.deleted && $0.kind.isSpendAccount }.map(\.id))
-
-        let forecaster = CCPaymentForecaster()
-        let payments = configured.flatMap { card, setting in
-            forecaster.upcomingPayments(
-                card: card,
-                settings: setting,
-                scheduled: scheduledSummaries,
-                historicalTransactions: history,
-                spendAccountIds: spendIds,
-                asOf: .now,
-                horizonDays: horizonDays
-            )
-        }.sorted { $0.dueDate < $1.dueDate }
-
-        let fundedCardIds: Set<String> = Set(configured.compactMap { pair -> String? in
-            let (card, setting) = pair
-            guard let source = setting.paymentAccountId, selectedIds.contains(source) else { return nil }
-            return card.id
-        })
-        let result = CashPositionProjector().project(
-            cashAccounts: openCash,
-            selectedCashAccountIds: selectedIds,
-            cardAccountIds: Set(openCards.map(\.id)),
-            fundedCardAccountIds: fundedCardIds,
-            cardPayments: payments,
-            scheduled: scheduledSummaries,
-            historicalTransactions: history,
-            excludedCategoryIds: excludedCategoryIds,
-            excludedTransactionIds: Set(transactionExclusions.map(\.transactionId)),
-            outflowOnlyExcludedCategoryIds: hiddenInternalCategoryIds,
-            spendAccountIds: spendIds,
-            lookbackDays: 365,
-            asOf: .now,
-            horizonDays: horizonDays,
-            minimumCashBuffer: minimumCashBuffer
-        )
-        return ProjectionData(
-            result: result,
-            payments: payments,
-            selectedCashAccounts: selectedCash,
-            missingCardNames: missingCards,
-            unfundedCardNames: unfundedCards,
-            excludedCategoryNames: categories
-                .filter { !$0.deleted && excludedCategoryIds.contains($0.id) }
-                .map(\.name)
-                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
-            limitedHistory: result.expectedSpend.historyDays < 30
-        )
-    }
-
     private var usesPlaidTransactions: Bool {
         userSettings.first?.primaryFinancialDataSource == .plaid
     }
@@ -636,22 +595,12 @@ struct ProjectionsView: View {
         return accounts.map { $0.toSnapshot() }
     }
 
-    private var horizonDays: Int { userSettings.first?.projectionHorizonDays ?? 90 }
+    /// Display-only: the buffer amount referenced by chart labels. The
+    /// forecast itself reads this from settings inside the data actor.
     private var minimumCashBuffer: Money {
         Money(milliunits: userSettings.first?.dipThresholdMilliunits ?? 500_000)
     }
-    private var excludedCategoryIds: Set<String> {
-        let explicitlyExcluded = Set(exclusions.map(\.categoryId))
-        let hidden = categories.filter {
-            $0.hidden && !$0.deleted && $0.groupName != "Internal Master Category"
-        }
-        return explicitlyExcluded.union(hidden.map(\.id))
-    }
-    private var hiddenInternalCategoryIds: Set<String> {
-        Set(categories.filter {
-            $0.hidden && !$0.deleted && $0.groupName == "Internal Master Category"
-        }.map(\.id))
-    }
+
     private var isStale: Bool {
         guard let date = userSettings.first?.lastSyncedAt else { return false }
         return Date.now.timeIntervalSince(date) > 24 * 60 * 60
@@ -1326,5 +1275,171 @@ private struct CardPaymentDetailSheet: View {
 
     private func detail(_ label: String, _ value: String) -> some View {
         HStack { Text(label); Spacer(); Text(value).foregroundStyle(.secondary) }
+    }
+}
+
+/// Off-main assembly of the full projection: the only implementation of the
+/// forecast pipeline. Owns its own ModelContext; the view renders only
+/// finished results.
+@ModelActor
+private actor ProjectionsDataActor {
+    func build() -> ProjectionsView.ProjectionData {
+        let context = modelContext
+        let settings = try? context
+            .fetch(FetchDescriptor<DurableUserSettings>()).first
+        let usesPlaid = settings?.primaryFinancialDataSource == .plaid
+        let horizonDays = settings?.projectionHorizonDays ?? 90
+        let minimumCashBuffer = Money(
+            milliunits: settings?.dipThresholdMilliunits ?? 500_000
+        )
+        let cutoff = Calendar(identifier: .gregorian)
+            .date(byAdding: .day, value: -370, to: .now) ?? .distantPast
+
+        let accountRows = (try? context.fetch(
+            FetchDescriptor<CachedAccount>()
+        )) ?? []
+        let financialRows = (try? context.fetch(
+            FetchDescriptor<CachedFinancialAccount>(
+                predicate: #Predicate { !$0.deleted }
+            )
+        )) ?? []
+        let availableAccounts = usesPlaid
+            ? financialRows.map { $0.toAccountSnapshot() }
+            : accountRows.map { $0.toSnapshot() }
+        let cashAccountOverrides = (try? context.fetch(
+            FetchDescriptor<DurableProjectionCashAccountOverride>()
+        )) ?? []
+        let cardSettings = (try? context.fetch(
+            FetchDescriptor<DurableCardSettings>()
+        )) ?? []
+        let allTransactions = (try? context.fetch(
+            FetchDescriptor<CachedTransaction>(
+                predicate: #Predicate { $0.date >= cutoff && !$0.deleted }
+            )
+        )) ?? []
+        let financialTransactions = (try? context.fetch(
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    $0.postedDate >= cutoff && !$0.deleted && !$0.pending
+                }
+            )
+        )) ?? []
+        let scheduled = (try? context.fetch(
+            FetchDescriptor<CachedScheduledTransaction>()
+        )) ?? []
+        let categories = (try? context.fetch(
+            FetchDescriptor<CachedCategory>()
+        )) ?? []
+        let exclusions = (try? context.fetch(
+            FetchDescriptor<DurableExcludedSpendCategory>()
+        )) ?? []
+        let transactionExclusions = (try? context.fetch(
+            FetchDescriptor<DurableExcludedSpendTransaction>()
+        )) ?? []
+        let hiddenNonInternal = categories.filter {
+            $0.hidden && !$0.deleted
+                && $0.groupName != "Internal Master Category"
+        }
+        let excludedCategoryIds = Set(exclusions.map(\.categoryId))
+            .union(hiddenNonInternal.map(\.id))
+        let hiddenInternalCategoryIds = Set(categories.filter {
+            $0.hidden && !$0.deleted
+                && $0.groupName == "Internal Master Category"
+        }.map(\.id))
+
+        let openCash = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
+        var overrideMap: [String: Bool] = [:]
+        cashAccountOverrides.forEach {
+            let id = usesPlaid ? ($0.canonicalAccountId ?? $0.accountId) : $0.accountId
+            overrideMap[id] = $0.included
+        }
+        let selectedCash = openCash.filter { overrideMap[$0.id] ?? $0.onBudget }
+        let selectedIds = Set(selectedCash.map(\.id))
+
+        let openCards = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCreditCardLike }
+        let configured: [(AccountSnapshot, CardStatementSettings)] = openCards.compactMap { card in
+            guard let stored = cardSettings.first(where: {
+                usesPlaid
+                    ? ($0.canonicalAccountId ?? $0.accountId) == card.id
+                    : $0.accountId == card.id
+            }),
+                  let paymentAccountID = usesPlaid
+                    ? (stored.canonicalPaymentAccountId ?? stored.paymentAccountId)
+                    : stored.paymentAccountId,
+                  stored.statementCycleDay >= 1,
+                  stored.paymentDueDay >= 1,
+                  !paymentAccountID.isEmpty else { return nil }
+            let setting = CardStatementSettings(
+                accountId: card.id,
+                statementCycleDay: stored.statementCycleDay,
+                paymentDueDay: stored.paymentDueDay,
+                paymentAccountId: paymentAccountID,
+                minimumPaymentPercent: stored.minimumPaymentPercent,
+                minimumPaymentFloor: stored.minimumPaymentFloor
+            )
+            return (card, setting)
+        }
+        let configuredIds = Set(configured.map { $0.0.id })
+        let missingCards = openCards.filter { !configuredIds.contains($0.id) }.map(\.name)
+        let unfundedCards = configured.compactMap { card, setting -> String? in
+            guard let paymentAccountId = setting.paymentAccountId,
+                  !selectedIds.contains(paymentAccountId) else { return nil }
+            return card.name
+        }
+        let history = usesPlaid
+            ? financialTransactions.compactMap { $0.toProjectionSummary() }
+            : allTransactions.map { $0.toSummary() }
+        let scheduledSummaries = usesPlaid
+            ? []
+            : scheduled.filter { !$0.deleted }.map { $0.toSummary() }
+        let spendIds = Set(availableAccounts.filter { !$0.deleted && $0.kind.isSpendAccount }.map(\.id))
+
+        let forecaster = CCPaymentForecaster()
+        let payments = configured.flatMap { card, setting in
+            forecaster.upcomingPayments(
+                card: card,
+                settings: setting,
+                scheduled: scheduledSummaries,
+                historicalTransactions: history,
+                spendAccountIds: spendIds,
+                asOf: .now,
+                horizonDays: horizonDays
+            )
+        }.sorted { $0.dueDate < $1.dueDate }
+
+        let fundedCardIds: Set<String> = Set(configured.compactMap { pair -> String? in
+            let (card, setting) = pair
+            guard let source = setting.paymentAccountId, selectedIds.contains(source) else { return nil }
+            return card.id
+        })
+        let result = CashPositionProjector().project(
+            cashAccounts: openCash,
+            selectedCashAccountIds: selectedIds,
+            cardAccountIds: Set(openCards.map(\.id)),
+            fundedCardAccountIds: fundedCardIds,
+            cardPayments: payments,
+            scheduled: scheduledSummaries,
+            historicalTransactions: history,
+            excludedCategoryIds: excludedCategoryIds,
+            excludedTransactionIds: Set(transactionExclusions.map(\.transactionId)),
+            outflowOnlyExcludedCategoryIds: hiddenInternalCategoryIds,
+            spendAccountIds: spendIds,
+            lookbackDays: 365,
+            asOf: .now,
+            horizonDays: horizonDays,
+            minimumCashBuffer: minimumCashBuffer
+        )
+        return ProjectionsView.ProjectionData(
+            result: result,
+            payments: payments,
+            selectedCashAccounts: selectedCash,
+            missingCardNames: missingCards,
+            unfundedCardNames: unfundedCards,
+            excludedCategoryNames: categories
+                .filter { !$0.deleted && excludedCategoryIds.contains($0.id) }
+                .map(\.name)
+                .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
+            limitedHistory: result.expectedSpend.historyDays < 30
+        )
     }
 }

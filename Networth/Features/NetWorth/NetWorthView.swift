@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import Charts
+import Combine
 import NetworthCore
 
 private enum NetWorthCategory: String, CaseIterable, Identifiable {
@@ -54,7 +55,7 @@ private struct NetWorthEntry: Identifiable {
     let updatedAt: Date?
 }
 
-private struct NetWorthTrendPoint: Identifiable {
+private struct NetWorthTrendPoint: Identifiable, Sendable {
     var id: Date { date }
     let date: Date
     let assets: Money
@@ -62,9 +63,48 @@ private struct NetWorthTrendPoint: Identifiable {
     var netWorth: Money { assets - liabilities }
 }
 
+private struct NetWorthTabRequest: Sendable {
+    let linkedLoan: SharedIBRLoanDocument?
+    let loanHistoryStart: Date?
+}
+
+private struct NetWorthTabModel: Sendable {
+    let breakdown: NetWorthBreakdown
+    let trendPoints: [NetWorthTrendPoint]
+}
+
+/// Off-main assembly of everything the Net Worth tab renders. Owns its own
+/// ModelContext so the multi-table breakdown and per-snapshot IBR balance
+/// lookups never touch the main thread.
+@ModelActor
+private actor NetWorthDataActor {
+    func build(_ request: NetWorthTabRequest) -> NetWorthTabModel {
+        let breakdown = SnapshotScheduler.computeBreakdown(
+            context: modelContext,
+            linkedIBRLoan: request.linkedLoan?.current
+        )
+        let snapshots = (try? modelContext.fetch(
+            FetchDescriptor<DurableNetWorthSnapshot>(
+                sortBy: [SortDescriptor(\.date)]
+            )
+        )) ?? []
+        let points = snapshots.map { snapshot in
+            let loanBalance = request.linkedLoan?.balance(
+                on: snapshot.date,
+                historyStartDate: request.loanHistoryStart
+            ) ?? .zero
+            return NetWorthTrendPoint(
+                date: snapshot.date,
+                assets: snapshot.assets,
+                liabilities: snapshot.liabilities + loanBalance
+            )
+        }
+        return NetWorthTabModel(breakdown: breakdown, trendPoints: points)
+    }
+}
+
 struct NetWorthView: View {
     @Environment(AppContainerController.self) private var container
-    @Query(sort: \DurableNetWorthSnapshot.date) private var snapshots: [DurableNetWorthSnapshot]
     @Query(sort: \CachedAccount.balanceMilliunits, order: .reverse) private var accounts: [CachedAccount]
     @Query(sort: \CachedFinancialAccount.currentBalanceMilliunits, order: .reverse)
     private var financialAccounts: [CachedFinancialAccount]
@@ -119,10 +159,17 @@ struct NetWorthView: View {
                         )
                     }
 
-                    heroCard
-                    chartCard
-                    balanceSheet
-                    allAccountsLink
+                    if cachedBreakdown != nil {
+                        heroCard
+                        chartCard
+                        balanceSheet
+                        allAccountsLink
+                    } else {
+                        // Cold load: the breakdown computes off the render
+                        // path; never fetch-through inside body.
+                        NwLoadingState("Loading net worth…")
+                            .frame(maxWidth: .infinity, minHeight: 320)
+                    }
                 }
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.lg)
@@ -132,6 +179,19 @@ struct NetWorthView: View {
             .toolbar { syncToolbarItem }
             .sheet(isPresented: $showingTrendDetail) {
                 TrendDetailView().environment(container)
+            }
+            .task { refreshCaches() }
+            .onAppear {
+                isVisible = true
+                refreshCaches()
+            }
+            .onDisappear { isVisible = false }
+            .onReceive(Self.saveEvents) { _ in
+                if isVisible {
+                    refreshCaches(force: true)
+                } else {
+                    cacheFingerprint = ""
+                }
             }
         }
     }
@@ -175,6 +235,63 @@ struct NetWorthView: View {
 
     // MARK: - Cards
 
+    /// Caches: `computeBreakdown` refetches several tables and the trend
+    /// series walks every snapshot (with per-point IBR lookups). The view
+    /// reads both repeatedly per render, and chart scrubbing re-renders
+    /// continuously — so both refresh once per debounced save burst, and
+    /// only while this tab is visible.
+    @State private var cachedBreakdown: NetWorthBreakdown?
+    @State private var cachedTrendPoints: [NetWorthTrendPoint]?
+    @State private var cacheFingerprint = ""
+    @State private var isVisible = false
+
+    private static let saveEvents: AnyPublisher<Notification, Never> =
+        NotificationCenter.default
+            .publisher(for: .networthModelContextSaved)
+            .debounce(for: .seconds(0.6), scheduler: RunLoop.main)
+            .eraseToAnyPublisher()
+
+    /// Cheap staleness signal covering CloudKit-driven changes that never
+    /// post the local save notification.
+    private var inputFingerprint: String {
+        [
+            "\(accounts.count)",
+            "\(manualAssets.count)", "\(plaidAccounts.count)",
+            "\(plaidTreatments.count)",
+            "\(userSettings.first?.chartStartDate?.timeIntervalSince1970 ?? 0)",
+            "\(userSettings.first?.lastSyncedAt?.timeIntervalSince1970 ?? 0)"
+        ].joined(separator: "|")
+    }
+
+    @State private var refreshTask: Task<Void, Never>?
+
+    private func refreshCaches(force: Bool = false) {
+        let fingerprint = inputFingerprint
+        guard force || cachedBreakdown == nil
+            || cacheFingerprint != fingerprint else { return }
+        cacheFingerprint = fingerprint
+        let request = NetWorthTabRequest(
+            linkedLoan: container.linkedIBRLoanDocument,
+            loanHistoryStart:
+                container.effectiveLinkedIBRLoanHistoryStartDate()
+        )
+        let modelContainer = container.modelContainer
+        refreshTask?.cancel()
+        refreshTask = Task {
+            // Detached: @ModelActor inherits the creating executor; built on
+            // main it would compute on main.
+            let model = await Task.detached(priority: .userInitiated) {
+                let dataActor = NetWorthDataActor(
+                    modelContainer: modelContainer
+                )
+                return await dataActor.build(request)
+            }.value
+            guard !Task.isCancelled else { return }
+            cachedBreakdown = model.breakdown
+            cachedTrendPoints = model.trendPoints
+        }
+    }
+
     /// Accounts left the tab bar for Budget; this is its home now.
     private var allAccountsLink: some View {
         NavigationLink {
@@ -198,9 +315,13 @@ struct NetWorthView: View {
         .buttonStyle(.plain)
     }
 
+    /// UI is gated on the cache being present; the zero fallback exists only
+    /// so accessors are total — it never renders.
     private var breakdown: NetWorthBreakdown {
-        container.snapshotScheduler.computeBreakdown(
-            linkedIBRLoan: container.linkedIBRLoanDocument?.current
+        cachedBreakdown ?? NetWorthBreakdown(
+            cash: .zero, investments: .zero, otherAssets: .zero,
+            manualAssets: .zero, creditCardDebt: .zero, loans: .zero,
+            otherLiabilities: .zero
         )
     }
 
@@ -658,19 +779,7 @@ struct NetWorthView: View {
     }
 
     private var trendPoints: [NetWorthTrendPoint] {
-        let loanDocument = container.linkedIBRLoanDocument
-        let loanHistoryStart = container.effectiveLinkedIBRLoanHistoryStartDate()
-        return snapshots.map { snapshot in
-            let linkedLoanBalance = loanDocument?.balance(
-                on: snapshot.date,
-                historyStartDate: loanHistoryStart
-            ) ?? .zero
-            return NetWorthTrendPoint(
-                date: snapshot.date,
-                assets: snapshot.assets,
-                liabilities: snapshot.liabilities + linkedLoanBalance
-            )
-        }
+        cachedTrendPoints ?? []
     }
 
     private func filteredSnapshots() -> [NetWorthTrendPoint] {
