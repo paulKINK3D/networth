@@ -2720,7 +2720,10 @@ public final class PlaidTransactionSyncCoordinator {
     /// keeps its OWN prefilled legs, written as an authoritative split
     /// decision, in one save. Rows whose legs don't validate are skipped
     /// and stay in review.
-    public func approveSuggestedSplitTransactions(ids: [String]) -> Int {
+    public func approveSuggestedSplitTransactions(
+        ids: [String],
+        finalize: Bool = true
+    ) -> Int {
         guard !ids.isEmpty else { return 0 }
         let selectedIDs = ids
         let descriptor = FetchDescriptor<CachedFinancialTransaction>(
@@ -2834,6 +2837,7 @@ public final class PlaidTransactionSyncCoordinator {
 
         guard !approvedRows.isEmpty else { return 0 }
         advanceRecurringExpectations(for: approvedRows)
+        guard finalize else { return approvedRows.count }
         applyCurrentCanonicalState()
         guard mainContext.safeSave(
             source: "plaidTransactions.approveSuggestedSplits"
@@ -2876,7 +2880,8 @@ public final class PlaidTransactionSyncCoordinator {
         payeeCanonicalId: String? = nil,
         categoryName: String?,
         categoryCanonicalId: String? = nil,
-        treatment: ForecastTreatment
+        treatment: ForecastTreatment,
+        finalize: Bool = true
     ) -> Int {
         guard !ids.isEmpty else { return 0 }
         let selectedIDs = ids
@@ -2949,6 +2954,10 @@ public final class PlaidTransactionSyncCoordinator {
         }
         advanceRecurringExpectations(for: rows)
         updateCachedPayeeName(payee)
+        // Batch callers apply many clusters then finalize ONCE — the
+        // full-table classifier pass per cluster is what made large
+        // selections crawl.
+        guard finalize else { return rows.count }
         applyCurrentCanonicalState()
         guard mainContext.safeSave(
             source: "plaidTransactions.approveCluster"
@@ -2958,6 +2967,20 @@ public final class PlaidTransactionSyncCoordinator {
         }
         refreshCanonicalReviewCounts()
         return rows.count
+    }
+
+    /// One classifier pass + one save for a batch of finalize-deferred
+    /// approvals. Returns false (rolling everything back) on save failure.
+    public func finalizeBatchApprovals() -> Bool {
+        applyCurrentCanonicalState()
+        guard mainContext.safeSave(
+            source: "plaidTransactions.batchApprove"
+        ) else {
+            mainContext.rollback()
+            return false
+        }
+        refreshCanonicalReviewCounts()
+        return true
     }
 
     private func assignAliases(

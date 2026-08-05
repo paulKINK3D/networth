@@ -2451,25 +2451,33 @@ struct GroupedHistoricalReviewSheet: View {
             selectedClusterIDs.contains($0.id)
         }
         Task { @MainActor in
+            let coordinator = container.plaidTransactionSyncCoordinator
             var approvedTotal = 0
             for (index, cluster) in targets.enumerated() {
                 batchProgress =
                     "Approving \(index + 1) of \(targets.count)…"
                 await Task.yield()
-                try? await Task.sleep(for: .milliseconds(30))
+                // Decisions only — the expensive classifier pass and save
+                // run ONCE below, not per cluster.
                 approvedTotal += cluster.isSplit
-                    ? container.plaidTransactionSyncCoordinator
-                        .approveSuggestedSplitTransactions(
-                            ids: cluster.transactionIDs
-                        )
-                    : container.approvePlaidTransactionCluster(
+                    ? coordinator.approveSuggestedSplitTransactions(
+                        ids: cluster.transactionIDs,
+                        finalize: false
+                    )
+                    : coordinator.approveTransactions(
                         ids: cluster.transactionIDs,
                         displayName: cluster.displayName,
                         payeeCanonicalId: cluster.payeeCanonicalId,
                         categoryName: cluster.categoryName,
                         categoryCanonicalId: cluster.categoryCanonicalId,
-                        treatment: cluster.treatment
+                        treatment: cluster.treatment,
+                        finalize: false
                     )
+            }
+            batchProgress = "Saving…"
+            await Task.yield()
+            if approvedTotal > 0, !coordinator.finalizeBatchApprovals() {
+                approvedTotal = 0
             }
             batchProgress = nil
             isBatchApproving = false
