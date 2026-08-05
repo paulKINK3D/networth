@@ -2036,6 +2036,15 @@ public final class PlaidTransactionSyncCoordinator {
                         .map(\.payeeCanonicalId)
                 )
             }
+            // A row's OWN matched YNAB payee outranks name inference: once
+            // "United Dumplings" exists as a contact, prefix matching would
+            // otherwise claim every plain "United" airline row whose history
+            // says it is just United.
+            if resolvedIDs.isEmpty, !hasSuppressedIdentityEvidence,
+               let suggestion = suggestionsByPlaidID[row.id] {
+                applyReferenceSuggestion(suggestion, to: row)
+                continue
+            }
             if resolvedIDs.isEmpty && !hasSuppressedIdentityEvidence {
                 for candidate in [
                     summary.providerMerchantName,
@@ -2076,15 +2085,6 @@ public final class PlaidTransactionSyncCoordinator {
             guard resolvedIDs.count == 1,
                   let payeeID = resolvedIDs.first,
                   let payee = payeeByID[payeeID] else {
-                // Suggestions fill only the no-evidence case. Conflicting or
-                // suppressed alias evidence must leave the row unresolved —
-                // the user, not YNAB history, breaks the tie.
-                if resolvedIDs.isEmpty,
-                   !hasSuppressedIdentityEvidence,
-                   let suggestion = suggestionsByPlaidID[row.id] {
-                    applyReferenceSuggestion(suggestion, to: row)
-                    continue
-                }
                 row.payeeCanonicalId = nil
                 let hasModelNameSuggestion =
                     row.classificationProvenanceRaw
