@@ -34,6 +34,7 @@ public struct NetWorthSnapshot: Sendable, Hashable, Codable, Identifiable {
 public struct NetWorthBreakdown: Sendable, Hashable, Codable {
     public let cash: Money
     public let investments: Money
+    public let retirement: Money
     public let otherAssets: Money
     public let manualAssets: Money
     public let creditCardDebt: Money
@@ -43,6 +44,7 @@ public struct NetWorthBreakdown: Sendable, Hashable, Codable {
     public init(
         cash: Money = .zero,
         investments: Money = .zero,
+        retirement: Money = .zero,
         otherAssets: Money = .zero,
         manualAssets: Money = .zero,
         creditCardDebt: Money = .zero,
@@ -51,6 +53,7 @@ public struct NetWorthBreakdown: Sendable, Hashable, Codable {
     ) {
         self.cash = cash
         self.investments = investments
+        self.retirement = retirement
         self.otherAssets = otherAssets
         self.manualAssets = manualAssets
         self.creditCardDebt = creditCardDebt
@@ -58,7 +61,9 @@ public struct NetWorthBreakdown: Sendable, Hashable, Codable {
         self.otherLiabilities = otherLiabilities
     }
 
-    public var totalAssets: Money { cash + investments + otherAssets + manualAssets }
+    public var totalAssets: Money {
+        cash + investments + retirement + otherAssets + manualAssets
+    }
     public var totalLiabilities: Money { creditCardDebt + loans + otherLiabilities }
     public var netWorth: Money { totalAssets - totalLiabilities }
 }

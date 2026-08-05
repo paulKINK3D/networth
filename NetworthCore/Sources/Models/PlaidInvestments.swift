@@ -11,6 +11,24 @@ public enum PlaidAccountTreatment: String, Codable, Sendable, CaseIterable {
     public var contributesToNetWorth: Bool { self == .included }
 }
 
+/// Splits retirement accounts out of the general Investments bucket using
+/// Plaid's account subtype taxonomy.
+public enum PlaidRetirementClassifier {
+    private static let retirementSubtypes: Set<String> = [
+        "401a", "401k", "403b", "457b", "ira", "roth", "roth 401k",
+        "sep ira", "simple ira", "sarsep", "keogh", "pension",
+        "profit sharing plan", "retirement", "thrift savings plan",
+        "rrsp", "rrif", "lira", "lrsp", "lrif", "lif", "prif", "sipp"
+    ]
+
+    public static func isRetirement(subtype: String?) -> Bool {
+        guard let subtype else { return false }
+        return retirementSubtypes.contains(
+            subtype.lowercased().trimmingCharacters(in: .whitespaces)
+        )
+    }
+}
+
 public struct PlaidInvestmentItem: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public let institutionName: String

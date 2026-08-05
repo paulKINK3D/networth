@@ -7,6 +7,7 @@ import NetworthCore
 private enum NetWorthCategory: String, CaseIterable, Identifiable {
     case cash
     case investments
+    case retirement
     case property
     case otherAssets
     case cards
@@ -19,6 +20,7 @@ private enum NetWorthCategory: String, CaseIterable, Identifiable {
         switch self {
         case .cash: return "Cash"
         case .investments: return "Investments"
+        case .retirement: return "Retirement"
         case .property: return "Property & Valuables"
         case .otherAssets: return "Other Assets"
         case .cards: return "Credit Cards"
@@ -31,6 +33,7 @@ private enum NetWorthCategory: String, CaseIterable, Identifiable {
         switch self {
         case .cash: return .cash
         case .investments: return .investment
+        case .retirement: return .retirement
         case .property: return .realEstate
         case .otherAssets: return .otherAsset
         case .cards: return .creditCard
@@ -42,7 +45,7 @@ private enum NetWorthCategory: String, CaseIterable, Identifiable {
     var isLiability: Bool {
         switch self {
         case .cards, .loans, .otherLiabilities: return true
-        case .cash, .investments, .property, .otherAssets: return false
+        case .cash, .investments, .retirement, .property, .otherAssets: return false
         }
     }
 }
@@ -574,7 +577,7 @@ struct NetWorthView: View {
     }
 
     private var assetCategories: [NetWorthCategory] {
-        [.cash, .investments, .property, .otherAssets]
+        [.cash, .investments, .retirement, .property, .otherAssets]
             .filter { !amount(for: $0).isZero }
     }
 
@@ -587,6 +590,7 @@ struct NetWorthView: View {
         switch category {
         case .cash: return breakdown.cash
         case .investments: return breakdown.investments
+        case .retirement: return breakdown.retirement
         case .property: return breakdown.manualAssets
         case .otherAssets: return breakdown.otherAssets
         case .cards: return breakdown.creditCardDebt
@@ -624,7 +628,7 @@ struct NetWorthView: View {
                 matches = account.kind.isCashLike
             case .investments:
                 matches = account.kind == .investment
-            case .property:
+            case .retirement, .property:
                 matches = false
             case .otherAssets:
                 matches = account.kind == .otherAsset
@@ -664,7 +668,7 @@ struct NetWorthView: View {
                     matches = account.type == .other && !account.balance.isNegative
                 case .otherLiabilities:
                     matches = account.type == .other && account.balance.isNegative
-                case .property:
+                case .retirement, .property:
                     matches = false
                 }
                 guard matches else { return nil }
@@ -697,11 +701,13 @@ struct NetWorthView: View {
             }
 
         let plaidEntries: [NetWorthEntry]
-        if category == .investments {
+        if category == .investments || category == .retirement {
             let contributingIDs = Set(plaidResolver.standalonePlaidAccounts.map(\.id))
             plaidEntries = plaidAccounts.compactMap { account in
                 guard contributingIDs.contains(account.id),
-                      let balance = account.currentBalance else {
+                      let balance = account.currentBalance,
+                      PlaidRetirementClassifier.isRetirement(subtype: account.subtype)
+                          == (category == .retirement) else {
                     return nil
                 }
                 let mask = account.mask.map { " •••• \($0)" } ?? ""
@@ -740,7 +746,9 @@ struct NetWorthView: View {
     ) -> Bool {
         switch category {
         case .investments:
-            return [.brokerage, .retirement, .crypto].contains(asset.kind)
+            return [.brokerage, .crypto].contains(asset.kind)
+        case .retirement:
+            return asset.kind == .retirement
         case .property:
             return [.realEstate, .vehicle, .collectible].contains(asset.kind)
         case .otherAssets:

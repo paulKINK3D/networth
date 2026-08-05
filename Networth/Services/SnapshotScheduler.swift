@@ -452,6 +452,7 @@ public final class SnapshotScheduler {
         let plaidPrimary = settings?.primaryFinancialDataSource == .plaid
         var cash = Money.zero
         var investments = Money.zero
+        var retirement = Money.zero
         var otherAssets = Money.zero
         var cardDebt = Money.zero
         var loans = Money.zero
@@ -534,10 +535,12 @@ public final class SnapshotScheduler {
             // Plaid supplies only the effective live value.
             let value = plaidResolver.effectiveValue(for: asset)
             switch asset.kind {
-            case .brokerage, .retirement, .crypto:
+            case .brokerage, .crypto:
                 // Investment-style manual assets contribute to the Investments
                 // tile alongside YNAB investment accounts.
                 investments += value
+            case .retirement:
+                retirement += value
             case .realEstate, .vehicle, .collectible:
                 // Tangible items live in the Manual Assets tile.
                 manualAssets += value
@@ -547,9 +550,14 @@ public final class SnapshotScheduler {
             }
         }
 
-        investments += plaidResolver.standalonePlaidAccounts
-            .compactMap(\.currentBalance)
-            .sum()
+        for account in plaidResolver.standalonePlaidAccounts {
+            guard let balance = account.currentBalance else { continue }
+            if PlaidRetirementClassifier.isRetirement(subtype: account.subtype) {
+                retirement += balance
+            } else {
+                investments += balance
+            }
+        }
 
         if let linkedIBRLoan {
             loans += linkedIBRLoan.totalBalance
@@ -558,6 +566,7 @@ public final class SnapshotScheduler {
         return NetWorthBreakdown(
             cash: cash,
             investments: investments,
+            retirement: retirement,
             otherAssets: otherAssets,
             manualAssets: manualAssets,
             creditCardDebt: cardDebt,
