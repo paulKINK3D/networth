@@ -2021,6 +2021,16 @@ public final class PlaidTransactionSyncCoordinator {
                 applyCanonicalDecision(decision, to: row)
                 continue
             }
+            // A historical row's OWN matched YNAB identity is ground truth
+            // and outranks propagated aliases and name inference — generic
+            // bank descriptors ("Online Transfer") otherwise let one
+            // confirmed transfer claim every transfer.
+            if let suggestion = suggestionsByPlaidID[row.id] {
+                applyReferenceSuggestion(
+                    suggestion, to: row, payeeByID: payeeByID
+                )
+                continue
+            }
             let summary = row.toSummary()
             var resolvedIDs = Set<String>()
             var hasSuppressedIdentityEvidence = false
@@ -2035,15 +2045,6 @@ public final class PlaidTransactionSyncCoordinator {
                         .filter { $0.confirmed && !$0.suppressed }
                         .map(\.payeeCanonicalId)
                 )
-            }
-            // A row's OWN matched YNAB payee outranks name inference: once
-            // "United Dumplings" exists as a contact, prefix matching would
-            // otherwise claim every plain "United" airline row whose history
-            // says it is just United.
-            if resolvedIDs.isEmpty, !hasSuppressedIdentityEvidence,
-               let suggestion = suggestionsByPlaidID[row.id] {
-                applyReferenceSuggestion(suggestion, to: row)
-                continue
             }
             if resolvedIDs.isEmpty && !hasSuppressedIdentityEvidence {
                 for candidate in [
@@ -2160,13 +2161,19 @@ public final class PlaidTransactionSyncCoordinator {
     }
 
     /// Prefills one row from its YNAB reference suggestion. Never marks the
-    /// row reviewed: suggestions are not decisions.
+    /// row reviewed: suggestions are not decisions. The CURRENT canonical
+    /// payee name wins over the import-time snapshot so user renames
+    /// propagate.
     private func applyReferenceSuggestion(
         _ suggestion: YNABReferenceSuggestion,
-        to row: CachedFinancialTransaction
+        to row: CachedFinancialTransaction,
+        payeeByID: [String: DurableCanonicalPayee] = [:]
     ) {
         row.payeeCanonicalId = suggestion.payeeCanonicalId
-        if !suggestion.payeeNameSnapshot.isEmpty {
+        if let payeeID = suggestion.payeeCanonicalId,
+           let payee = payeeByID[payeeID] {
+            row.displayName = payee.name
+        } else if !suggestion.payeeNameSnapshot.isEmpty {
             row.displayName = suggestion.payeeNameSnapshot
         } else if row.displayName.trimmingCharacters(
             in: .whitespacesAndNewlines
