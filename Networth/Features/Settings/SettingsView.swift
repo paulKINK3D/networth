@@ -2197,6 +2197,7 @@ struct GroupedHistoricalReviewSheet: View {
     @State private var rowsByID: [String: CachedFinancialTransaction] = [:]
     @State private var approveError: String?
     @State private var loaded = false
+    @State private var editingCluster: HistoricalReviewCluster?
 
     var body: some View {
         NavigationStack {
@@ -2241,6 +2242,10 @@ struct GroupedHistoricalReviewSheet: View {
                 }
             }
             .onAppear(perform: reload)
+            .sheet(item: $editingCluster) { cluster in
+                ClusterBatchEditSheet(cluster: cluster, onSaved: reload)
+                    .environment(container)
+            }
         }
     }
 
@@ -2261,6 +2266,19 @@ struct GroupedHistoricalReviewSheet: View {
                 }
             }
             Spacer(minLength: 0)
+            // Reclassify the whole group before approving — e.g. a payee
+            // whose suggested type is wrong for every member.
+            Button {
+                editingCluster = cluster
+            } label: {
+                Image(systemName: "pencil.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(NwAppColors.info)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(
+                "Edit and approve \(cluster.transactionIDs.count) transactions"
+            )
             if cluster.canBatchApprove {
                 Button {
                     approve(cluster)
@@ -2354,6 +2372,190 @@ struct GroupedHistoricalReviewSheet: View {
             uniqueKeysWithValues: historical.map { ($0.id, $0) }
         )
         loaded = true
+    }
+}
+
+/// Type-first reclassification of a whole cluster, then one-tap approval of
+/// every member: pick what these transactions ARE, then only valid fields
+/// appear, and the batch writes one authoritative decision per transaction.
+struct ClusterBatchEditSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query(sort: \DurableCanonicalCategory.name)
+    private var canonicalCategories: [DurableCanonicalCategory]
+    @Query private var durableCategoryGroups: [DurableCategoryGroup]
+    let cluster: HistoricalReviewCluster
+    let onSaved: () -> Void
+
+    @State private var displayName: String = ""
+    @State private var treatment: ForecastTreatment = .ordinarySpending
+    @State private var categoryName: String = ""
+    @State private var categoryCanonicalId: String?
+    @State private var saveError: String?
+    @State private var loaded = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Applies to all \(cluster.transactionIDs.count) transactions in this group.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Type") {
+                    Picker("Transaction type", selection: $treatment) {
+                        ForEach(ForecastTreatment.allCases, id: \.self) {
+                            Text($0.displayName).tag($0)
+                        }
+                    }
+                    .onChange(of: treatment) {
+                        if let id = categoryCanonicalId,
+                           let selected = categoryOptions.first(where: {
+                               $0.categoryID == id
+                           }),
+                           !TransactionTypeRules.isValidCombination(
+                               treatment: treatment,
+                               categoryRole: selected.role
+                           ) {
+                            categoryCanonicalId = nil
+                            categoryName = ""
+                        }
+                    }
+                }
+                Section("Details") {
+                    TextField("Payee", text: $displayName)
+                    if treatment.requiresCategory {
+                        NavigationLink {
+                            PlaidCategoryPicker(
+                                selection: $categoryName,
+                                groups: visibleCategoryGroups,
+                                onSelect: { option in
+                                    categoryCanonicalId = option.categoryID
+                                }
+                            )
+                        } label: {
+                            LabeledContent("Category") {
+                                Text(categoryName.trimmed.isEmpty
+                                    ? "Select category"
+                                    : categoryName)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } else {
+                        LabeledContent("Category") {
+                            Text(treatment == .excluded
+                                ? "Not applicable"
+                                : "Uses the account relationship")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let saveError {
+                    Section {
+                        Text(saveError)
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.caution)
+                    }
+                }
+            }
+            .navigationTitle("Edit Group")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        approveAll()
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(NwAppColors.positive)
+                    }
+                    .accessibilityLabel(
+                        "Approve all \(cluster.transactionIDs.count)"
+                    )
+                    .disabled(!canApprove)
+                }
+            }
+            .onAppear(perform: load)
+        }
+    }
+
+    private var canApprove: Bool {
+        !displayName.trimmed.isEmpty
+            && (!treatment.requiresCategory
+                || !categoryName.trimmed.isEmpty)
+    }
+
+    private var categoryOptions: [PlaidCategoryOption] {
+        let roleByIdentity = Dictionary(
+            durableCategoryGroups.map {
+                ($0.groupIdentity, $0.reportingRole)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return canonicalCategories.compactMap { category in
+            guard !category.hidden,
+                  !category.deletedAtSource,
+                  !category.name.trimmed.isEmpty else { return nil }
+            return PlaidCategoryOption(
+                categoryID: category.canonicalId,
+                name: category.name.trimmed,
+                groupName: category.groupName.trimmed.isEmpty
+                    ? "Networth Categories"
+                    : category.groupName.trimmed,
+                role: category.categoryGroupIdentity
+                    .flatMap { roleByIdentity[$0] }
+            )
+        }
+    }
+
+    private var visibleCategoryGroups: [PlaidCategoryGroup] {
+        guard let allowed = TransactionTypeRules.allowedCategoryRoles(
+            for: treatment
+        ) else { return [] }
+        let options = categoryOptions.filter { option in
+            guard let role = option.role else { return true }
+            return allowed.contains(role)
+        }
+        return PlaidCategoryGroup.makeGroups(from: options)
+    }
+
+    private func load() {
+        guard !loaded else { return }
+        loaded = true
+        displayName = cluster.displayName
+        treatment = cluster.treatment
+        categoryName = cluster.categoryName ?? ""
+        categoryCanonicalId = cluster.categoryCanonicalId
+    }
+
+    private func approveAll() {
+        saveError = nil
+        let approved = container.approvePlaidTransactionCluster(
+            ids: cluster.transactionIDs,
+            displayName: displayName.trimmed,
+            payeeCanonicalId: cluster.payeeCanonicalId,
+            categoryName: treatment.requiresCategory
+                ? categoryName.trimmed
+                : nil,
+            categoryCanonicalId: treatment.requiresCategory
+                ? categoryCanonicalId
+                : nil,
+            treatment: treatment
+        )
+        guard approved > 0 else {
+            saveError = "The group could not be approved. Check the type and category, then try again."
+            return
+        }
+        onSaved()
+        dismiss()
     }
 }
 
