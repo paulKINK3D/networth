@@ -105,6 +105,7 @@ public final class YNABReferenceImportCoordinator {
                 budgetId: budgetId, lastKnowledge: nil
             )
             seedCategoryGroupsAndCategories(categoriesResponse.category_groups)
+            ensureRoleGroupsExist()
 
             phase = .running("Importing contacts")
             let payeesResponse = try await client.payees(
@@ -348,6 +349,52 @@ public final class YNABReferenceImportCoordinator {
         if lowered.contains("income") { return .income }
         if lowered.contains("invest") { return .investment }
         return .spending
+    }
+
+    /// YNAB budgets often have no explicit income or investment group (YNAB
+    /// tracks inflows internally), yet the type-first contract needs a
+    /// category of the matching role for income and investment activity.
+    /// Guarantee one Networth-owned group + starter category per missing
+    /// role. Additive: never touches existing rows.
+    private func ensureRoleGroupsExist() {
+        let groups = (try? mainContext.fetch(
+            FetchDescriptor<DurableCategoryGroup>()
+        )) ?? []
+        let categories = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        let fallbacks: [(role: CategoryReportingRole, identity: String,
+                         groupName: String, categoryName: String)] = [
+            (.income, "networth:income", "Income", "Income"),
+            (.investment, "networth:investments", "Investments",
+             "Investment Contributions")
+        ]
+        for fallback in fallbacks {
+            guard !groups.contains(where: {
+                $0.reportingRole == fallback.role && !$0.hidden
+            }) else { continue }
+            if !groups.contains(where: {
+                $0.groupIdentity == fallback.identity
+            }) {
+                mainContext.insert(DurableCategoryGroup(
+                    groupIdentity: fallback.identity,
+                    name: fallback.groupName,
+                    displayOrder: groups.count,
+                    reportingRole: fallback.role
+                ))
+            }
+            let categoryCanonicalId = "networth:\(fallback.identity)-default"
+            if !categories.contains(where: {
+                $0.canonicalId == categoryCanonicalId
+            }) {
+                mainContext.insert(DurableCanonicalCategory(
+                    canonicalId: categoryCanonicalId,
+                    name: fallback.categoryName,
+                    groupName: fallback.groupName,
+                    categoryGroupIdentity: fallback.identity
+                ))
+            }
+        }
     }
 
     // MARK: - Suggestions
