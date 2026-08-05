@@ -2218,9 +2218,6 @@ struct GroupedHistoricalReviewSheet: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
 
     @State private var clusters: [HistoricalReviewCluster] = []
-    @State private var rowsByID: [String: CachedFinancialTransaction] = [:]
-    @State private var accountNamesByID: [String: String] = [:]
-    @State private var ynabEvidenceByID: [String: String] = [:]
     @State private var approveError: String?
     @State private var loaded = false
     @State private var editingCluster: HistoricalReviewCluster?
@@ -2327,38 +2324,8 @@ struct GroupedHistoricalReviewSheet: View {
     }
 
     private func clusterDetail(_ cluster: HistoricalReviewCluster) -> some View {
-        List {
-            ForEach(cluster.transactionIDs, id: \.self) { id in
-                if let row = rowsByID[id] {
-                    NavigationLink {
-                        PlaidTransactionReviewEditor(
-                            transaction: row,
-                            matchingTransactions: [],
-                            dismissAfterSave: true,
-                            onSaved: reload
-                        )
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(row.displayName)
-                            Text(
-                                "\(row.postedDate.formatted(date: .abbreviated, time: .omitted)) · \(accountName(for: row)) · \(CurrencyFormatter.currency(Money(milliunits: row.amountMilliunits)))"
-                            )
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
-                            if let evidence = ynabEvidenceByID[row.id] {
-                                Text(evidence)
-                                    .font(NwTypography.footnote)
-                                    .foregroundStyle(NwAppColors.accent)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .navigationTitle(cluster.displayName.isEmpty
-            ? "Transactions"
-            : cluster.displayName)
-        .navigationBarTitleDisplayMode(.inline)
+        ClusterTransactionsDetail(cluster: cluster, onChanged: reload)
+            .environment(container)
     }
 
     /// The subtitle IS the approval preview: exactly the type (and
@@ -2405,10 +2372,6 @@ struct GroupedHistoricalReviewSheet: View {
         reload()
     }
 
-    private func accountName(for row: CachedFinancialTransaction) -> String {
-        accountNamesByID[row.canonicalAccountId] ?? "Account"
-    }
-
     private func reload() {
         let ctx = container.modelContainer.mainContext
         let descriptor = FetchDescriptor<CachedFinancialTransaction>(
@@ -2419,9 +2382,134 @@ struct GroupedHistoricalReviewSheet: View {
         let rows = (try? ctx.fetch(descriptor)) ?? []
         let historical = rows.filter { $0.reviewOriginRaw == "historical" }
         clusters = HistoricalReviewCluster.build(from: historical)
-        rowsByID = Dictionary(
-            uniqueKeysWithValues: historical.map { ($0.id, $0) }
+        loaded = true
+    }
+}
+
+/// Drill-down into one review group with multi-select: a "group" the
+/// matcher built is sometimes several real types mixed together, so any
+/// subset can be selected and batch-edited through the type-first editor.
+/// Individual rows still open the full single-transaction editor.
+struct ClusterTransactionsDetail: View {
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    let cluster: HistoricalReviewCluster
+    let onChanged: () -> Void
+
+    @State private var rows: [CachedFinancialTransaction] = []
+    @State private var accountNamesByID: [String: String] = [:]
+    @State private var evidenceByID: [String: String] = [:]
+    @State private var selectedIDs: Set<String> = []
+    @State private var editingSelection: HistoricalReviewCluster?
+
+    var body: some View {
+        List {
+            if rows.count > 1 {
+                Section {
+                    Text("Tap a circle to select transactions, then Edit to reclassify just those together.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ForEach(rows, id: \.id) { row in
+                HStack(spacing: NwSpacing.md) {
+                    Button {
+                        toggle(row.id)
+                    } label: {
+                        Image(systemName: selectedIDs.contains(row.id)
+                            ? "checkmark.circle.fill"
+                            : "circle")
+                            .font(.title3)
+                            .foregroundStyle(selectedIDs.contains(row.id)
+                                ? NwAppColors.positive
+                                : Color.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    NavigationLink {
+                        PlaidTransactionReviewEditor(
+                            transaction: row,
+                            matchingTransactions: [],
+                            dismissAfterSave: true,
+                            onSaved: {
+                                reloadRows()
+                                onChanged()
+                            }
+                        )
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.displayName)
+                            Text(
+                                "\(row.postedDate.formatted(date: .abbreviated, time: .omitted)) · \(accountNamesByID[row.canonicalAccountId] ?? "Account") · \(CurrencyFormatter.currency(Money(milliunits: row.amountMilliunits)))"
+                            )
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                            if let evidence = evidenceByID[row.id] {
+                                Text(evidence)
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(NwAppColors.accent)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(cluster.displayName.isEmpty
+            ? "Transactions"
+            : cluster.displayName)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Edit \(selectedIDs.count)") {
+                    beginEdit()
+                }
+                .disabled(selectedIDs.isEmpty)
+            }
+        }
+        .sheet(item: $editingSelection) { subset in
+            ClusterBatchEditSheet(cluster: subset) {
+                selectedIDs = []
+                reloadRows()
+                onChanged()
+            }
+            .environment(container)
+        }
+        .onAppear(perform: reloadRows)
+    }
+
+    private func toggle(_ id: String) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
+
+    private func beginEdit() {
+        let selected = rows.filter { selectedIDs.contains($0.id) }
+        guard let sample = selected.first else { return }
+        editingSelection = HistoricalReviewCluster(
+            id: "subset-\(cluster.id)",
+            displayName: sample.displayName.trimmed,
+            payeeCanonicalId: sample.payeeCanonicalId,
+            categoryName: sample.categoryName?.trimmed,
+            categoryCanonicalId: sample.categoryCanonicalId,
+            treatment: sample.forecastTreatment,
+            transactionIDs: selected.map(\.id),
+            totalMilliunits: selected.reduce(0) { $0 + $1.amountMilliunits }
         )
+    }
+
+    private func reloadRows() {
+        let ctx = container.modelContainer.mainContext
+        let ids = cluster.transactionIDs
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                ids.contains($0.id) && $0.requiresReview
+                    && !$0.deleted && !$0.pending
+            }
+        )
+        rows = ((try? ctx.fetch(descriptor)) ?? [])
+            .sorted { $0.postedDate > $1.postedDate }
+        selectedIDs = selectedIDs.intersection(rows.map(\.id))
         let accounts = (try? ctx.fetch(
             FetchDescriptor<CachedFinancialAccount>()
         )) ?? []
@@ -2432,7 +2520,7 @@ struct GroupedHistoricalReviewSheet: View {
         let suggestions = (try? ctx.fetch(
             FetchDescriptor<YNABReferenceSuggestion>()
         )) ?? []
-        ynabEvidenceByID = Dictionary(
+        evidenceByID = Dictionary(
             suggestions.map { suggestion in
                 var parts = ["YNAB"]
                 if !suggestion.payeeNameSnapshot.isEmpty {
@@ -2450,7 +2538,6 @@ struct GroupedHistoricalReviewSheet: View {
             },
             uniquingKeysWith: { first, _ in first }
         )
-        loaded = true
     }
 }
 
