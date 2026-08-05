@@ -1,6 +1,52 @@
 # WORKING
 
-## Current State (2026-08-04 — Phase 1 step 2 implemented, uncommitted)
+## Current State (2026-08-04 — Phase 1 step 3 implemented, uncommitted)
+
+### Step 3 — Spending History screen (this session)
+
+- `NetworthCore/Models/SpendingHistory.swift`: `SpendingHistoryBuilder`
+  aggregates approved entries into exactly-N months (oldest first, zero-
+  filled): negative ordinary = spending, positive refunds offset within the
+  category, income/transfers/card payments/investment contributions/
+  exclusions never counted; timezone-safe month bucketing via supplied
+  calendar; current month is MTD. 5 new tests (146 total pass).
+- `Networth/Features/Spending/SpendingHistoryView.swift` (new group
+  Features/Spending, registered in pbxproj) replaces BudgetView as the
+  Spending tab: review card (grouped + one-by-one), month header with
+  clamped chevrons, MTD-labeled month total, tappable per-group columns,
+  24-month stacked chart (Swift Charts) with tap-to-segment drill-down,
+  `SpendingGroupDetailSheet` (categories → DisclosureGroup transactions).
+  Off-main aggregation via `SpendingHistoryBuildActor` (@ModelActor) with
+  0.6s-debounced save-notification rebuilds.
+- Chart palette: `NwAppColors.chartCategorical` — 8 fixed dynamic
+  light/dark colors validated with the dataviz palette validator (CVD ≥28ΔE
+  adjacent; dark contrast ≥3:1; light-mode relief = labeled group rows).
+  Hues assigned by group displayOrder, follow the entity, never re-cycled;
+  9th+ group folds into `chartOther` ("Other") in the chart only.
+- Retired: ContentView tab now SpendingHistoryView; BudgetView.swift
+  unregistered from the build (file left on disk — delete from Xcode along
+  with ResetChartHistorySheet.swift); Discretionary Budget settings row +
+  sheet entry removed (dead `DiscretionaryBudgetSettingsSheet` struct still
+  in SettingsView.swift pending deletion); header row now shows Projections
+  horizon.
+- Builds: Debug + Release + test bundle all pass.
+
+### Step-3 Codex review — fixed same session
+- Split legs now resolve canonical category via `categoryCanonicalId ??
+  categoryId` (confirmed splits persist identity in categoryId) — was
+  sending every confirmed split to "Other".
+- Detail sheet shows the per-category leg amount for splits, never the
+  parent total; category transaction lists dedupe shared parent ids.
+- Builder enforces the strict sign matrix (negative ordinary counts;
+  positive refund offsets; mismatched signs ignored).
+- Chart uses explicit yStart/yEnd stack bounds so tap resolution walks the
+  exact rendered order (no framework stacking-order assumption); "Other"
+  detail merge matches the chart's positive-only fold.
+- Build actor constructed inside Task.detached (aggregation off the UI
+  executor); significant-time-change notification refreshes the window on
+  month rollover; Settings .budget page retitled "Projections".
+- 4 new builder tests (sign matrix, refund-over-spend, inclusive window
+  boundaries, split dedupe) — NetworthCore 150/150.
 
 ### Step 2 — YNAB reference table + type-first review (this session)
 

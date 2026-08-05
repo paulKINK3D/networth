@@ -103,7 +103,7 @@ struct ContentView: View {
             NetWorthView()
                 .tabItem { Label("Net Worth", systemImage: NwIcon.netWorth.rawValue) }
                 .tag(0)
-            BudgetView()
+            SpendingHistoryView()
                 .tabItem { Label("Spending", systemImage: NwIcon.budget.rawValue) }
                 .tag(1)
             ProjectionsView()

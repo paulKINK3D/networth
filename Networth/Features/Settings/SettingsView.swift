@@ -15,7 +15,7 @@ private enum SettingsPage {
     var title: String {
         switch self {
         case .connections: "Accounts & Sync"
-        case .budget: "Budget & Forecast"
+        case .budget: "Projections"
         case .assets: "Manual Assets"
         case .privacy: "Privacy & App"
         }
@@ -47,7 +47,6 @@ struct SettingsView: View {
     @State private var showingIncludedClosed = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
-    @State private var showingDiscretionaryBudget = false
     @State private var showingPlaidConnection = false
     @State private var showingPlaidReview = false
     @State private var showingPlaidBankingConnection = false
@@ -88,10 +87,10 @@ struct SettingsView: View {
                         SettingsView(page: .budget)
                     } label: {
                         NwSettingsNavigationRow(
-                            "Budget & Forecast",
-                            subtitle: "Envelope, cash, and card timing",
+                            "Projections",
+                            subtitle: "Cash accounts and card timing",
                             icon: .projections,
-                            value: discretionaryTargetSummary
+                            value: "\(settings?.projectionHorizonDays ?? 90)d"
                         )
                     }
 
@@ -432,23 +431,6 @@ struct SettingsView: View {
 
             if page == .budget {
                 Section {
-                    Button {
-                        showingDiscretionaryBudget = true
-                    } label: {
-                        HStack {
-                            Label {
-                                Text("Discretionary Budget")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                            } icon: {
-                                NwIcon.projections.image
-                                    .foregroundStyle(NwAppColors.primary)
-                            }
-                            Spacer()
-                            Text(discretionaryTargetSummary)
-                                .foregroundStyle(.secondary)
-                            NwIcon.chevron.image.foregroundStyle(.secondary)
-                        }
-                    }
                     HStack {
                         Text("Projection horizon")
                         Spacer()
@@ -636,9 +618,6 @@ struct SettingsView: View {
             .sheet(isPresented: $showingCashBuffer) {
                 MinimumCashBufferSheet().environment(container)
             }
-            .sheet(isPresented: $showingDiscretionaryBudget) {
-                DiscretionaryBudgetSettingsSheet().environment(container)
-            }
             .sheet(isPresented: $showingPlaidConnection) {
                 PlaidConnectionSheet().environment(container)
             }
@@ -810,14 +789,6 @@ struct SettingsView: View {
     }
 
     private var excludedCount: Int { exclusions.count + transactionExclusions.count }
-
-    private var discretionaryTargetSummary: String {
-        guard let target = settings?.discretionaryMonthlyTargetMilliunits,
-              target > 0 else {
-            return "Set up"
-        }
-        return "\(CurrencyFormatter.compact(Money(milliunits: target)))/mo"
-    }
 
     private var activeManualAssetCount: Int {
         manualAssets.filter { !$0.deleted }.count

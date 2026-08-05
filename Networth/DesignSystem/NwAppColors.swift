@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// "Deep Slate" palette. Navy primary, teal accent, muted red for liabilities.
 public enum NwAppColors {
@@ -28,5 +29,41 @@ public enum NwAppColors {
     public static func deltaColor(positive value: Bool, neutral: Bool = false) -> Color {
         if neutral { return textSecondary }
         return value ? positive : liability
+    }
+
+    // Charts
+
+    /// Fixed categorical order for category-group charts, derived from the
+    /// Deep Slate family. Hues are assigned to groups by display order and
+    /// follow the entity — never re-cycled and never repainted when other
+    /// groups filter away; a 9th group folds into `chartOther`. Light and
+    /// dark steps validated separately (adjacent-pair CVD ΔE ≈ 28+,
+    /// contrast ≥ 3:1 on the dark surface; light-mode contrast relief comes
+    /// from the labeled group rows below every chart).
+    public static let chartCategorical: [Color] = [
+        chartColor(light: 0x4B6FD0, dark: 0x4B6FD0),
+        chartColor(light: 0x0E9BB0, dark: 0x0E9BB0),
+        chartColor(light: 0xD18A2B, dark: 0xC07C1A),
+        chartColor(light: 0xCE5151, dark: 0xCE5151),
+        chartColor(light: 0x7FA6EE, dark: 0x5E8BE4),
+        chartColor(light: 0x1FA97F, dark: 0x1FA97F),
+        chartColor(light: 0x9A6DF2, dark: 0x9A6DF2),
+        chartColor(light: 0xC55E93, dark: 0xC55E93)
+    ]
+
+    /// The fold bucket for groups beyond the fixed categorical order and for
+    /// uncategorized activity.
+    public static let chartOther = Color(white: 0.55)
+
+    private static func chartColor(light: UInt32, dark: UInt32) -> Color {
+        Color(UIColor { traits in
+            let hex = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(
+                red: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255,
+                alpha: 1
+            )
+        })
     }
 }
