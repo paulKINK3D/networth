@@ -196,7 +196,6 @@ struct ManualAssetUpdateSheet: View {
             return
         }
         container.recordDailySnapshot()
-        Task { await container.rebuildChartHistory() }
         dismiss()
     }
 }

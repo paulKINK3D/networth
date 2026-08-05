@@ -97,10 +97,15 @@ public final class AppContainerController {
             bearerToken: plaidToken
         )
         hasPlaidBackendToken = (plaidToken?.isEmpty == false)
+
+        let ctx = modelContainer.mainContext
+        // The versioned Plaid-first clean start must run before anything
+        // observes model saves — the wipe must not trigger a Claude snapshot
+        // upload of data that is being deleted.
+        FreshStart.runIfNeeded(context: ctx)
         claudeDataSyncCoordinator.start()
 
         let descriptor = FetchDescriptor<DurableUserSettings>()
-        let ctx = modelContainer.mainContext
         let allSettingsRows = (try? ctx.fetch(descriptor)) ?? []
         let settings: DurableUserSettings
         if allSettingsRows.count == 1 {
@@ -254,19 +259,28 @@ public final class AppContainerController {
             products: ["transactions"]
         )
         enablePlaidTransactionsSetting()
-        _ = await plaidTransactionSyncCoordinator.syncAll()
+        if await plaidTransactionSyncCoordinator.syncAll() {
+            markPlaidSyncSuccess()
+            recordDailySnapshot()
+        }
         return result.item
     }
 
     public func completePlaidTransactionUpgrade(itemId: String) async throws {
         _ = try await plaidClient.enableTransactions(itemId: itemId)
         enablePlaidTransactionsSetting()
-        _ = await plaidTransactionSyncCoordinator.syncAll()
+        if await plaidTransactionSyncCoordinator.syncAll() {
+            markPlaidSyncSuccess()
+            recordDailySnapshot()
+        }
     }
 
     public func syncPlaidTransactions() async {
         guard hasPlaidBackendToken, plaidBackendBaseURL != nil else { return }
-        _ = await plaidTransactionSyncCoordinator.syncAll()
+        if await plaidTransactionSyncCoordinator.syncAll() {
+            markPlaidSyncSuccess()
+            recordDailySnapshot()
+        }
     }
 
     public func mapPlaidAccount(_ plaidAccountId: String, toYNABAccount ynabAccountId: String?) {
@@ -534,11 +548,22 @@ public final class AppContainerController {
         }
         try await plaidClient.removeItem(id: id)
         try removeLocalPlaidItem(id: id)
+        // Refresh both Plaid paths before recording, so the post-removal
+        // snapshot reflects the final account set; a fully successful pass
+        // also stamps the sync markers like any other sync.
+        var allSucceeded = true
         if await plaidSyncCoordinator.syncAll() {
             recordPlaidBalanceSnapshot()
-            recordDailySnapshot()
+        } else {
+            allSucceeded = false
         }
-        _ = await plaidTransactionSyncCoordinator.syncAll()
+        if await plaidTransactionSyncCoordinator.syncAll() == false {
+            allSucceeded = false
+        }
+        if allSucceeded {
+            markPlaidSyncSuccess()
+        }
+        recordDailySnapshot()
     }
 
     public func recordPlaidBalanceSnapshot() {
@@ -706,6 +731,15 @@ public final class AppContainerController {
                 survivor.canonicalTransactionDataVersion,
                 other.canonicalTransactionDataVersion
             )
+            survivor.freshStartVersion = max(
+                survivor.freshStartVersion, other.freshStartVersion
+            )
+            if let firstPlaidSync = other.firstPlaidSyncCompletedAt,
+               (survivor.firstPlaidSyncCompletedAt ?? .distantFuture) > firstPlaidSync {
+                // Keep the earliest stamp: it anchors day one of the new
+                // Net Worth history.
+                survivor.firstPlaidSyncCompletedAt = firstPlaidSync
+            }
             if let synced = other.lastSyncedAt,
                (survivor.lastSyncedAt ?? .distantPast) < synced {
                 survivor.lastSyncedAt = synced
@@ -720,23 +754,29 @@ public final class AppContainerController {
         return survivor
     }
 
+    /// Normal launch and sync never contact YNAB. Plaid is the authoritative
+    /// external source; the retained YNAB token exists solely for explicit
+    /// user-initiated reference imports.
     public func syncNow() async {
-        if hasYNABToken {
-            await syncCoordinator.syncAll(budgetId: selectedBudgetId)
-            if syncCoordinator.canonicalHistoryChangedInLastSync {
-                plaidTransactionSyncCoordinator
-                    .invalidateHistoricalReconciliationForYNABChanges()
-            }
-        }
         if hasPlaidBackendToken, plaidBackendBaseURL != nil {
+            var allSucceeded = true
             if await plaidSyncCoordinator.syncAll() {
                 recordPlaidBalanceSnapshot()
+            } else {
+                allSucceeded = false
             }
             let settings = try? modelContainer.mainContext.fetch(
                 FetchDescriptor<DurableUserSettings>()
             ).first
-            if settings?.plaidTransactionsEnabled == true {
-                _ = await plaidTransactionSyncCoordinator.syncAll()
+            if settings?.plaidTransactionsEnabled == true,
+               await plaidTransactionSyncCoordinator.syncAll() == false {
+                allSucceeded = false
+            }
+            // Stamp only a fully successful pass: a partial success must not
+            // suppress the staleness retry or open the first-snapshot gate
+            // while the authoritative banking data is stale.
+            if allSucceeded {
+                markPlaidSyncSuccess()
             }
         }
         recordDailySnapshot()
@@ -746,65 +786,54 @@ public final class AppContainerController {
         }
     }
 
-    /// Refreshes the local YNAB cache only when the current successful sync is
-    /// older than the requested age. Keeps foreground refreshes comfortably
-    /// below YNAB's rate limit while making the projection useful on open.
+    /// Stamps the sync markers a successful Plaid sync maintains: the
+    /// staleness throttle, and the one-time `firstPlaidSyncCompletedAt` that
+    /// gates the first Net Worth snapshot after the clean start.
+    private func markPlaidSyncSuccess(now: Date = .now) {
+        let ctx = modelContainer.mainContext
+        guard let settings = try? ctx.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ).first else { return }
+        settings.lastSyncedAt = now
+        if settings.firstPlaidSyncCompletedAt == nil {
+            settings.firstPlaidSyncCompletedAt = now
+        }
+        ctx.safeSave(source: "syncNow.markPlaidSuccess", notifyDataSync: false)
+    }
+
+    /// Refreshes the Plaid caches only when the current successful sync is
+    /// older than the requested age, keeping foreground refreshes cheap.
     public func refreshIfStale(now: Date = .now, maxAge: TimeInterval = 15 * 60) async {
-        guard unlocked, hasYNABToken || hasPlaidBackendToken else { return }
-        if case .syncing = syncCoordinator.phase { return }
+        guard unlocked, hasPlaidBackendToken else { return }
+        if case .syncing = plaidTransactionSyncCoordinator.phase { return }
         let descriptor = FetchDescriptor<DurableUserSettings>()
         let lastSync = (try? modelContainer.mainContext.fetch(descriptor).first)?.lastSyncedAt
         if let lastSync, now.timeIntervalSince(lastSync) < maxAge { return }
         await syncNow()
     }
 
-    /// Full reset: wipe all YNAB delta cursors, the historical-backfill marker,
-    /// AND every `DurableNetWorthSnapshot` row in the CloudKit-backed store,
-    /// then run a full sync. The snapshot purge is what makes the chart
-    /// consistent with the current account set — old `.live` rows from
-    /// previous sessions (when more accounts were open) would otherwise
-    /// shadow the freshly reconstructed history via the dedupe pass.
-    ///
-    /// Rebuilds the historical chart snapshots from cached YNAB data + current
-    /// manual-asset values. Does NOT hit the YNAB API — meant for fast local
-    /// refreshes when manual assets change. Existing `.live` rows are
-    /// preserved; only `.backfill` rows are regenerated.
-    public func rebuildChartHistory() async {
-        if case .syncing = syncCoordinator.phase { return }
-        guard let budgetId = selectedBudgetId else { return }
-        let ctx = modelContainer.mainContext
-        if let settings = try? ctx.fetch(FetchDescriptor<DurableUserSettings>()).first {
-            settings.historyBackfillVersion = 0
-        }
-        ctx.safeSave(source: "rebuildChartHistory.resetMarker")
-        _ = syncCoordinator.runHistoryBackfillIfNeeded(budgetId: budgetId)
-    }
-
-    /// Preserves manual assets, their value history, user settings, and card
-    /// settings. Only chart snapshots are destroyed.
+    /// Full reset of the re-fetchable Plaid state: wipe the transaction
+    /// cursors (and any legacy YNAB delta cursors) so the next sync re-imports
+    /// every item's full history from the Worker. Never touches
+    /// `DurableNetWorthSnapshot` rows — after the clean start, Net Worth
+    /// history is never reconstructed, so snapshots are irreplaceable.
     public func forceFullResync() async {
-        // Block the wipe if a sync is already running — we don't want to
-        // delete snapshots and cursors out from under it. The user should
-        // wait for the active sync to finish before resyncing from scratch.
-        if case .syncing = syncCoordinator.phase { return }
+        // Block the wipe while a sync is running — we don't want to delete
+        // cursors out from under it.
+        if case .syncing = plaidTransactionSyncCoordinator.phase { return }
         let ctx = modelContainer.mainContext
-        let cursorDescriptor = FetchDescriptor<SyncCursor>()
-        if let cursors = try? ctx.fetch(cursorDescriptor) {
+        if let cursors = try? ctx.fetch(FetchDescriptor<PlaidTransactionCursor>()) {
             for cursor in cursors { ctx.delete(cursor) }
         }
-        let snapshotDescriptor = FetchDescriptor<DurableNetWorthSnapshot>()
-        if let snapshots = try? ctx.fetch(snapshotDescriptor) {
-            for snap in snapshots { ctx.delete(snap) }
+        if let cursors = try? ctx.fetch(FetchDescriptor<SyncCursor>()) {
+            for cursor in cursors { ctx.delete(cursor) }
         }
-        let settingsDescriptor = FetchDescriptor<DurableUserSettings>()
-        if let settings = try? ctx.fetch(settingsDescriptor).first {
-            // Reset to the "never run" sentinel. The guard in
-            // `runHistoryBackfillIfNeeded` compares against
-            // `SyncCoordinator.currentHistoryBackfillVersion`, so any value
-            // less than the current version triggers a re-run on the next sync.
-            settings.historyBackfillVersion = 0
+        // Coverage must rebuild from the full re-import: widen-only updates
+        // can never narrow a window that a corrected upstream history shrank.
+        if let coverage = try? ctx.fetch(FetchDescriptor<PlaidAccountCoverage>()) {
+            for row in coverage { ctx.delete(row) }
         }
-        guard ctx.safeSave(source: "forceFullResync.wipeAll") else {
+        guard ctx.safeSave(source: "forceFullResync.wipeCursors") else {
             // Save failed. Roll back the in-memory deletes so we don't leave
             // the user with a phantom-wiped store, and skip the follow-up
             // sync — the persistence-failure alert will surface via the
@@ -909,6 +938,11 @@ public final class AppContainerController {
         financialTransactions.forEach(context.delete)
         financialAccounts.forEach(context.delete)
         ((try? context.fetch(FetchDescriptor<PlaidTransactionCursor>())) ?? [])
+            .filter { $0.itemId == id }
+            .forEach(context.delete)
+        // Coverage for a disconnected Item must not linger: orphan rows could
+        // later scope a YNAB reference import to a dead account.
+        ((try? context.fetch(FetchDescriptor<PlaidAccountCoverage>())) ?? [])
             .filter { $0.itemId == id }
             .forEach(context.delete)
         ((try? context.fetch(FetchDescriptor<LegacyTransactionMatchRow>())) ?? [])

@@ -16,6 +16,7 @@
 		1D78662F7FBF2D8D0135391C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ADDCB9332B061DD3B3B6475D /* Assets.xcassets */; };
 		2C94630AAC492D7D989576C3 /* SecretStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46AEE1E8769FD0365DCFDACD /* SecretStore.swift */; };
 		30AC8227EB22FED248375033 /* SafeSave.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8E0B6EEBCB472F8B2AF50EF /* SafeSave.swift */; };
+		7A11FE5C0DDA24D225030001 /* FreshStart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A11FE5C0DDA24D225030002 /* FreshStart.swift */; };
 		31AE6D2EF3AA233A76DA534F /* NetWorthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06108EDF4711FC37956304D8 /* NetWorthView.swift */; };
 		3AA51D5A42B05D90E193DFA7 /* NwModalLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B66EA7CEF2BC6F62A7993567 /* NwModalLayout.swift */; };
 		3C0093F4DB2426247509D9F3 /* NwStrokeWidth.swift in Sources */ = {isa = PBXBuildFile; fileRef = E495FC76C53325CCED828AFC /* NwStrokeWidth.swift */; };
@@ -49,7 +50,6 @@
 		D7170A1E000000000000A004 /* TutorialStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000A002 /* TutorialStep.swift */; };
 		D7170A1E000000000000A005 /* TutorialView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000A003 /* TutorialView.swift */; };
 		D7170A1E000000000000B001 /* ExcludedCategoriesSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000B002 /* ExcludedCategoriesSheet.swift */; };
-		D7170A1E000000000000B003 /* ResetChartHistorySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000B004 /* ResetChartHistorySheet.swift */; };
 		D7170A1E000000000000B005 /* IncludedClosedAccountsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000B006 /* IncludedClosedAccountsSheet.swift */; };
 		D7170A1E000000000000D001 /* InvestmentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000D002 /* InvestmentsView.swift */; };
 		D7170A1E000000000000D004 /* ManualAssetUpdateSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000D005 /* ManualAssetUpdateSheet.swift */; };
@@ -101,6 +101,7 @@
 		9C602AFAC1CD6353CD890A9C /* CachedYNABModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedYNABModels.swift; sourceTree = "<group>"; };
 		A0640132B868410EFCA27FBB /* NwButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwButtonStyles.swift; sourceTree = "<group>"; };
 		A2B60865EC77C9B95358C3A0 /* SnapshotScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotScheduler.swift; sourceTree = "<group>"; };
+		7A11FE5C0DDA24D225030002 /* FreshStart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreshStart.swift; sourceTree = "<group>"; };
 		A8E0B6EEBCB472F8B2AF50EF /* SafeSave.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeSave.swift; sourceTree = "<group>"; };
 		A9E3D99E3745BEFD8F3CED25 /* NwCornerRadius.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwCornerRadius.swift; sourceTree = "<group>"; };
 		ABF47F58524FC7E021A2580C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -116,7 +117,6 @@
 		D7170A1E000000000000A002 /* TutorialStep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TutorialStep.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000A003 /* TutorialView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TutorialView.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000B002 /* ExcludedCategoriesSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExcludedCategoriesSheet.swift; sourceTree = "<group>"; };
-		D7170A1E000000000000B004 /* ResetChartHistorySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResetChartHistorySheet.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000B006 /* IncludedClosedAccountsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IncludedClosedAccountsSheet.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000D002 /* InvestmentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvestmentsView.swift; sourceTree = "<group>"; };
 		D7170A1E000000000000D005 /* ManualAssetUpdateSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualAssetUpdateSheet.swift; sourceTree = "<group>"; };
@@ -241,7 +241,6 @@
 				D7170A1E000000000000B002 /* ExcludedCategoriesSheet.swift */,
 				3A988782B660CD247AC4D6D5 /* ManualAssetForm.swift */,
 				CAB7BC72F75C67ADCB78C364 /* PATEntrySheet.swift */,
-				D7170A1E000000000000B004 /* ResetChartHistorySheet.swift */,
 				D7170A1E000000000000B006 /* IncludedClosedAccountsSheet.swift */,
 				ABF47F58524FC7E021A2580C /* SettingsView.swift */,
 			);
@@ -253,6 +252,7 @@
 			children = (
 				9C602AFAC1CD6353CD890A9C /* CachedYNABModels.swift */,
 				03E7D5F7CA93A092A1D1FCFA /* DurableModels.swift */,
+				7A11FE5C0DDA24D225030002 /* FreshStart.swift */,
 				DD4A35FDB76A0D7945A3AD61 /* ModelContainerFactory.swift */,
 				A8E0B6EEBCB472F8B2AF50EF /* SafeSave.swift */,
 			);
@@ -445,6 +445,7 @@
 				CC3D8AD27715C21A6B38A831 /* DurableModels.swift in Sources */,
 				16EC8D07575613822A3C0EDA /* ManualAssetForm.swift in Sources */,
 				0D6AFC83F837C0AA24D22503 /* ModelContainerFactory.swift in Sources */,
+				7A11FE5C0DDA24D225030001 /* FreshStart.swift in Sources */,
 				31AE6D2EF3AA233A76DA534F /* NetWorthView.swift in Sources */,
 				4BAA7FC4AAD9F5D777496F59 /* NetworthApp.swift in Sources */,
 				D79AEDEE90E63A7EA2D99DFA /* NwAmountText.swift in Sources */,
@@ -475,7 +476,6 @@
 				D7170A1E000000000000A004 /* TutorialStep.swift in Sources */,
 				D7170A1E000000000000A005 /* TutorialView.swift in Sources */,
 				D7170A1E000000000000B001 /* ExcludedCategoriesSheet.swift in Sources */,
-				D7170A1E000000000000B003 /* ResetChartHistorySheet.swift in Sources */,
 				D7170A1E000000000000B005 /* IncludedClosedAccountsSheet.swift in Sources */,
 				D7170A1E000000000000D001 /* InvestmentsView.swift in Sources */,
 				D7170A1E000000000000D004 /* ManualAssetUpdateSheet.swift in Sources */,

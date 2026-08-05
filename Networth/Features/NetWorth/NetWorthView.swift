@@ -144,12 +144,12 @@ struct NetWorthView: View {
                     if !hasPrimaryConnection {
                         NwBanner(
                             "Connect your accounts",
-                            message: "Choose YNAB or Plaid in Settings to start tracking.",
+                            message: "Connect your bank through Plaid in Settings to start tracking.",
                             tone: .info,
                             actionTitle: "Open Settings",
                             action: { NotificationCenter.default.post(name: .openSettings, object: nil) }
                         )
-                    } else if case .error(let msg) = container.syncCoordinator.phase {
+                    } else if case .error(let msg) = container.plaidTransactionSyncCoordinator.phase {
                         NwBanner(
                             "Sync issue",
                             message: msg,
@@ -199,7 +199,7 @@ struct NetWorthView: View {
     @ToolbarContentBuilder
     private var syncToolbarItem: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            switch container.syncCoordinator.phase {
+            switch container.plaidTransactionSyncCoordinator.phase {
             case .syncing(let label):
                 HStack(spacing: NwSpacing.xs) {
                     ProgressView().controlSize(.small)
@@ -223,7 +223,7 @@ struct NetWorthView: View {
                     }
                     .disabled(!hasPrimaryConnection)
                 } label: {
-                    if case .error = container.syncCoordinator.phase {
+                    if case .error = container.plaidTransactionSyncCoordinator.phase {
                         NwIcon.warning.image.foregroundStyle(NwAppColors.caution)
                     } else {
                         Image(systemName: "ellipsis.circle")
@@ -329,8 +329,10 @@ struct NetWorthView: View {
         userSettings.first?.primaryFinancialDataSource == .plaid
     }
 
+    /// Plaid is the only primary source. A missing connection produces this
+    /// connection state — never a YNAB fallback.
     private var hasPrimaryConnection: Bool {
-        usesPlaidTransactions ? container.hasPlaidBackendToken : container.hasYNABToken
+        container.hasPlaidBackendToken
     }
 
     private var plaidResolver: PlaidContributionResolver {

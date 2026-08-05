@@ -43,7 +43,6 @@ struct SettingsView: View {
     @State private var showingCardSheet: CachedAccount? = nil
     @State private var showingExclusionsSheet = false
     @State private var showingForceResyncConfirm = false
-    @State private var showingResetChartHistory = false
     @State private var showingIncludedClosed = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
@@ -176,6 +175,8 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("YNAB")
+                } footer: {
+                    Text("Used only when you explicitly import YNAB history as reference data. Networth never syncs YNAB on its own.")
                 }
             }
 
@@ -205,22 +206,7 @@ struct SettingsView: View {
                     Button("Force Full Resync") {
                         showingForceResyncConfirm = true
                     }
-                    .disabled(!container.hasYNABToken || isSyncing)
-                    .foregroundStyle(NwAppColors.liability)
-                    Button {
-                        showingResetChartHistory = true
-                    } label: {
-                        HStack {
-                            Text("Reset Chart History…")
-                            Spacer()
-                            if let floor = settings?.chartStartDate {
-                                Text("From \(DateDisplay.shortDate(floor))")
-                                    .font(NwTypography.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    .disabled(isSyncing)
+                    .disabled(!container.hasPlaidBackendToken || isSyncing)
                     .foregroundStyle(NwAppColors.liability)
                     Button {
                         showingIncludedClosed = true
@@ -583,9 +569,6 @@ struct SettingsView: View {
             .sheet(isPresented: $showingExclusionsSheet) {
                 ExcludedCategoriesSheet().environment(container)
             }
-            .sheet(isPresented: $showingResetChartHistory) {
-                ResetChartHistorySheet().environment(container)
-            }
             .sheet(isPresented: $showingIncludedClosed) {
                 IncludedClosedAccountsSheet().environment(container)
             }
@@ -621,7 +604,7 @@ struct SettingsView: View {
                     Task { await container.forceFullResync() }
                 }
             } message: {
-                Text("Deletes and rebuilds all chart snapshots from YNAB. Assets and settings stay intact.")
+                Text("Re-imports all banking transactions from Plaid. Chart history, assets, and settings stay intact.")
             }
             .alert("Remove Connection?", isPresented: $showingRemovePlaidConfirm, presenting: plaidItemToRemove) { item in
                 Button("Cancel", role: .cancel) {}
@@ -655,18 +638,18 @@ struct SettingsView: View {
     }
 
     private var isSyncing: Bool {
-        if case .syncing = container.syncCoordinator.phase { return true }
+        if case .syncing = container.plaidTransactionSyncCoordinator.phase { return true }
         return false
     }
 
     private var isAnySyncing: Bool {
         if isSyncing { return true }
-        if case .syncing = container.plaidTransactionSyncCoordinator.phase { return true }
+        if case .syncing = container.plaidSyncCoordinator.phase { return true }
         return false
     }
 
     private var canSync: Bool {
-        container.hasYNABToken || container.hasPlaidBackendToken
+        container.hasPlaidBackendToken
     }
 
     private var usesPlaidTransactions: Bool {
@@ -708,7 +691,9 @@ struct SettingsView: View {
     }
 
     private var syncPhaseLabel: String? {
-        if case .syncing(let label) = container.syncCoordinator.phase { return label }
+        if case .syncing(let label) = container.plaidTransactionSyncCoordinator.phase {
+            return label
+        }
         return nil
     }
 

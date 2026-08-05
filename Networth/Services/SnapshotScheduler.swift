@@ -192,6 +192,15 @@ public final class SnapshotScheduler {
     public func recordIfNeeded(now referenceDate: Date = .now) -> DurableNetWorthSnapshot? {
         let day = calendar.startOfDay(for: referenceDate)
 
+        // After the Plaid-first clean start, Net Worth history begins with
+        // the first successful Plaid sync and is never reconstructed. Nothing
+        // records before that — not even manual assets entered ahead of the
+        // first sync — so day one reflects a synced position.
+        let settings = try? mainContext.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ).first
+        guard settings?.firstPlaidSyncCompletedAt != nil else { return nil }
+
         // Don't write a zero-valued .live row before any data exists. The app
         // records a snapshot on bootstrap and every activation, so on a brand-
         // new install (no token, no manual assets, no sync yet) this path runs

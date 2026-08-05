@@ -193,6 +193,15 @@ struct AppContainerTests {
         let modelContainer = try ModelContainerFactory.makeContainer(
             inMemory: true
         )
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            plaidClient: RecordedPlaidClient(),
+            modelContainer: modelContainer
+        )
+        await container.bootstrap()
+        // Seed after bootstrap: the clean start wipes any pre-existing rows.
         let context = modelContainer.mainContext
         context.insert(CachedFinancialAccount(
             canonicalAccountId: "canonical-card",
@@ -228,17 +237,13 @@ struct AppContainerTests {
         )
         context.insert(cursor)
         try context.save()
-        let container = AppContainerController(
-            secretStore: InMemorySecretStore(),
-            biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
-            plaidClient: RecordedPlaidClient(),
-            modelContainer: modelContainer
-        )
 
-        await container.bootstrap()
+        container.plaidTransactionSyncCoordinator.runLocalMigrationsIfNeeded()
 
-        #expect(cursor.historicalReconciliationVersion == 10)
+        // With no legacy YNAB cache there is nothing to reconcile, so the
+        // marker advances to current and transaction review can unlock.
+        #expect(cursor.historicalReconciliationVersion
+            == PlaidTransactionSyncCoordinator.currentHistoricalReconciliationVersion)
     }
 
     @Test func plaidSyncCachesHoldingsAndCreatesPendingReview() async throws {
@@ -537,24 +542,146 @@ struct AppContainerTests {
         #expect(manual.currentValue == Money.dollars(8_000))
     }
 
-    @Test func bootstrapMigratesProjectionLookback() async throws {
+    @Test func cleanStartWipesBothStoresAndCreatesPlaidFirstDefaults() async throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
-        let settings = DurableUserSettings()
-        settings.settingsSchemaVersion = 2
-        settings.spendingLookbackDays = 60
-        modelContainer.mainContext.insert(settings)
-        try modelContainer.mainContext.save()
+        let ctx = modelContainer.mainContext
+        // Legacy rows across both tiers: settings, YNAB cache, durable user
+        // data, and retired budget/fund records. All must be deleted.
+        let legacySettings = DurableUserSettings()
+        legacySettings.settingsSchemaVersion = 2
+        legacySettings.spendingLookbackDays = 60
+        ctx.insert(legacySettings)
+        ctx.insert(CachedAccount(
+            id: "ynab-checking", budgetId: "budget", name: "Checking",
+            typeRaw: "checking", balanceMilliunits: 1_000_000,
+            clearedMilliunits: 1_000_000, unclearedMilliunits: 0,
+            onBudget: true, closed: false, deleted: false
+        ))
+        let asset = DurableManualAsset(name: "Home", kind: .realEstate)
+        ctx.insert(asset)
+        ctx.insert(DurableNetWorthSnapshot(
+            date: .now, assetsMilliunits: 1_000_000,
+            liabilitiesMilliunits: 0, source: .live
+        ))
+        ctx.insert(DurableSinkingFund(name: "Vacation"))
+        try ctx.save()
+
+        let secrets = InMemorySecretStore(seed: [
+            .ynabPersonalAccessToken: "ynab-token"
+        ])
+        let container = AppContainerController(
+            secretStore: secrets,
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            modelContainer: modelContainer
+        )
+        await container.bootstrap()
+
+        // Every legacy row is gone; exactly one fresh settings row exists
+        // with Plaid-first defaults and the completion marker.
+        #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<DurableManualAsset>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<DurableSinkingFund>()).isEmpty)
+        let settingsRows = try ctx.fetch(FetchDescriptor<DurableUserSettings>())
+        #expect(settingsRows.count == 1)
+        let fresh = try #require(settingsRows.first)
+        #expect(fresh.freshStartVersion == FreshStart.currentVersion)
+        #expect(fresh.primaryFinancialDataSource == .plaid)
+        #expect(fresh.plaidTransactionsEnabled == true)
+        #expect(fresh.spendingLookbackDays == 365)
+        #expect(fresh.firstPlaidSyncCompletedAt == nil)
+        // The YNAB PAT survives in Keychain for explicit reference imports.
+        #expect(try secrets.load(.ynabPersonalAccessToken) == "ynab-token")
+        #expect(container.hasYNABToken == true)
+    }
+
+    @Test func durableMarkerFromAnotherDeviceStillWipesLocalCaches() async throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let ctx = modelContainer.mainContext
+        // Simulate a device whose CloudKit store already carries the completed
+        // clean start from another device (marker + post-reset user data),
+        // while its own device-local caches still hold legacy rows.
+        let syncedSettings = DurableUserSettings()
+        syncedSettings.freshStartVersion = FreshStart.currentVersion
+        ctx.insert(syncedSettings)
+        let postResetAsset = DurableManualAsset(name: "New Boat", kind: .other)
+        ctx.insert(postResetAsset)
+        ctx.insert(CachedAccount(
+            id: "stale-ynab", budgetId: "budget", name: "Stale",
+            typeRaw: "checking", balanceMilliunits: 1, clearedMilliunits: 1,
+            unclearedMilliunits: 0, onBudget: true, closed: false, deleted: false
+        ))
+        ctx.insert(SyncCursor(key: "accounts:budget", serverKnowledge: 42))
+        try ctx.save()
+
+        let suiteName = "freshstart-test-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        FreshStart.runIfNeeded(context: ctx, defaults: defaults)
+
+        // Local caches wiped once per device; durable rows created after the
+        // clean start are never touched.
+        #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<SyncCursor>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<DurableManualAsset>()).count == 1)
+        #expect(try ctx.fetch(FetchDescriptor<DurableUserSettings>()).count == 1)
+        #expect(defaults.integer(forKey: FreshStart.localCacheWipeVersionKey)
+            == FreshStart.currentVersion)
+    }
+
+    @Test func forceFullResyncClearsCursorsAndCoverageButNeverSnapshots() async throws {
+        let container = AppContainerController.makePreview()
+        await container.bootstrap()
+        let ctx = container.modelContainer.mainContext
+        ctx.insert(PlaidTransactionCursor(itemId: "item-1", cursor: "abc"))
+        ctx.insert(PlaidAccountCoverage(
+            plaidAccountId: "acct-1", itemId: "item-1",
+            earliestImportedDate: .now, latestImportedDate: .now
+        ))
+        ctx.insert(DurableNetWorthSnapshot(
+            date: .now, assetsMilliunits: 5, liabilitiesMilliunits: 0, source: .live
+        ))
+        try ctx.save()
+
+        await container.forceFullResync()
+
+        // Cursors and coverage rebuild from the full re-import; snapshots are
+        // irreplaceable after the clean start and must survive.
+        #expect(try ctx.fetch(FetchDescriptor<PlaidTransactionCursor>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<PlaidAccountCoverage>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).count == 1)
+    }
+
+    @Test func cleanStartIsIdempotentAndPurgesResurrectedLegacyRows() async throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let container = AppContainerController(
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
             ynabClient: RecordedYNABClient(),
             modelContainer: modelContainer
         )
-
         await container.bootstrap()
+        let ctx = modelContainer.mainContext
 
-        #expect(settings.settingsSchemaVersion == 3)
-        #expect(settings.spendingLookbackDays == 365)
+        // Data created after the clean start must survive later bootstraps.
+        let asset = DurableManualAsset(name: "Car", kind: .vehicle)
+        ctx.insert(asset)
+        // Rows CloudKit resurrects from a pre-wipe device: a retired fund
+        // record and a stale settings row. Both must be purged.
+        ctx.insert(DurableSinkingFund(name: "Resurrected"))
+        let staleSettings = DurableUserSettings(id: "stale")
+        ctx.insert(staleSettings)
+        try ctx.save()
+
+        FreshStart.runIfNeeded(context: ctx)
+
+        #expect(try ctx.fetch(FetchDescriptor<DurableSinkingFund>()).isEmpty)
+        let settingsRows = try ctx.fetch(FetchDescriptor<DurableUserSettings>())
+        #expect(settingsRows.count == 1)
+        #expect(settingsRows.first?.freshStartVersion == FreshStart.currentVersion)
+        #expect(try ctx.fetch(FetchDescriptor<DurableManualAsset>()).count == 1)
     }
 
     @Test func projectionSelectionsAndCardSourcePersist() async throws {
@@ -580,35 +707,59 @@ struct AppContainerTests {
         #expect(cards.first?.paymentAccountId == "checking")
     }
 
-    @Test func refreshIfStaleUsesFifteenMinuteWindow() async throws {
+    @Test func normalSyncNeverContactsYNABEvenWithStoredToken() async throws {
         let client = RecordedYNABClient()
         let container = AppContainerController(
-            secretStore: InMemorySecretStore(seed: [.ynabPersonalAccessToken: "token"]),
+            secretStore: InMemorySecretStore(seed: [
+                .ynabPersonalAccessToken: "token",
+                .plaidBackendBearerToken: "plaid-token"
+            ]),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
             ynabClient: client,
+            plaidClient: RecordedPlaidClient(),
             modelContainer: try ModelContainerFactory.makeContainer(inMemory: true)
         )
         await container.bootstrap()
+        #expect(container.hasYNABToken == true)
         let settings = try #require(try container.modelContainer.mainContext
             .fetch(FetchDescriptor<DurableUserSettings>()).first)
-        let syncedAt = Date.now
-        settings.lastSyncedAt = syncedAt
+        settings.lastSyncedAt = Date.now.addingTimeInterval(-60 * 60)
         try container.modelContainer.mainContext.save()
 
-        await container.refreshIfStale(now: syncedAt.addingTimeInterval(14 * 60))
-        let recentCallCount = await client.budgetsCallCount
-        #expect(recentCallCount == 0)
-
-        await container.refreshIfStale(now: syncedAt.addingTimeInterval(16 * 60))
-        let staleCallCount = await client.budgetsCallCount
-        #expect(staleCallCount == 1)
+        // A stale refresh and a direct sync must both leave YNAB untouched:
+        // the retained token exists only for explicit reference imports.
+        await container.refreshIfStale(now: .now)
+        await container.syncNow()
+        let callCount = await client.budgetsCallCount
+        #expect(callCount == 0)
     }
 
-    @Test func snapshotIsIdempotentForSameDay() async {
+    @Test func snapshotWaitsForFirstPlaidSyncThenIsIdempotentForSameDay() async throws {
         let container = AppContainerController.makePreview()
         await container.bootstrap()
+        let ctx = container.modelContainer.mainContext
+        let asset = DurableManualAsset(name: "Home", kind: .realEstate)
+        ctx.insert(asset)
+        let entry = DurableManualAssetValue(
+            amountMilliunits: Money.dollars(100).milliunits, asset: asset
+        )
+        ctx.insert(entry)
+        asset.values = [entry]
+        try ctx.save()
+
+        // No snapshot before the first successful Plaid sync — history day
+        // one must reflect a synced position, never pre-sync manual entry.
+        #expect(container.snapshotScheduler.recordIfNeeded() == nil)
+
+        let settings = try #require(try ctx.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ).first)
+        settings.firstPlaidSyncCompletedAt = .now
+        try ctx.save()
+
         let first = container.snapshotScheduler.recordIfNeeded()
         let second = container.snapshotScheduler.recordIfNeeded()
+        #expect(first != nil)
         #expect(first?.id == second?.id)
     }
 
@@ -732,6 +883,9 @@ struct AppContainerTests {
             deleted: false
         )
         modelContainer.mainContext.insert(checking)
+        let recordingSettings = DurableUserSettings()
+        recordingSettings.firstPlaidSyncCompletedAt = secondDate
+        modelContainer.mainContext.insert(recordingSettings)
         try modelContainer.mainContext.save()
         let scheduler = SnapshotScheduler(mainContext: modelContainer.mainContext, calendar: calendar)
         let saved = try #require(scheduler.recordIfNeeded(now: secondDate))
@@ -767,7 +921,10 @@ struct AppContainerTests {
         await container.bootstrap()
         container.setLinkedIBRLoanHistoryStartDate(overrideDate)
 
-        #expect(historySettings.startDate == overrideDate)
+        // The setter normalizes with the device's current calendar, so the
+        // stored value is the local start-of-day for the picked date.
+        #expect(historySettings.startDate
+            == Calendar.current.startOfDay(for: overrideDate))
         #expect(
             container.linkedIBRLoanBalance(
                 on: calendar.date(from: DateComponents(year: 2025, month: 6, day: 1))!,
@@ -797,6 +954,18 @@ struct AppContainerTests {
             weightedInterestRatePercent: 7.75
         )
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(),
+            modelContainer: modelContainer,
+            ibrLoanStore: InMemoryIBRLoanStore(
+                document: SharedIBRLoanDocument(current: snapshot, history: [snapshot])
+            ),
+            ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore()
+        )
+        await container.bootstrap()
+        // Seed after bootstrap: the clean start wipes any pre-existing rows.
         modelContainer.mainContext.insert(CachedTransaction(
             id: "starting-balance",
             budgetId: "budget",
@@ -811,17 +980,6 @@ struct AppContainerTests {
             deleted: false
         ))
         try modelContainer.mainContext.save()
-        let container = AppContainerController(
-            secretStore: InMemorySecretStore(),
-            biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
-            modelContainer: modelContainer,
-            ibrLoanStore: InMemoryIBRLoanStore(
-                document: SharedIBRLoanDocument(current: snapshot, history: [snapshot])
-            ),
-            ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore()
-        )
-        await container.bootstrap()
         container.selectedBudgetId = "budget"
 
         #expect(
@@ -982,7 +1140,8 @@ struct AppContainerTests {
             itemId: item.id,
             cursor: "cursor-1",
             updateStatus: "HISTORICAL_UPDATE_COMPLETE",
-            historicalReconciliationVersion: 10
+            historicalReconciliationVersion:
+                PlaidTransactionSyncCoordinator.currentHistoricalReconciliationVersion
         ))
         let historicalKnownSummary = try #require(
             PlaidTransactionDTO(
@@ -1030,7 +1189,10 @@ struct AppContainerTests {
         #expect(!pendingRow.requiresNameReview)
         #expect(pendingRow.toProjectionSummary() == nil)
         #expect(knownPostedRow.requiresReview)
-        #expect(!knownPostedRow.requiresNameReview)
+        // Canonical semantics: a merchant is "known" only through a confirmed
+        // payee alias. No alias exists here, so even a repeat merchant still
+        // needs name review (the legacy fingerprint shortcut was removed).
+        #expect(knownPostedRow.requiresNameReview)
     }
 
     @Test func accountHistoryFetchesOnlyOneOrderedPage() throws {
@@ -1201,7 +1363,8 @@ struct AppContainerTests {
         let cursor = try #require(
             try context.fetch(FetchDescriptor<PlaidTransactionCursor>()).first
         )
-        #expect(cursor.historicalReconciliationVersion == 10)
+        #expect(cursor.historicalReconciliationVersion
+            == PlaidTransactionSyncCoordinator.currentHistoricalReconciliationVersion)
 
         context.insert(
             LegacyTransactionMatchRow(
@@ -1220,14 +1383,19 @@ struct AppContainerTests {
             FetchDescriptor<LegacyTransactionMatchRow>()
         )
         #expect(matches.map(\.plaidTransactionId) == ["sentinel-plaid"])
-        #expect(cursor.historicalReconciliationVersion == 10)
+        #expect(cursor.historicalReconciliationVersion
+            == PlaidTransactionSyncCoordinator.currentHistoricalReconciliationVersion)
     }
 
     @Test func canonicalConfirmationsLearnIdentityWithoutCreatingCategoryRules()
         throws {
-        let context = try ModelContainerFactory.makeContainer(
+        // Retain the container for the test's lifetime: grabbing only
+        // `.mainContext` leaves the container to autorelease timing, and a
+        // deallocated store makes the first insert hang forever.
+        let modelContainer = try ModelContainerFactory.makeContainer(
             inMemory: true
-        ).mainContext
+        )
+        let context = modelContainer.mainContext
         let payee = DurableCanonicalPayee(
             canonicalId: "ynab:payee-store",
             ynabPayeeId: "payee-store",
@@ -2254,77 +2422,9 @@ struct AppContainerTests {
         #expect(!rule.categoryReusable)
     }
 
-    @Test func plaidCutoverKeepsYNABCacheAndRemovesPAT() async throws {
-        let secrets = InMemorySecretStore(seed: [
-            .ynabPersonalAccessToken: "ynab-token"
-        ])
-        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
-        let context = modelContainer.mainContext
-        let settings = DurableUserSettings()
-        context.insert(settings)
-        context.insert(CachedFinancialAccount(
-            canonicalAccountId: "canonical-checking",
-            externalId: "checking-1",
-            itemId: "bank-item",
-            source: .plaid,
-            institutionName: "Example Bank",
-            name: "Checking",
-            officialName: nil,
-            mask: "1234",
-            type: .checking,
-            subtype: "checking",
-            currentBalanceMilliunits: Money.dollars(2_500).milliunits,
-            availableBalanceMilliunits: Money.dollars(2_400).milliunits,
-            creditLimitMilliunits: nil,
-            isoCurrencyCode: "USD"
-        ))
-        context.insert(DurableCanonicalAccountBinding(
-            canonicalAccountId: "canonical-checking",
-            plaidAccountId: "checking-1",
-            ynabAccountId: "ynab-checking",
-            itemId: "bank-item",
-            institutionName: "Example Bank",
-            accountName: "Checking",
-            accountType: .checking,
-            reviewed: true
-        ))
-        context.insert(PlaidTransactionCursor(
-            itemId: "bank-item",
-            cursor: "cursor-1",
-            updateStatus: "HISTORICAL_UPDATE_COMPLETE"
-        ))
-        context.insert(CachedAccount(
-            id: "ynab-checking",
-            budgetId: "budget",
-            name: "Legacy Checking",
-            typeRaw: "checking",
-            balanceMilliunits: 1_000_000,
-            clearedMilliunits: 1_000_000,
-            unclearedMilliunits: 0,
-            onBudget: true,
-            closed: false,
-            deleted: false
-        ))
-        try context.save()
-        let container = AppContainerController(
-            secretStore: secrets,
-            biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
-            modelContainer: modelContainer
-        )
-        await container.bootstrap()
+    // MARK: - Historical backfill (retired)
 
-        try await container.makePlaidPrimary()
-
-        #expect(settings.primaryFinancialDataSource == .plaid)
-        #expect(container.hasYNABToken == false)
-        #expect(try secrets.load(.ynabPersonalAccessToken) == nil)
-        #expect(try context.fetch(FetchDescriptor<CachedAccount>()).count == 1)
-    }
-
-    // MARK: - Historical backfill
-
-    @Test func backfillWritesReconstructedSnapshots() async throws {
+    @Test func historyBackfillNeverRunsAfterCleanStart() async throws {
         let container = AppContainerController.makePreview()
         await container.bootstrap()
         let ctx = container.modelContainer.mainContext
@@ -2332,89 +2432,13 @@ struct AppContainerTests {
         seedAccountWithRecentTransactions(into: ctx, budgetId: "b1")
         try ctx.save()
 
+        // Fresh settings are stamped with the current backfill version, so
+        // the YNAB historical reconstruction is permanently disabled: Net
+        // Worth history is never rebuilt from YNAB after the clean start.
         container.syncCoordinator.runHistoryBackfillIfNeeded(budgetId: "b1")
 
         let snaps = try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>())
-        #expect(snaps.count > 1)
-        #expect(snaps.allSatisfy { $0.source == .backfill })
-    }
-
-    @Test func backfillMarkerSkipsSecondRun() async throws {
-        let container = AppContainerController.makePreview()
-        await container.bootstrap()
-        let ctx = container.modelContainer.mainContext
-
-        seedAccountWithRecentTransactions(into: ctx, budgetId: "b1")
-        try ctx.save()
-
-        container.syncCoordinator.runHistoryBackfillIfNeeded(budgetId: "b1")
-        let firstCount = try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).count
-
-        let settings = try #require(try ctx.fetch(FetchDescriptor<DurableUserSettings>()).first)
-        #expect(settings.historyBackfillVersion == SyncCoordinator.currentHistoryBackfillVersion)
-
-        container.syncCoordinator.runHistoryBackfillIfNeeded(budgetId: "b1")
-        let secondCount = try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).count
-        #expect(secondCount == firstCount)
-    }
-
-    @Test func backfillCollapsesPreSeededDuplicateDay() async throws {
-        let container = AppContainerController.makePreview()
-        await container.bootstrap()
-        let ctx = container.modelContainer.mainContext
-
-        seedAccountWithRecentTransactions(into: ctx, budgetId: "b1")
-
-        // Pre-seed a duplicate `.backfill` row from a hypothetical interrupted
-        // prior run for a day inside the reconstruction window.
-        let cal = Calendar(identifier: .gregorian)
-        let day = cal.startOfDay(for: cal.date(byAdding: .day, value: -10, to: .now)!)
-        ctx.insert(DurableNetWorthSnapshot(
-            date: day,
-            assetsMilliunits: 1_000_000,
-            liabilitiesMilliunits: 0,
-            source: .backfill
-        ))
-        try ctx.save()
-
-        container.syncCoordinator.runHistoryBackfillIfNeeded(budgetId: "b1")
-
-        let snaps = try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>())
-        let byDay = Dictionary(grouping: snaps) { cal.startOfDay(for: $0.date) }
-        #expect(byDay.allSatisfy { $0.value.count == 1 })
-    }
-
-    @Test func dedupePreservesRicherLiveSnapshot() async throws {
-        let container = AppContainerController.makePreview()
-        await container.bootstrap()
-        let ctx = container.modelContainer.mainContext
-
-        seedAccountWithRecentTransactions(into: ctx, budgetId: "b1")
-
-        // Pre-seed a `.live` snapshot for a specific day inside the window with
-        // a much richer assets total (simulating a day where manual assets had
-        // already been counted).
-        let cal = Calendar(identifier: .gregorian)
-        let day = cal.startOfDay(for: cal.date(byAdding: .day, value: -10, to: .now)!)
-        let liveAssets: Int64 = 999_999_999_000  // far richer than reconstruction
-        let liveSnap = DurableNetWorthSnapshot(
-            date: day,
-            assetsMilliunits: liveAssets,
-            liabilitiesMilliunits: 0,
-            source: .live
-        )
-        ctx.insert(liveSnap)
-        try ctx.save()
-
-        container.syncCoordinator.runHistoryBackfillIfNeeded(budgetId: "b1")
-
-        let snaps = try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>(
-            predicate: #Predicate { $0.date == day }
-        ))
-        #expect(snaps.count == 1)
-        let survivor = try #require(snaps.first)
-        #expect(survivor.source == .live)
-        #expect(survivor.assetsMilliunits == liveAssets)
+        #expect(snaps.isEmpty)
     }
 
     // MARK: - Helpers

@@ -210,10 +210,9 @@ public final class SyncCoordinator {
         guard settings.historyBackfillVersion < Self.currentHistoryBackfillVersion else { return true }
 
         phase = .syncing(label: "Reconstructing history")
-        // Always reset phase on exit so standalone callers (e.g.
-        // `AppContainerController.rebuildChartHistory`) don't get stuck on the
-        // "Reconstructing history" label. `syncAll` overwrites this with its
-        // own `.idle` write anyway.
+        // Always reset phase on exit so standalone callers don't get stuck on
+        // the "Reconstructing history" label. `syncAll` overwrites this with
+        // its own `.idle` write anyway.
         defer {
             if case .syncing(let label) = phase, label == "Reconstructing history" {
                 phase = .idle
@@ -1086,8 +1085,12 @@ public final class PlaidSyncCoordinator {
 @MainActor
 @Observable
 public final class PlaidTransactionSyncCoordinator {
-    private static let currentHistoricalReconciliationVersion = 13
-    private static let currentCanonicalTransactionDataVersion = 2
+    /// Internal (not private) so tests can assert cursors reach the current
+    /// reconciliation marker without hardcoding its value.
+    static let currentHistoricalReconciliationVersion = 13
+    /// Internal (not private) so `FreshStart` can stamp fresh settings with
+    /// the current version and keep one source of truth.
+    static let currentCanonicalTransactionDataVersion = 2
 
     public enum Phase: Sendable, Equatable {
         case idle
@@ -1397,7 +1400,9 @@ public final class PlaidTransactionSyncCoordinator {
 
     @discardableResult
     public func syncAll() async -> Bool {
-        guard case .idle = phase else { return false }
+        // A prior failure must not brick sync until relaunch: retry is
+        // allowed from `.error`, only a concurrent run is blocked.
+        if case .syncing = phase { return false }
         phase = .syncing("Accounts")
         do {
             let itemsResponse = try await client.items()
@@ -1503,15 +1508,6 @@ public final class PlaidTransactionSyncCoordinator {
         )) ?? []
         guard !accounts.isEmpty else { return }
 
-        let activePlaidIDs = Set(accounts.map(\.externalId))
-        let bindings = ((try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalAccountBinding>()
-        )) ?? []).filter { activePlaidIDs.contains($0.plaidAccountId) }
-        guard bindings.count == activePlaidIDs.count,
-              bindings.allSatisfy(\.reviewed) else {
-            return
-        }
-
         let cursors = (try? mainContext.fetch(
             FetchDescriptor<PlaidTransactionCursor>()
         )) ?? []
@@ -1521,6 +1517,34 @@ public final class PlaidTransactionSyncCoordinator {
                   $0.historicalReconciliationVersion
                       < Self.currentHistoricalReconciliationVersion
               }) else {
+            return
+        }
+
+        // After the Plaid-first clean start the YNAB cache never repopulates
+        // during normal operation, so with no legacy rows there is nothing to
+        // reconcile and no YNAB account mapping to wait for. The marker must
+        // still advance, or transaction review would stay locked forever.
+        let legacyRowCount = (try? mainContext.fetchCount(
+            FetchDescriptor<CachedTransaction>()
+        )) ?? 0
+        if legacyRowCount == 0 {
+            markHistoricalReconciliationComplete()
+            guard mainContext.safeSave(
+                source: "plaidTransactions.reconciliationNotNeeded"
+            ) else {
+                mainContext.rollback()
+                return
+            }
+            refreshCanonicalReviewCounts()
+            return
+        }
+
+        let activePlaidIDs = Set(accounts.map(\.externalId))
+        let bindings = ((try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalAccountBinding>()
+        )) ?? []).filter { activePlaidIDs.contains($0.plaidAccountId) }
+        guard bindings.count == activePlaidIDs.count,
+              bindings.allSatisfy(\.reviewed) else {
             return
         }
         reconcileHistory()
@@ -2945,6 +2969,12 @@ public final class PlaidTransactionSyncCoordinator {
         let settings = (try? mainContext.fetch(
             FetchDescriptor<DurableUserSettings>()
         ))?.first
+        let coverageRows = (try? mainContext.fetch(
+            FetchDescriptor<PlaidAccountCoverage>()
+        )) ?? []
+        var coverageByPlaidAccountID = Dictionary(
+            uniqueKeysWithValues: coverageRows.map { ($0.plaidAccountId, $0) }
+        )
         var cursor = cursorRow.cursor
         var hasMore = true
         while hasMore {
@@ -2986,6 +3016,12 @@ public final class PlaidTransactionSyncCoordinator {
                     reviewOriginRaw: isHistoricalImport ? "historical" : "new",
                     existingByID: &existingByID
                 )
+                recordCoverage(
+                    plaidAccountId: transaction.accountId,
+                    itemId: item.id,
+                    date: summary.postedDate,
+                    into: &coverageByPlaidAccountID
+                )
                 if let pendingID = summary.pendingTransactionId {
                     markDeleted(
                         id: "plaid:\(pendingID)",
@@ -3011,6 +3047,32 @@ public final class PlaidTransactionSyncCoordinator {
             }
         }
         return true
+    }
+
+    /// Widens the account's imported-history record to include `date`.
+    /// Coverage is tracked per account — imported start and end dates are
+    /// account-specific and never replaced by one global history window.
+    private func recordCoverage(
+        plaidAccountId: String,
+        itemId: String,
+        date: Date,
+        into coverageByPlaidAccountID: inout [String: PlaidAccountCoverage]
+    ) {
+        let row: PlaidAccountCoverage
+        if let existing = coverageByPlaidAccountID[plaidAccountId] {
+            row = existing
+        } else {
+            row = PlaidAccountCoverage(plaidAccountId: plaidAccountId, itemId: itemId)
+            mainContext.insert(row)
+            coverageByPlaidAccountID[plaidAccountId] = row
+        }
+        if row.earliestImportedDate.map({ date < $0 }) ?? true {
+            row.earliestImportedDate = date
+        }
+        if row.latestImportedDate.map({ date > $0 }) ?? true {
+            row.latestImportedDate = date
+        }
+        row.updatedAt = .now
     }
 
     private func ensureBindingsAndAccounts(

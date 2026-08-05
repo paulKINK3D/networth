@@ -6,6 +6,27 @@ public enum FinancialDataSource: String, Codable, Sendable, CaseIterable {
     case plaid
 }
 
+/// How a category group participates in reports. Spending groups feed
+/// Spending History totals; income, investment, and transfer groups keep
+/// their activity out of spending while remaining visible in history.
+public enum CategoryReportingRole: String, Codable, Sendable, CaseIterable, Identifiable {
+    case spending
+    case income
+    case investment
+    case transfer
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .spending: "Spending"
+        case .income: "Income"
+        case .investment: "Investment"
+        case .transfer: "Transfer"
+        }
+    }
+}
+
 public enum FinancialAccountType: String, Codable, Sendable, CaseIterable {
     case checking
     case savings

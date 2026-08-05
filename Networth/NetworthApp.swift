@@ -7,7 +7,22 @@ struct NetworthApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var bootstrapped: Bool = false
 
+    /// True when the app is merely hosting a unit-test run. The host app must
+    /// never bootstrap then: bootstrap performs real work against the real
+    /// store — including the destructive Plaid-first clean start — and a ⌘U
+    /// on a physical device would otherwise reset live data.
+    private static let isHostingUnitTests =
+        NSClassFromString("XCTestCase") != nil
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
+
     init() {
+        if Self.isHostingUnitTests {
+            // Tests build their own in-memory containers; the host app stays
+            // inert on a placeholder container that never touches disk.
+            _container = State(initialValue: AppContainerController.makePreview())
+            return
+        }
         let production: AppContainerController
         do {
             production = try AppContainerController.makeProduction()
@@ -24,7 +39,7 @@ struct NetworthApp: App {
                 .environment(container)
                 .modelContainer(container.modelContainer)
                 .task {
-                    if !bootstrapped {
+                    if !bootstrapped && !Self.isHostingUnitTests {
                         await container.bootstrap()
                         container.recordDailySnapshotOnActivation()
                         bootstrapped = true

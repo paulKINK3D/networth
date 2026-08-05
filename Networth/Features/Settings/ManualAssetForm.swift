@@ -238,7 +238,7 @@ struct ManualAssetForm: View {
         ctx.delete(entry)
         asset.values?.removeAll { $0.id == entry.id }
         ctx.safeSave(source: "manualAsset.historyDelete")
-        Task { await container.rebuildChartHistory() }
+        container.recordDailySnapshot()
     }
 
     private func save() {
@@ -313,10 +313,10 @@ struct ManualAssetForm: View {
             saveError = "Saving the asset failed. Your changes are still here — try again or close and re-open the sheet."
             return
         }
+        // Snapshots are append-only after the Plaid-first clean start: a
+        // manual-asset change updates today's snapshot; history is never
+        // reconstructed backward.
         container.recordDailySnapshot()
-        // Rebuild .backfill rows so historical chart points pick up this
-        // asset's new/changed value entry. Doesn't hit YNAB.
-        Task { await container.rebuildChartHistory() }
         dismiss()
     }
 

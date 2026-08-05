@@ -150,7 +150,7 @@ struct ProjectionsView: View {
 
     @ViewBuilder
     private func priorityNotice(_ data: ProjectionData) -> some View {
-        switch container.syncCoordinator.phase {
+        switch container.plaidTransactionSyncCoordinator.phase {
         case .syncing(let label):
             HStack(spacing: NwSpacing.sm) {
                 ProgressView().controlSize(.small)

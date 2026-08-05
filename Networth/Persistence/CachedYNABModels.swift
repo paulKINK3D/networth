@@ -815,6 +815,37 @@ public final class PlaidTransactionCursor {
     }
 }
 
+/// Per-account record of the Plaid transaction history actually imported:
+/// the earliest and latest applied transaction dates plus any known coverage
+/// gaps. Coverage is account-specific — never substitute one global history
+/// window. Lives in the re-fetchable cache tier; a full resync rebuilds it.
+@Model
+public final class PlaidAccountCoverage {
+    @Attribute(.unique) public var plaidAccountId: String
+    public var itemId: String
+    public var earliestImportedDate: Date?
+    public var latestImportedDate: Date?
+    /// JSON-encoded `[start, end]` day pairs for known gaps in coverage.
+    public var gapsData: Data? = nil
+    public var updatedAt: Date
+
+    public init(
+        plaidAccountId: String,
+        itemId: String,
+        earliestImportedDate: Date? = nil,
+        latestImportedDate: Date? = nil,
+        gapsData: Data? = nil,
+        updatedAt: Date = .now
+    ) {
+        self.plaidAccountId = plaidAccountId
+        self.itemId = itemId
+        self.earliestImportedDate = earliestImportedDate
+        self.latestImportedDate = latestImportedDate
+        self.gapsData = gapsData
+        self.updatedAt = updatedAt
+    }
+}
+
 @Model
 public final class LegacyTransactionMatchRow {
     @Attribute(.unique) public var plaidTransactionId: String

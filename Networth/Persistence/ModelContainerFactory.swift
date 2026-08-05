@@ -25,6 +25,7 @@ public enum ModelContainerFactory {
             CachedFinancialAccount.self,
             CachedFinancialTransaction.self,
             PlaidTransactionCursor.self,
+            PlaidAccountCoverage.self,
             LegacyTransactionMatchRow.self
         ])
         let durableSchema = Schema([
@@ -43,6 +44,7 @@ public enum ModelContainerFactory {
             DurableCanonicalPayee.self,
             DurablePayeeAlias.self,
             DurableCanonicalCategory.self,
+            DurableCategoryGroup.self,
             DurableCanonicalTransactionDecision.self,
             DurableMerchantRule.self,
             DurableTransactionCategory.self,
@@ -91,6 +93,7 @@ public enum ModelContainerFactory {
             CachedFinancialAccount.self,
             CachedFinancialTransaction.self,
             PlaidTransactionCursor.self,
+            PlaidAccountCoverage.self,
             LegacyTransactionMatchRow.self,
             DurableManualAsset.self,
             DurableManualAssetValue.self,
@@ -107,6 +110,7 @@ public enum ModelContainerFactory {
             DurableCanonicalPayee.self,
             DurablePayeeAlias.self,
             DurableCanonicalCategory.self,
+            DurableCategoryGroup.self,
             DurableCanonicalTransactionDecision.self,
             DurableMerchantRule.self,
             DurableTransactionCategory.self,

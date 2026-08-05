@@ -257,6 +257,16 @@ public final class DurableUserSettings {
     public var budgetSetupCompletedAt: Date? = nil
     /// The single user-defined True Surplus envelope. Defaults to $1,000.
     public var budgetSurplusTargetMilliunits: Int64 = 1_000_000
+    /// `0` = the Plaid-first destructive clean start has not completed for
+    /// this iCloud account. Set to `FreshStart.currentVersion` only after
+    /// every row in both stores was deleted and this fresh default row was
+    /// created. Rows carrying an older value that reappear via CloudKit are
+    /// legacy and get purged at bootstrap.
+    public var freshStartVersion: Int = 0
+    /// First successful Plaid sync after the clean start. Gates the first
+    /// new Net Worth snapshot: history starts on that date and is never
+    /// reconstructed from YNAB.
+    public var firstPlaidSyncCompletedAt: Date? = nil
 
     public init(id: String = "singleton") { self.id = id }
 
@@ -383,6 +393,9 @@ public final class DurableCanonicalCategory {
     public var groupName: String = ""
     public var sourceName: String = ""
     public var sourceGroupName: String = ""
+    /// Stable identity of the owning `DurableCategoryGroup`. Additive: nil
+    /// means the category has not been assigned to a Networth-owned group.
+    public var categoryGroupIdentity: String? = nil
     public var hidden: Bool = false
     public var deletedAtSource: Bool = false
     public var userEdited: Bool = false
@@ -398,6 +411,7 @@ public final class DurableCanonicalCategory {
         groupName: String = "",
         sourceName: String = "",
         sourceGroupName: String = "",
+        categoryGroupIdentity: String? = nil,
         hidden: Bool = false,
         deletedAtSource: Bool = false,
         userEdited: Bool = false,
@@ -412,11 +426,59 @@ public final class DurableCanonicalCategory {
         self.groupName = groupName
         self.sourceName = sourceName
         self.sourceGroupName = sourceGroupName
+        self.categoryGroupIdentity = categoryGroupIdentity
         self.hidden = hidden
         self.deletedAtSource = deletedAtSource
         self.userEdited = userEdited
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+}
+
+/// Networth-owned category-group directory. A group's reporting role decides
+/// how its categories' activity is treated in reports: spending groups feed
+/// Spending History; income, investment, and transfer groups stay outside
+/// spending totals. YNAB may seed initial rows, but names, ordering, color,
+/// and visibility belong to Networth afterward. All fields have defaults for
+/// additive CloudKit schema compatibility.
+@Model
+public final class DurableCategoryGroup {
+    public var id: UUID = UUID()
+    /// Stable identity referenced by category rows; survives renames.
+    public var groupIdentity: String = ""
+    public var name: String = ""
+    public var displayOrder: Int = 0
+    public var chartColorHex: String = ""
+    public var reportingRoleRaw: String = CategoryReportingRole.spending.rawValue
+    public var hidden: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        groupIdentity: String = "",
+        name: String = "",
+        displayOrder: Int = 0,
+        chartColorHex: String = "",
+        reportingRole: CategoryReportingRole = .spending,
+        hidden: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.groupIdentity = groupIdentity
+        self.name = name
+        self.displayOrder = displayOrder
+        self.chartColorHex = chartColorHex
+        self.reportingRoleRaw = reportingRole.rawValue
+        self.hidden = hidden
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var reportingRole: CategoryReportingRole {
+        get { CategoryReportingRole(rawValue: reportingRoleRaw) ?? .spending }
+        set { reportingRoleRaw = newValue.rawValue }
     }
 }
 
@@ -798,6 +860,9 @@ public final class DurableTransactionCategory {
     public var id: UUID = UUID()
     public var name: String = ""
     public var groupName: String = "Networth Categories"
+    /// Stable identity of the owning `DurableCategoryGroup`. Additive: nil
+    /// means the category has not been assigned to a Networth-owned group.
+    public var categoryGroupIdentity: String? = nil
     public var hidden: Bool = false
     public var createdAt: Date = Date.now
     public var updatedAt: Date = Date.now
@@ -806,6 +871,7 @@ public final class DurableTransactionCategory {
         id: UUID = UUID(),
         name: String,
         groupName: String = "Networth Categories",
+        categoryGroupIdentity: String? = nil,
         hidden: Bool = false,
         createdAt: Date = .now,
         updatedAt: Date = .now
@@ -813,6 +879,7 @@ public final class DurableTransactionCategory {
         self.id = id
         self.name = name
         self.groupName = groupName
+        self.categoryGroupIdentity = categoryGroupIdentity
         self.hidden = hidden
         self.createdAt = createdAt
         self.updatedAt = updatedAt
