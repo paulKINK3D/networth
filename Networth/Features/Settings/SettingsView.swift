@@ -2157,6 +2157,9 @@ struct HistoricalReviewCluster: Identifiable {
     let treatment: ForecastTreatment
     let transactionIDs: [String]
     let totalMilliunits: Int64
+    /// Members carry their own suggested legs; approval preserves each
+    /// transaction's split instead of writing one flat category.
+    var isSplit: Bool = false
 
     var canBatchApprove: Bool {
         guard !displayName.isEmpty else { return false }
@@ -2191,7 +2194,8 @@ struct HistoricalReviewCluster: Identifiable {
                 transactionIDs: members.map(\.id),
                 totalMilliunits: members.reduce(0) {
                     $0 + $1.amountMilliunits
-                }
+                },
+                isSplit: !sample.subtransactions.isEmpty
             )
         }
         .sorted {
@@ -2377,16 +2381,26 @@ struct GroupedHistoricalReviewSheet: View {
 
     private func approve(_ cluster: HistoricalReviewCluster) {
         approveError = nil
-        let approved = container.approvePlaidTransactionCluster(
-            ids: cluster.transactionIDs,
-            displayName: cluster.displayName,
-            payeeCanonicalId: cluster.payeeCanonicalId,
-            categoryName: cluster.categoryName,
-            categoryCanonicalId: cluster.categoryCanonicalId,
-            treatment: cluster.treatment
-        )
+        // Split members are approved with their OWN suggested legs; flat
+        // clusters share one classification.
+        let approved = cluster.isSplit
+            ? container.plaidTransactionSyncCoordinator
+                .approveSuggestedSplitTransactions(
+                    ids: cluster.transactionIDs
+                )
+            : container.approvePlaidTransactionCluster(
+                ids: cluster.transactionIDs,
+                displayName: cluster.displayName,
+                payeeCanonicalId: cluster.payeeCanonicalId,
+                categoryName: cluster.categoryName,
+                categoryCanonicalId: cluster.categoryCanonicalId,
+                treatment: cluster.treatment
+            )
         if approved == 0 {
             approveError = "This group could not be approved. Open it and review a transaction to fix the details."
+        } else if cluster.isSplit,
+                  approved < cluster.transactionIDs.count {
+            approveError = "\(approved) approved; \(cluster.transactionIDs.count - approved) splits need individual review."
         }
         reload()
     }

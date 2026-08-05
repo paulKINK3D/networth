@@ -2709,6 +2709,135 @@ public final class PlaidTransactionSyncCoordinator {
         }
     }
 
+    /// Approves a cluster of split transactions "as suggested": each row
+    /// keeps its OWN prefilled legs, written as an authoritative split
+    /// decision, in one save. Rows whose legs don't validate are skipped
+    /// and stay in review.
+    public func approveSuggestedSplitTransactions(ids: [String]) -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let selectedIDs = ids
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                selectedIDs.contains($0.id) && !$0.deleted && !$0.pending
+            }
+        )
+        guard let rows = try? mainContext.fetch(descriptor),
+              !rows.isEmpty else {
+            return 0
+        }
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        let latestByID = latestCanonicalDecisionsByTransactionID(decisions)
+        var approvedRows: [CachedFinancialTransaction] = []
+
+        for row in rows {
+            let legs = row.subtransactions.filter {
+                !$0.deleted && !$0.amount.isZero
+            }
+            guard legs.count >= 2,
+                  legs.map(\.amount.milliunits).reduce(0, +)
+                    == row.amountMilliunits else {
+                continue
+            }
+            let cleanedName = row.displayName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !cleanedName.isEmpty,
+                  let payee = resolveOrCreateCanonicalPayee(
+                    named: cleanedName,
+                    preferredCanonicalId: row.payeeCanonicalId
+                  ) else {
+                continue
+            }
+            var canonicalSplits: [SubTransactionSummary] = []
+            var valid = true
+            for leg in legs {
+                if row.amountMilliunits > 0 {
+                    guard leg.forecastTreatment == .income
+                        || leg.forecastTreatment == .refund else {
+                        valid = false
+                        break
+                    }
+                    canonicalSplits.append(leg)
+                    continue
+                }
+                let rawID = leg.categoryCanonicalId ?? leg.categoryId
+                guard let category = resolveCanonicalCategory(
+                    canonicalId: rawID.map {
+                        $0.hasPrefix("ynab:") || $0.hasPrefix("networth:")
+                            ? $0
+                            : "ynab:\($0)"
+                    },
+                    name: leg.categoryName
+                ), TransactionTypeRules.isValidCombination(
+                    treatment: .ordinarySpending,
+                    categoryRole: reportingRole(for: category)
+                ) else {
+                    valid = false
+                    break
+                }
+                canonicalSplits.append(SubTransactionSummary(
+                    id: leg.id,
+                    amount: leg.amount,
+                    categoryId: category.canonicalId,
+                    categoryName: category.name,
+                    transferAccountId: leg.transferAccountId,
+                    payeeName: leg.payeeName,
+                    memo: leg.memo,
+                    deleted: false
+                ))
+            }
+            guard valid,
+                  let splitData = try? JSONEncoder().encode(canonicalSplits)
+            else { continue }
+
+            assignAliases(for: [row], to: payee)
+            let decision: DurableCanonicalTransactionDecision
+            if let existing = latestByID[row.externalId] {
+                decision = existing
+            } else {
+                decision = DurableCanonicalTransactionDecision(
+                    transactionExternalId: row.externalId
+                )
+                mainContext.insert(decision)
+            }
+            decision.ynabTransactionId = nil
+            decision.payeeCanonicalId = payee.canonicalId
+            decision.payeeNameSnapshot = payee.name
+            decision.categoryCanonicalId = nil
+            decision.categoryNameSnapshot = "Split"
+            decision.amountSign = Int(row.amountMilliunits.signum())
+            if row.amountMilliunits < 0 {
+                decision.forecastTreatment = .ordinarySpending
+            } else if canonicalSplits.allSatisfy({
+                $0.forecastTreatment == .income
+            }) {
+                decision.forecastTreatment = .income
+            } else {
+                decision.forecastTreatment = .refund
+            }
+            decision.subtransactionsData = splitData
+            decision.reviewed = true
+            decision.provenanceRaw = ClassificationProvenance.user.rawValue
+            decision.updatedAt = .now
+            applyCanonicalDecision(decision, to: row)
+            approvedRows.append(row)
+        }
+
+        guard !approvedRows.isEmpty else { return 0 }
+        advanceRecurringExpectations(for: approvedRows)
+        applyCurrentCanonicalState()
+        guard mainContext.safeSave(
+            source: "plaidTransactions.approveSuggestedSplits"
+        ) else {
+            mainContext.rollback()
+            return 0
+        }
+        refreshCanonicalReviewCounts()
+        return approvedRows.count
+    }
+
     /// Re-applies alias/decision/suggestion state and refreshes review
     /// counts after a YNAB reference import rebuilt the suggestion table.
     public func reapplyCanonicalStateAfterReferenceImport() {
