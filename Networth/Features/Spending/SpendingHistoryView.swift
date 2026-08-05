@@ -327,9 +327,12 @@ struct SpendingHistoryView: View {
                 predicate: #Predicate { $0.groupIdentity == identity }
             )
         )) ?? []
-        guard let row = rows.first else { return }
-        row.hidden = hidden
-        row.updatedAt = .now
+        guard !rows.isEmpty else { return }
+        // Stamp every copy: CloudKit-duplicated rows must all agree.
+        for row in rows {
+            row.hidden = hidden
+            row.updatedAt = .now
+        }
         ctx.safeSave(source: "spending.groupHidden")
     }
 
@@ -647,6 +650,12 @@ actor SpendingHistoryBuildActor {
             groups.map { ($0.groupIdentity, $0) },
             uniquingKeysWith: { first, _ in first }
         )
+        // CloudKit can duplicate group rows; hiding must win if ANY copy of
+        // the identity is hidden, whichever copy other lookups picked.
+        let hiddenIdentities = Set(
+            groups.filter { $0.reportingRole == .spending && $0.hidden }
+                .map(\.groupIdentity)
+        )
         let categoryByCanonicalID = Dictionary(
             categories.map { ($0.canonicalId, $0) },
             uniquingKeysWith: { first, _ in first }
@@ -662,7 +671,7 @@ actor SpendingHistoryBuildActor {
                   group.reportingRole == .spending else {
                 return nil
             }
-            return (identity, group.name, group.hidden)
+            return (identity, group.name, hiddenIdentities.contains(identity))
         }
 
         var entries: [SpendingHistoryEntry] = []
@@ -722,8 +731,13 @@ actor SpendingHistoryBuildActor {
 
         // Fixed hue order follows the entity: spending groups sorted by
         // display order (then name) claim palette slots permanently.
+        // Deduped by identity so CloudKit copies can't occupy two slots.
+        var seenIdentities = Set<String>()
         let spendingGroups = groups
-            .filter { $0.reportingRole == .spending && !$0.hidden }
+            .filter {
+                $0.reportingRole == .spending
+                    && !hiddenIdentities.contains($0.groupIdentity)
+            }
             .sorted {
                 if $0.displayOrder != $1.displayOrder {
                     return $0.displayOrder < $1.displayOrder
@@ -731,6 +745,7 @@ actor SpendingHistoryBuildActor {
                 return $0.name.localizedCaseInsensitiveCompare($1.name)
                     == .orderedAscending
             }
+            .filter { seenIdentities.insert($0.groupIdentity).inserted }
         var paletteIndex: [String: Int] = [:]
         var orderIndex: [String: Int] = [:]
         for (index, group) in spendingGroups.enumerated() {
@@ -739,8 +754,13 @@ actor SpendingHistoryBuildActor {
                 paletteIndex[group.groupIdentity] = index
             }
         }
+        var seenHidden = Set<String>()
         let hiddenGroups = groups
-            .filter { $0.reportingRole == .spending && $0.hidden }
+            .filter {
+                $0.reportingRole == .spending
+                    && hiddenIdentities.contains($0.groupIdentity)
+            }
+            .filter { seenHidden.insert($0.groupIdentity).inserted }
             .sorted {
                 $0.name.localizedCaseInsensitiveCompare($1.name)
                     == .orderedAscending
