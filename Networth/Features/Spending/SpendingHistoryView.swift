@@ -776,32 +776,22 @@ struct SpendingGroupDetailSheet: View {
                         Text(CurrencyFormatter.currency(selection.group.spent))
                     }
                 }
-                ForEach(selection.group.categories) { category in
-                    Section(category.name) {
-                        LabeledContent("Total") {
-                            Text(CurrencyFormatter.currency(category.spent))
-                        }
-                        DisclosureGroup("\(category.transactionIds.count) transactions") {
-                            ForEach(
-                                transactions(for: category), id: \.id
-                            ) { row in
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(row.displayName)
-                                        Text(row.postedDate.formatted(
-                                            date: .abbreviated, time: .omitted
-                                        ))
-                                        .font(NwTypography.footnote)
-                                        .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Text(CurrencyFormatter.currency(
-                                        displayAmount(
-                                            for: row, category: category
-                                        )
-                                    ))
+                // One compact row per category in a single joined list;
+                // transactions live one tap deeper.
+                Section {
+                    ForEach(selection.group.categories) { category in
+                        NavigationLink {
+                            categoryTransactions(category)
+                        } label: {
+                            HStack(spacing: NwSpacing.xs) {
+                                Text(category.name)
+                                    .lineLimit(1)
+                                Text("(\(category.transactionIds.count))")
+                                    .font(NwTypography.footnote)
                                     .foregroundStyle(.secondary)
-                                }
+                                Spacer()
+                                Text(CurrencyFormatter.currency(category.spent))
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -824,6 +814,32 @@ struct SpendingGroupDetailSheet: View {
             }
             .onAppear(perform: loadRows)
         }
+    }
+
+    private func categoryTransactions(
+        _ category: SpendingHistoryCategoryTotal
+    ) -> some View {
+        List {
+            ForEach(transactions(for: category), id: \.id) { row in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.displayName)
+                        Text(row.postedDate.formatted(
+                            date: .abbreviated, time: .omitted
+                        ))
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(CurrencyFormatter.currency(
+                        displayAmount(for: row, category: category)
+                    ))
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle(category.name)
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func transactions(
