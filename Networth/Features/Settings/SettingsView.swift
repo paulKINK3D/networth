@@ -2352,12 +2352,14 @@ struct GroupedHistoricalReviewSheet: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    /// The subtitle IS the approval preview: exactly the type (and
+    /// category, when the type takes one) the green check will write.
     private func clusterSubtitle(_ cluster: HistoricalReviewCluster) -> String {
-        var parts: [String] = []
-        if let categoryName = cluster.categoryName, !categoryName.isEmpty {
+        var parts: [String] = [cluster.treatment.displayName]
+        if cluster.treatment.requiresCategory,
+           let categoryName = cluster.categoryName,
+           !categoryName.isEmpty {
             parts.append(categoryName)
-        } else {
-            parts.append(cluster.treatment.displayName)
         }
         parts.append("\(cluster.transactionIDs.count) transactions")
         parts.append(
