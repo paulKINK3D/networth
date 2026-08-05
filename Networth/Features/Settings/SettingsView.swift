@@ -2221,6 +2221,10 @@ struct GroupedHistoricalReviewSheet: View {
     @State private var approveError: String?
     @State private var loaded = false
     @State private var editingCluster: HistoricalReviewCluster?
+    @State private var isSelecting = false
+    @State private var selectedClusterIDs: Set<String> = []
+    @State private var isBatchApproving = false
+    @State private var batchProgress: String?
 
     var body: some View {
         NavigationStack {
@@ -2245,9 +2249,30 @@ struct GroupedHistoricalReviewSheet: View {
                             .listRowBackground(Color.clear)
                         }
                         Section {
-                            Text("✓ approves the group exactly as shown. ✎ changes the payee, type, or category first. Tap a row to review transactions one by one.")
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(.secondary)
+                            if isSelecting {
+                                Text("Tap groups to select, then Approve — each is approved exactly as shown.")
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(.secondary)
+                                Button(allApprovableSelected
+                                    ? "Deselect All"
+                                    : "Select All") {
+                                    selectedClusterIDs = allApprovableSelected
+                                        ? []
+                                        : Set(approvableClusters.map(\.id))
+                                }
+                                if let batchProgress {
+                                    HStack(spacing: NwSpacing.sm) {
+                                        ProgressView().controlSize(.small)
+                                        Text(batchProgress)
+                                            .font(NwTypography.footnote)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            } else {
+                                Text("✓ approves the group exactly as shown. ✎ changes the payee, type, or category first. Tap a row to review transactions one by one.")
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         ForEach(clusters) { cluster in
                             clusterRow(cluster)
@@ -2268,7 +2293,23 @@ struct GroupedHistoricalReviewSheet: View {
                     }
                     .accessibilityLabel("Close")
                 }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if isSelecting {
+                        Button("Approve \(selectedClusterIDs.count)") {
+                            approveSelected()
+                        }
+                        .disabled(selectedClusterIDs.isEmpty || isBatchApproving)
+                        Button("Done") {
+                            isSelecting = false
+                            selectedClusterIDs = []
+                        }
+                        .disabled(isBatchApproving)
+                    } else if !clusters.isEmpty {
+                        Button("Select") { isSelecting = true }
+                    }
+                }
             }
+            .interactiveDismissDisabled(isBatchApproving)
             .onAppear(perform: reload)
             .sheet(item: $editingCluster) { cluster in
                 ClusterBatchEditSheet(cluster: cluster, onSaved: reload)
@@ -2277,8 +2318,61 @@ struct GroupedHistoricalReviewSheet: View {
         }
     }
 
+    private var approvableClusters: [HistoricalReviewCluster] {
+        clusters.filter { $0.canBatchApprove || $0.isSplit }
+    }
+
+    private var allApprovableSelected: Bool {
+        !approvableClusters.isEmpty
+            && selectedClusterIDs.count == approvableClusters.count
+    }
+
     @ViewBuilder
     private func clusterRow(_ cluster: HistoricalReviewCluster) -> some View {
+        if isSelecting {
+            let selectable = cluster.canBatchApprove || cluster.isSplit
+            Button {
+                guard selectable else { return }
+                if selectedClusterIDs.contains(cluster.id) {
+                    selectedClusterIDs.remove(cluster.id)
+                } else {
+                    selectedClusterIDs.insert(cluster.id)
+                }
+            } label: {
+                HStack(spacing: NwSpacing.md) {
+                    Image(systemName: selectedClusterIDs.contains(cluster.id)
+                        ? "checkmark.circle.fill"
+                        : "circle")
+                        .font(.title3)
+                        .foregroundStyle(
+                            selectedClusterIDs.contains(cluster.id)
+                                ? NwAppColors.positive
+                                : Color.secondary
+                        )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(cluster.displayName.isEmpty
+                            ? "Unnamed merchant"
+                            : cluster.displayName)
+                            .font(NwTypography.body.weight(.semibold))
+                        Text(clusterSubtitle(cluster))
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+                .opacity(selectable ? 1 : 0.4)
+            }
+            .buttonStyle(.plain)
+        } else {
+            standardClusterRow(cluster)
+        }
+    }
+
+    @ViewBuilder
+    private func standardClusterRow(
+        _ cluster: HistoricalReviewCluster
+    ) -> some View {
         HStack(spacing: NwSpacing.md) {
             NavigationLink {
                 clusterDetail(cluster)
@@ -2344,6 +2438,48 @@ struct GroupedHistoricalReviewSheet: View {
             )
         )
         return parts.joined(separator: " · ")
+    }
+
+    /// Approves every selected cluster as shown, sequentially with visible
+    /// progress — each approval re-runs the classifier pass, so large
+    /// selections take a moment.
+    private func approveSelected() {
+        guard !isBatchApproving else { return }
+        approveError = nil
+        isBatchApproving = true
+        let targets = clusters.filter {
+            selectedClusterIDs.contains($0.id)
+        }
+        Task { @MainActor in
+            var approvedTotal = 0
+            for (index, cluster) in targets.enumerated() {
+                batchProgress =
+                    "Approving \(index + 1) of \(targets.count)…"
+                await Task.yield()
+                try? await Task.sleep(for: .milliseconds(30))
+                approvedTotal += cluster.isSplit
+                    ? container.plaidTransactionSyncCoordinator
+                        .approveSuggestedSplitTransactions(
+                            ids: cluster.transactionIDs
+                        )
+                    : container.approvePlaidTransactionCluster(
+                        ids: cluster.transactionIDs,
+                        displayName: cluster.displayName,
+                        payeeCanonicalId: cluster.payeeCanonicalId,
+                        categoryName: cluster.categoryName,
+                        categoryCanonicalId: cluster.categoryCanonicalId,
+                        treatment: cluster.treatment
+                    )
+            }
+            batchProgress = nil
+            isBatchApproving = false
+            isSelecting = false
+            selectedClusterIDs = []
+            if approvedTotal == 0 {
+                approveError = "None of the selected groups could be approved."
+            }
+            reload()
+        }
     }
 
     private func approve(_ cluster: HistoricalReviewCluster) {
