@@ -190,39 +190,81 @@ struct SpendingHistoryView: View {
         }
     }
 
-    /// Vertical columns for the selected month's groups; tapping a column
-    /// opens that month/group detail.
+    /// Vertical columns for the selected month's groups in the user's group
+    /// order; tapping a column opens that month/group detail. Few groups
+    /// share the full width; many scroll.
     private func groupColumns(_ month: SpendingHistoryMonth) -> some View {
-        let maxSpent = max(month.groups.map(\.spentMilliunits).max() ?? 1, 1)
+        let groups = orderedGroups(in: month)
+        let maxSpent = max(groups.map(\.spentMilliunits).max() ?? 1, 1)
         return NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                if month.groups.isEmpty {
+                if groups.isEmpty {
                     Text("No approved spending this month.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                } else if groups.count <= 5 {
+                    HStack(alignment: .bottom, spacing: NwSpacing.md) {
+                        ForEach(groups) { group in
+                            groupColumn(
+                                group,
+                                month: month,
+                                maxSpent: maxSpent,
+                                flexible: true
+                            )
+                        }
+                    }
+                    .padding(.top, NwSpacing.xs)
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(alignment: .bottom, spacing: NwSpacing.md) {
-                            ForEach(month.groups) { group in
+                            ForEach(groups) { group in
                                 groupColumn(
                                     group,
                                     month: month,
-                                    maxSpent: maxSpent
+                                    maxSpent: maxSpent,
+                                    flexible: false
                                 )
                             }
                         }
                         .padding(.top, NwSpacing.xs)
                     }
                 }
+                if let model, !model.hiddenGroups.isEmpty {
+                    HStack(spacing: NwSpacing.sm) {
+                        Text("Hidden:")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                        ForEach(model.hiddenGroups) { hidden in
+                            Button(hidden.name) {
+                                setGroupHidden(hidden.identity, hidden: false)
+                            }
+                            .font(NwTypography.footnote)
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    private func orderedGroups(
+        in month: SpendingHistoryMonth
+    ) -> [SpendingHistoryGroupTotal] {
+        guard let model else { return month.groups }
+        return month.groups.sorted {
+            let lhs = model.orderIndex(for: $0.id)
+            let rhs = model.orderIndex(for: $1.id)
+            if lhs != rhs { return lhs < rhs }
+            return $0.name.localizedCaseInsensitiveCompare($1.name)
+                == .orderedAscending
         }
     }
 
     private func groupColumn(
         _ group: SpendingHistoryGroupTotal,
         month: SpendingHistoryMonth,
-        maxSpent: Int64
+        maxSpent: Int64,
+        flexible: Bool
     ) -> some View {
         let height = max(
             12,
@@ -237,18 +279,86 @@ struct SpendingHistoryView: View {
                 Text(CurrencyFormatter.currency(group.spent, showCents: false))
                     .font(NwTypography.caption)
                     .foregroundStyle(NwAppColors.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(color(for: group.id))
-                    .frame(width: 44, height: height)
+                    .frame(
+                        maxWidth: flexible ? .infinity : 44,
+                        alignment: .center
+                    )
+                    .frame(
+                        width: flexible ? nil : 44,
+                        height: height
+                    )
                 Text(group.name)
                     .font(NwTypography.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
-                    .frame(width: 72)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: flexible ? .infinity : 72)
             }
+            .frame(maxWidth: flexible ? .infinity : nil)
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if group.id != SpendingHistoryBuilder.ungroupedIdentity {
+                Button {
+                    moveGroupEarlier(group.id)
+                } label: {
+                    Label("Move Left", systemImage: "arrow.left")
+                }
+                Button(role: .destructive) {
+                    setGroupHidden(group.id, hidden: true)
+                } label: {
+                    Label("Hide from Spending", systemImage: "eye.slash")
+                }
+            }
+        }
+    }
+
+    /// Hiding removes the group from every Spending History total, column,
+    /// and chart stack until unhidden via the "Hidden:" row.
+    private func setGroupHidden(_ identity: String, hidden: Bool) {
+        let ctx = container.modelContainer.mainContext
+        let rows = (try? ctx.fetch(
+            FetchDescriptor<DurableCategoryGroup>(
+                predicate: #Predicate { $0.groupIdentity == identity }
+            )
+        )) ?? []
+        guard let row = rows.first else { return }
+        row.hidden = hidden
+        row.updatedAt = .now
+        ctx.safeSave(source: "spending.groupHidden")
+    }
+
+    /// Column order is user-owned: swap the group one position earlier
+    /// after normalizing display orders to a clean sequence.
+    private func moveGroupEarlier(_ identity: String) {
+        let ctx = container.modelContainer.mainContext
+        let groups = ((try? ctx.fetch(
+            FetchDescriptor<DurableCategoryGroup>()
+        )) ?? [])
+            .filter { $0.reportingRole == .spending && !$0.hidden }
+            .sorted {
+                if $0.displayOrder != $1.displayOrder {
+                    return $0.displayOrder < $1.displayOrder
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name)
+                    == .orderedAscending
+            }
+        guard let index = groups.firstIndex(where: {
+            $0.groupIdentity == identity
+        }), index > 0 else { return }
+        for (position, group) in groups.enumerated() {
+            group.displayOrder = position
+        }
+        groups[index].displayOrder = index - 1
+        groups[index - 1].displayOrder = index
+        groups[index].updatedAt = .now
+        groups[index - 1].updatedAt = .now
+        ctx.safeSave(source: "spending.groupReorder")
     }
 
     // MARK: - 24-month chart
@@ -309,8 +419,7 @@ struct SpendingHistoryView: View {
     private func seriesOrder(
         _ seriesID: String, model: SpendingHistoryModel
     ) -> Int {
-        model.paletteIndex(for: seriesID)
-            ?? NwAppColors.chartCategorical.count
+        model.orderIndexByGroupID[seriesID] ?? Int.max
     }
 
     private func color(for groupID: String) -> Color {
@@ -482,15 +591,30 @@ struct SpendingHistoryView: View {
 
 // MARK: - Model
 
+struct HiddenSpendingGroup: Sendable, Identifiable {
+    let identity: String
+    let name: String
+    var id: String { identity }
+}
+
 struct SpendingHistoryModel: Sendable {
     let months: [SpendingHistoryMonth]
     /// groupIdentity -> fixed palette slot (by group display order). Only
     /// the first `NwAppColors.chartCategorical.count` spending groups get a
     /// hue; the rest fold into "Other".
     let paletteIndexByGroupID: [String: Int]
+    /// groupIdentity -> display position: columns and chart stacks follow
+    /// the user's group order, never the month's spend ranking.
+    let orderIndexByGroupID: [String: Int]
+    /// Spending groups the user hid from Spending History entirely.
+    let hiddenGroups: [HiddenSpendingGroup]
 
     func paletteIndex(for groupID: String) -> Int? {
         paletteIndexByGroupID[groupID]
+    }
+
+    func orderIndex(for groupID: String) -> Int {
+        orderIndexByGroupID[groupID] ?? Int.max
     }
 }
 
@@ -530,7 +654,7 @@ actor SpendingHistoryBuildActor {
 
         func resolvedGroup(
             categoryCanonicalId: String?
-        ) -> (identity: String, name: String)? {
+        ) -> (identity: String, name: String, hidden: Bool)? {
             guard let categoryCanonicalId,
                   let category = categoryByCanonicalID[categoryCanonicalId],
                   let identity = category.categoryGroupIdentity,
@@ -538,7 +662,7 @@ actor SpendingHistoryBuildActor {
                   group.reportingRole == .spending else {
                 return nil
             }
-            return (identity, group.name)
+            return (identity, group.name, group.hidden)
         }
 
         var entries: [SpendingHistoryEntry] = []
@@ -548,6 +672,9 @@ actor SpendingHistoryBuildActor {
                 let group = resolvedGroup(
                     categoryCanonicalId: row.categoryCanonicalId
                 )
+                // A hidden spending group is excluded from Spending History
+                // entirely — totals, columns, and chart.
+                if group?.hidden == true { continue }
                 entries.append(SpendingHistoryEntry(
                     transactionId: row.id,
                     date: row.postedDate,
@@ -569,6 +696,7 @@ actor SpendingHistoryBuildActor {
                     let group = resolvedGroup(
                         categoryCanonicalId: legCanonicalId
                     )
+                    if group?.hidden == true { continue }
                     entries.append(SpendingHistoryEntry(
                         transactionId: row.id,
                         date: row.postedDate,
@@ -604,13 +732,27 @@ actor SpendingHistoryBuildActor {
                     == .orderedAscending
             }
         var paletteIndex: [String: Int] = [:]
-        for (index, group) in spendingGroups.enumerated()
-        where index < NwAppColors.chartCategorical.count {
-            paletteIndex[group.groupIdentity] = index
+        var orderIndex: [String: Int] = [:]
+        for (index, group) in spendingGroups.enumerated() {
+            orderIndex[group.groupIdentity] = index
+            if index < NwAppColors.chartCategorical.count {
+                paletteIndex[group.groupIdentity] = index
+            }
         }
+        let hiddenGroups = groups
+            .filter { $0.reportingRole == .spending && $0.hidden }
+            .sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name)
+                    == .orderedAscending
+            }
+            .map {
+                HiddenSpendingGroup(identity: $0.groupIdentity, name: $0.name)
+            }
         return SpendingHistoryModel(
             months: months,
-            paletteIndexByGroupID: paletteIndex
+            paletteIndexByGroupID: paletteIndex,
+            orderIndexByGroupID: orderIndex,
+            hiddenGroups: hiddenGroups
         )
     }
 }
