@@ -202,16 +202,23 @@ struct ManualAssetForm: View {
         return Money(milliunits: asset.currentValueMilliunits + delta.milliunits)
     }
 
+    /// A new asset has no transaction history to add to: it is always a
+    /// direct value entry, whatever the hidden mode state says. The mode
+    /// picker only exists for existing assets.
+    private var effectiveMode: Mode {
+        asset == nil ? .updateTotal : mode
+    }
+
     /// What ends up persisted, regardless of input mode.
     private var resolvedAmount: Money? {
-        switch mode {
+        switch effectiveMode {
         case .updateTotal: return amountValue
         case .transaction: return transactionPreview ?? amountValue
         }
     }
 
     private var isValid: Bool {
-        switch mode {
+        switch effectiveMode {
         case .updateTotal: return amountValue != nil
         case .transaction:
             // Transaction mode only valid for existing assets; preview will
