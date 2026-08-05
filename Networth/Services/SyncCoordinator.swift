@@ -2108,31 +2108,11 @@ public final class PlaidTransactionSyncCoordinator {
             row.payeeCanonicalId = payeeID
             row.displayName = payee.name
             row.requiresNameReview = false
-            let patterns = patternsByPayee[payeeID] ?? []
-            let directionPatterns = patterns.filter {
-                $0.amountSign == Int(row.amountMilliunits.signum())
-            }
-            let patternKeys = Set(directionPatterns.map {
-                "\($0.categoryCanonicalId ?? "")|\($0.forecastTreatmentRaw)"
-            })
-            if patternKeys.count == 1,
-               let pattern = directionPatterns.first {
-                row.categoryCanonicalId = pattern.categoryCanonicalId
-                row.categoryName = pattern.categoryNameSnapshot
-                row.forecastTreatmentRaw = pattern.forecastTreatmentRaw
-                if let name = pattern.categoryNameSnapshot {
-                    row.nativeCategoryRaw =
-                        nativeCategory(forCategoryName: name).rawValue
-                }
-                row.classificationConfidenceRaw =
-                    ClassificationConfidence.high.rawValue
-                row.classificationProvenanceRaw =
-                    ClassificationProvenance.historicalMatch.rawValue
-                // A decision pattern outranks any earlier split suggestion.
-                row.subtransactionsData = nil
-            } else if let suggestion = suggestionsByPlaidID[row.id] {
-                // The alias resolved the payee but decision patterns can't
-                // pick a category; the reference suggestion still can.
+            // Layering: the row's OWN matched YNAB decision outranks a
+            // payee-level generalization — approving some United flights as
+            // Travel must not repaint the reimbursed ones whose history says
+            // otherwise. Patterns fill only evidence-free rows.
+            if let suggestion = suggestionsByPlaidID[row.id] {
                 row.categoryCanonicalId = suggestion.categoryCanonicalId
                 row.categoryName = suggestion.categoryNameSnapshot
                 row.forecastTreatmentRaw = suggestion.forecastTreatmentRaw
@@ -2145,9 +2125,33 @@ public final class PlaidTransactionSyncCoordinator {
                 row.classificationProvenanceRaw =
                     ClassificationProvenance.historicalMatch.rawValue
             } else {
-                row.categoryCanonicalId = nil
-                row.categoryName = nil
-                row.subtransactionsData = nil
+                let patterns = patternsByPayee[payeeID] ?? []
+                let directionPatterns = patterns.filter {
+                    $0.amountSign == Int(row.amountMilliunits.signum())
+                }
+                let patternKeys = Set(directionPatterns.map {
+                    "\($0.categoryCanonicalId ?? "")|\($0.forecastTreatmentRaw)"
+                })
+                if patternKeys.count == 1,
+                   let pattern = directionPatterns.first {
+                    row.categoryCanonicalId = pattern.categoryCanonicalId
+                    row.categoryName = pattern.categoryNameSnapshot
+                    row.forecastTreatmentRaw = pattern.forecastTreatmentRaw
+                    if let name = pattern.categoryNameSnapshot {
+                        row.nativeCategoryRaw =
+                            nativeCategory(forCategoryName: name).rawValue
+                    }
+                    row.classificationConfidenceRaw =
+                        ClassificationConfidence.high.rawValue
+                    row.classificationProvenanceRaw =
+                        ClassificationProvenance.historicalMatch.rawValue
+                    // A decision pattern outranks any stale split data.
+                    row.subtransactionsData = nil
+                } else {
+                    row.categoryCanonicalId = nil
+                    row.categoryName = nil
+                    row.subtransactionsData = nil
+                }
             }
             // Product rule: every newly posted transaction is confirmed by
             // the user even when history provides a strong prefill.
