@@ -49,6 +49,7 @@ struct SettingsView: View {
     @State private var showingForceResyncConfirm = false
     @State private var showingGroupedReview = false
     @State private var showingAccountMapping = false
+    @State private var showingTransactionSearch = false
     @State private var showingIncludedClosed = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
@@ -243,6 +244,22 @@ struct SettingsView: View {
                                     Text("\(pending)")
                                         .foregroundStyle(.secondary)
                                 }
+                                NwIcon.chevron.image
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Button {
+                            showingTransactionSearch = true
+                        } label: {
+                            HStack {
+                                Label {
+                                    Text("Find & Reclassify")
+                                } icon: {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundStyle(NwAppColors.primary)
+                                }
+                                Spacer()
                                 NwIcon.chevron.image
                                     .foregroundStyle(.secondary)
                             }
@@ -714,6 +731,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingAccountMapping) {
                 PlaidAccountMappingSheet().environment(container)
+            }
+            .sheet(isPresented: $showingTransactionSearch) {
+                TransactionSearchReclassifySheet().environment(container)
             }
             .sheet(isPresented: $showingIncludedClosed) {
                 IncludedClosedAccountsSheet().environment(container)
@@ -2372,6 +2392,168 @@ struct GroupedHistoricalReviewSheet: View {
             uniqueKeysWithValues: historical.map { ($0.id, $0) }
         )
         loaded = true
+    }
+}
+
+/// Search every imported transaction — approved or not — select the ones to
+/// fix, and batch-reclassify them through the same type-first editor. The
+/// repair path for classifications approved in error.
+struct TransactionSearchReclassifySheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+
+    @State private var searchText = ""
+    @State private var results: [CachedFinancialTransaction] = []
+    @State private var selectedIDs: Set<String> = []
+    @State private var editingSelection: HistoricalReviewCluster?
+
+    private static let resultLimit = 300
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if results.isEmpty {
+                    Text(searchText.trimmed.isEmpty
+                        ? "Search by payee or description."
+                        : "No matching transactions.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Section {
+                        Button(allSelected ? "Deselect All" : "Select All") {
+                            selectedIDs = allSelected
+                                ? []
+                                : Set(results.map(\.id))
+                        }
+                    }
+                    ForEach(results, id: \.id) { row in
+                        Button {
+                            toggle(row.id)
+                        } label: {
+                            HStack(spacing: NwSpacing.md) {
+                                Image(systemName:
+                                    selectedIDs.contains(row.id)
+                                        ? "checkmark.circle.fill"
+                                        : "circle"
+                                )
+                                .foregroundStyle(
+                                    selectedIDs.contains(row.id)
+                                        ? NwAppColors.positive
+                                        : Color.secondary
+                                )
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(row.displayName)
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                    Text(resultSubtitle(row))
+                                        .font(NwTypography.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(CurrencyFormatter.currency(
+                                    Money(milliunits: row.amountMilliunits)
+                                ))
+                                .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Payee or description"
+            )
+            .onChange(of: searchText) { runSearch() }
+            .navigationTitle("Find & Reclassify")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Close")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Reclassify \(selectedIDs.count)") {
+                        beginReclassify()
+                    }
+                    .disabled(selectedIDs.isEmpty)
+                }
+            }
+            .sheet(item: $editingSelection) { cluster in
+                ClusterBatchEditSheet(cluster: cluster) {
+                    selectedIDs = []
+                    runSearch()
+                }
+                .environment(container)
+            }
+        }
+    }
+
+    private var allSelected: Bool {
+        !results.isEmpty && selectedIDs.count == results.count
+    }
+
+    private func toggle(_ id: String) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
+
+    private func resultSubtitle(_ row: CachedFinancialTransaction) -> String {
+        var parts = [
+            row.postedDate.formatted(date: .abbreviated, time: .omitted)
+        ]
+        if let category = row.categoryName, !category.isEmpty {
+            parts.append(category)
+        }
+        parts.append(row.forecastTreatment.displayName)
+        if row.requiresReview { parts.append("Unreviewed") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func beginReclassify() {
+        let selected = results.filter { selectedIDs.contains($0.id) }
+        guard let sample = selected.first else { return }
+        editingSelection = HistoricalReviewCluster(
+            id: "search-selection",
+            displayName: sample.displayName.trimmed,
+            payeeCanonicalId: sample.payeeCanonicalId,
+            categoryName: sample.categoryName?.trimmed,
+            categoryCanonicalId: sample.categoryCanonicalId,
+            treatment: sample.forecastTreatment,
+            transactionIDs: selected.map(\.id),
+            totalMilliunits: selected.reduce(0) { $0 + $1.amountMilliunits }
+        )
+    }
+
+    private func runSearch() {
+        let query = searchText.trimmed
+        guard !query.isEmpty else {
+            results = []
+            selectedIDs = []
+            return
+        }
+        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                !$0.deleted && !$0.pending
+                    && ($0.displayName.localizedStandardContains(query)
+                        || $0.rawDescription.localizedStandardContains(query))
+            },
+            sortBy: [SortDescriptor(\.postedDate, order: .reverse)]
+        )
+        descriptor.fetchLimit = Self.resultLimit
+        results = (try? container.modelContainer.mainContext.fetch(
+            descriptor
+        )) ?? []
+        selectedIDs = selectedIDs.intersection(results.map(\.id))
     }
 }
 
