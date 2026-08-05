@@ -488,8 +488,13 @@ public final class YNABReferenceImportCoordinator {
                 : .internalTransfer
         }
         if summary.amount.milliunits < 0 { return .ordinarySpending }
-        if summary.categoryName?.localizedCaseInsensitiveContains("income")
-            == true {
+        // YNAB's standard inflow category is "Inflow: Ready to Assign"
+        // (historically "To be Budgeted") — those are income, not refunds.
+        let category = summary.categoryName?.lowercased() ?? ""
+        if category.contains("income")
+            || category.contains("inflow")
+            || category.contains("ready to assign")
+            || category.contains("to be budgeted") {
             return .income
         }
         return .refund
