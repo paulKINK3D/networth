@@ -109,16 +109,17 @@ public enum ForecastTreatment: String, Codable, Sendable, CaseIterable {
 /// transaction type, and which types take no ordinary category at all.
 /// Incompatible type/category combinations must never be saved.
 public enum TransactionTypeRules {
-    /// Nil means the type uses an account relationship (transfer, card
-    /// payment) or an explicit exclusion instead of an ordinary category.
+    /// Nil means the type takes no ordinary category: income and investment
+    /// contributions are fully described by the type itself, and transfers/
+    /// card payments use an account relationship. Only spending and refunds
+    /// need a category.
     public static func allowedCategoryRoles(
         for treatment: ForecastTreatment
     ) -> Set<CategoryReportingRole>? {
         switch treatment {
         case .ordinarySpending, .refund: [.spending]
-        case .income: [.income]
-        case .investmentContribution: [.investment]
-        case .internalTransfer, .cardPayment, .excluded: nil
+        case .income, .investmentContribution,
+             .internalTransfer, .cardPayment, .excluded: nil
         }
     }
 

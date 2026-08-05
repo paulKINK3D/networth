@@ -2645,9 +2645,7 @@ struct ClusterBatchEditSheet: View {
                         }
                     } else {
                         LabeledContent("Category") {
-                            Text(treatment == .excluded
-                                ? "Not applicable"
-                                : "Uses the account relationship")
+                            Text(noCategoryLabel(for: treatment))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -3149,12 +3147,8 @@ struct PlaidTransactionReviewEditor: View {
                     }
                 } else {
                     LabeledContent("Category") {
-                        Text(
-                            treatment == .excluded
-                                ? "Not applicable"
-                                : "Uses the account relationship"
-                        )
-                        .foregroundStyle(.secondary)
+                        Text(noCategoryLabel(for: treatment))
+                            .foregroundStyle(.secondary)
                     }
                     .padding(NwSpacing.md)
                 }
@@ -4019,6 +4013,13 @@ private struct PlaidNewCategorySheet: View {
         guard !cleanedName.isEmpty else { return }
         dismiss()
         onSave(cleanedName)
+    }
+}
+
+func noCategoryLabel(for treatment: ForecastTreatment) -> String {
+    switch treatment {
+    case .internalTransfer, .cardPayment: "Uses the account relationship"
+    default: "Not needed for this type"
     }
 }
 
@@ -4904,8 +4905,7 @@ struct RecurringExpectationForm: View {
                             }
                         }
                     }
-                    if treatment == .ordinarySpending
-                        || treatment == .investmentContribution {
+                    if treatment == .ordinarySpending {
                         TextField("Category (optional)", text: $categoryName)
                     }
                 }

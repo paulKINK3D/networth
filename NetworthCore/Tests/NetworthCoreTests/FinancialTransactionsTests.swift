@@ -994,43 +994,34 @@ struct FinancialTransactionsTests {
         #expect(TransactionTypeRules.isValidCombination(
             treatment: .refund, categoryRole: .spending
         ))
-        #expect(TransactionTypeRules.isValidCombination(
-            treatment: .income, categoryRole: .income
-        ))
-        #expect(TransactionTypeRules.isValidCombination(
-            treatment: .investmentContribution, categoryRole: .investment
-        ))
         // Incompatible combinations must be rejected.
         #expect(!TransactionTypeRules.isValidCombination(
             treatment: .ordinarySpending, categoryRole: .income
         ))
-        #expect(!TransactionTypeRules.isValidCombination(
-            treatment: .income, categoryRole: .spending
-        ))
-        #expect(!TransactionTypeRules.isValidCombination(
-            treatment: .investmentContribution, categoryRole: .spending
-        ))
     }
 
-    @Test func typeRulesUseAccountRelationshipsForTransfersAndCardPayments() {
-        for treatment in [ForecastTreatment.internalTransfer, .cardPayment, .excluded] {
+    @Test func onlySpendingAndRefundsTakeACategory() {
+        // Income, investment contributions, transfers, card payments, and
+        // exclusions are fully described without an ordinary category.
+        for treatment in [ForecastTreatment.income, .investmentContribution,
+                          .internalTransfer, .cardPayment, .excluded] {
             #expect(!TransactionTypeRules.requiresCategory(treatment))
             #expect(TransactionTypeRules.isValidCombination(
                 treatment: treatment, categoryRole: nil
             ))
-            // An ordinary category on a transfer/card payment is invalid.
+            // A spending category on these types is invalid.
             #expect(!TransactionTypeRules.isValidCombination(
                 treatment: treatment, categoryRole: .spending
             ))
         }
+        #expect(TransactionTypeRules.requiresCategory(.ordinarySpending))
+        #expect(TransactionTypeRules.requiresCategory(.refund))
     }
 
     @Test func typeRulesAcceptUngroupedCategoriesLeniently() {
         // A category not yet assigned to a Networth-owned group has no role;
         // review must not dead-end before groups exist.
-        for treatment in [ForecastTreatment.ordinarySpending, .income,
-                          .refund, .investmentContribution] {
-            #expect(TransactionTypeRules.requiresCategory(treatment))
+        for treatment in [ForecastTreatment.ordinarySpending, .refund] {
             #expect(TransactionTypeRules.isValidCombination(
                 treatment: treatment, categoryRole: nil
             ))
