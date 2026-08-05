@@ -2575,6 +2575,7 @@ struct ClusterBatchEditSheet: View {
     @State private var categoryCanonicalId: String?
     @State private var saveError: String?
     @State private var loaded = false
+    @State private var isApproving = false
 
     var body: some View {
         NavigationStack {
@@ -2583,6 +2584,21 @@ struct ClusterBatchEditSheet: View {
                     Text("Applies to all \(cluster.transactionIDs.count) transactions in this group.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
+                    if isApproving {
+                        HStack(spacing: NwSpacing.sm) {
+                            ProgressView().controlSize(.small)
+                            Text("Approving \(cluster.transactionIDs.count) transactions…")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let saveError {
+                    Section {
+                        Text(saveError)
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.caution)
+                    }
                 }
                 Section("Type") {
                     Picker("Transaction type", selection: $treatment) {
@@ -2591,16 +2607,20 @@ struct ClusterBatchEditSheet: View {
                         }
                     }
                     .onChange(of: treatment) {
-                        if let id = categoryCanonicalId,
-                           let selected = categoryOptions.first(where: {
-                               $0.categoryID == id
-                           }),
-                           !TransactionTypeRules.isValidCombination(
-                               treatment: treatment,
-                               categoryRole: selected.role
-                           ) {
+                        // Keep the category only when its role provably fits
+                        // the new type; a stale name-only prefill would pass
+                        // the enable check but fail validation on save.
+                        guard let id = categoryCanonicalId,
+                              let selected = categoryOptions.first(where: {
+                                  $0.categoryID == id
+                              }),
+                              TransactionTypeRules.isValidCombination(
+                                  treatment: treatment,
+                                  categoryRole: selected.role
+                              ) else {
                             categoryCanonicalId = nil
                             categoryName = ""
+                            return
                         }
                     }
                 }
@@ -2632,13 +2652,6 @@ struct ClusterBatchEditSheet: View {
                         }
                     }
                 }
-                if let saveError {
-                    Section {
-                        Text(saveError)
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(NwAppColors.caution)
-                    }
-                }
             }
             .navigationTitle("Edit Group")
             .navigationBarTitleDisplayMode(.inline)
@@ -2662,9 +2675,10 @@ struct ClusterBatchEditSheet: View {
                     .accessibilityLabel(
                         "Approve all \(cluster.transactionIDs.count)"
                     )
-                    .disabled(!canApprove)
+                    .disabled(!canApprove || isApproving)
                 }
             }
+            .interactiveDismissDisabled(isApproving)
             .onAppear(perform: load)
         }
     }
@@ -2719,25 +2733,34 @@ struct ClusterBatchEditSheet: View {
     }
 
     private func approveAll() {
+        guard !isApproving else { return }
         saveError = nil
-        let approved = container.approvePlaidTransactionCluster(
-            ids: cluster.transactionIDs,
-            displayName: displayName.trimmed,
-            payeeCanonicalId: cluster.payeeCanonicalId,
-            categoryName: treatment.requiresCategory
-                ? categoryName.trimmed
-                : nil,
-            categoryCanonicalId: treatment.requiresCategory
-                ? categoryCanonicalId
-                : nil,
-            treatment: treatment
-        )
-        guard approved > 0 else {
-            saveError = "The group could not be approved. Check the type and category, then try again."
-            return
+        isApproving = true
+        Task { @MainActor in
+            // Let the progress row render before the heavy classifier pass
+            // occupies the main thread.
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(50))
+            let approved = container.approvePlaidTransactionCluster(
+                ids: cluster.transactionIDs,
+                displayName: displayName.trimmed,
+                payeeCanonicalId: cluster.payeeCanonicalId,
+                categoryName: treatment.requiresCategory
+                    ? categoryName.trimmed
+                    : nil,
+                categoryCanonicalId: treatment.requiresCategory
+                    ? categoryCanonicalId
+                    : nil,
+                treatment: treatment
+            )
+            isApproving = false
+            guard approved > 0 else {
+                saveError = "The group could not be approved. Check the type and category, then try again."
+                return
+            }
+            onSaved()
+            dismiss()
         }
-        onSaved()
-        dismiss()
     }
 }
 
