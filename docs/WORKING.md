@@ -1,6 +1,69 @@
 # WORKING
 
-## Current State (2026-08-04 — Phase 1 step 1 implemented, uncommitted)
+## Current State (2026-08-04 — Phase 1 step 2 implemented, uncommitted)
+
+### Step 2 — YNAB reference table + type-first review (this session)
+
+- `ForecastTreatment.investmentContribution` added (outside spending, budget-
+  skipped). `TransactionTypeRules` in NetworthCore is the type-first
+  contract: which `CategoryReportingRole`s fit each type; transfers/card
+  payments/exclusions take no category; ungrouped categories accepted
+  leniently. Enforced in `confirmCanonicalTransaction` and the new batch
+  `approveTransactions` — incompatible combos cannot save.
+- `YNABReferenceSuggestion` (cache tier, wiped by FreshStart): matched
+  Plaid/YNAB ids + suggested payee/category/treatment/split + confidence/
+  score. Applied as the LOWEST layer inside `applyCanonicalDirectory`, so
+  suggestions survive every sync, prefill unresolved rows, and never mark
+  anything reviewed. User decisions and alias evidence always win.
+- `YNABReferenceImportCoordinator` (`Services/YNABReferenceImport.swift`,
+  registered in pbxproj): explicit "Build YNAB Reference" flow — budgets →
+  seed canonical payees + `DurableCategoryGroup` rows (role heuristic:
+  income/invest name → role, else spending) + categories with group refs →
+  per reconciled binding fetch YNAB transactions scoped to that account's
+  `PlaidAccountCoverage` window (+3d slack) → `HistoricalTransactionMatcher`
+  → rebuild suggestion table. Raw YNAB rows are processed in memory and
+  never persisted. Rebuildable; `.user` decisions untouched.
+- Account mapping post-clean-start: `PlaidAccountMappingSheet` now live-
+  fetches YNAB account options (`fetchAccountOptions`, in-memory only) when
+  the YNAB cache is empty.
+- Type-first editor: `PlaidTransactionReviewEditor` restructured — Type
+  section first (picker + split toggle), then Contact, then Category (only
+  when the type takes one; role-filtered groups via `visibleCategoryGroups`;
+  type change clears an incompatible selection).
+- Grouped review: `GroupedHistoricalReviewSheet` clusters unreviewed
+  historical rows by suggested payee+category+type; per-cluster Approve
+  calls `approveTransactions` (one `.user` decision per row, single save);
+  drill-in edits go through the individual editor as training evidence.
+- UI hooks: Settings YNAB section gains Build YNAB Reference + phase status
+  + Review Imported History; AccountsView post-cutover nudge now offers
+  grouped review first, one-by-one second.
+- Tests: 3 NetworthCore rule tests (141 total pass) + 3 app tests (reference
+  import end-to-end, batch approve, type/category rejection). Debug/Release
+  + test bundle compile. App tests not RUN (no simulator from CLI — user
+  runs ⌘U).
+
+### Step-2 Codex review — fixed same session
+- Import/sync mutual exclusion (shared main context): buildReference refuses
+  to start during a Plaid sync; syncNow/forceFullResync refuse during an
+  import; Settings disables Sync Now while importing.
+- Suggestions apply only when alias evidence is EMPTY (conflicting evidence
+  leaves the row unresolved); decision patterns clear stale split data.
+- Split legs enforce the type/category role contract (coordinator + UI
+  picker limited to spending-role groups).
+- Re-import fills only a missing categoryGroupIdentity — never moves a
+  category the user regrouped.
+- Budget pick prefers most-recently-modified; YNAB fetch window gets −3d
+  slack on the lower bound too.
+- `.investmentContribution` excluded from toProjectionSummary (historical
+  ordinary-spend estimate); dated modeling arrives in step 4.
+- Category validated before payee creation (no orphan pending payee on
+  rejected saves); cluster key uses a non-printable separator.
+- Accepted deferrals: transfers/card payments don't yet store a destination
+  account relationship (step 4's recurring model owns that); multi-budget
+  users get the most-recent budget with no picker; test fakes don't record
+  fetch arguments.
+
+## Step 1 state (2026-08-04, committed 79fa7b2)
 
 Canonical plan: `docs/2026-08-03-plaid-first-spending-history-plan.md`
 (supersedes the 2026-08-02 goals/budget plan, which is deferred to Phase 2).

@@ -20,6 +20,7 @@ struct AccountsView: View {
 
     @State private var showingNewAsset = false
     @State private var showingClassificationReview = false
+    @State private var showingGroupedReview = false
     @State private var showingPlaidAccountMapping = false
     @State private var showingPlaidCutoverConfirm = false
     @State private var plaidCutoverError: String?
@@ -219,31 +220,43 @@ struct AccountsView: View {
                     }
                 } else if pendingClassificationReviewCount > 0 {
                     Section {
-                        if pendingClassificationReviewCount > 0 {
-                            Button {
-                                showingClassificationReview = true
-                            } label: {
-                                HStack(spacing: NwSpacing.md) {
-                                    NwIcon.warning.image
-                                        .foregroundStyle(NwAppColors.caution)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Transactions need review")
-                                            .foregroundStyle(NwAppColors.textPrimary)
-                                        Text("Confirm each posted transaction before it enters projections.")
-                                            .font(NwTypography.footnote)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    NwStatusBadge(
-                                        "\(pendingClassificationReviewCount)",
-                                        style: .caution,
-                                        icon: .warning
-                                    )
-                                    NwIcon.chevron.image
+                        Button {
+                            showingGroupedReview = true
+                        } label: {
+                            HStack(spacing: NwSpacing.md) {
+                                NwIcon.warning.image
+                                    .foregroundStyle(NwAppColors.caution)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Review imported history")
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                    Text("Approve suggested groups in one tap; open a group to fix anything first.")
+                                        .font(NwTypography.footnote)
                                         .foregroundStyle(.secondary)
                                 }
-                                .contentShape(Rectangle())
+                                Spacer()
+                                NwStatusBadge(
+                                    "\(pendingClassificationReviewCount)",
+                                    style: .caution,
+                                    icon: .warning
+                                )
+                                NwIcon.chevron.image
+                                    .foregroundStyle(.secondary)
                             }
+                            .contentShape(Rectangle())
+                        }
+                        Button {
+                            showingClassificationReview = true
+                        } label: {
+                            HStack(spacing: NwSpacing.md) {
+                                NwIcon.confirm.image
+                                    .foregroundStyle(NwAppColors.primary)
+                                Text("Review one by one")
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                                Spacer()
+                                NwIcon.chevron.image
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
                         }
                     }
                 }
@@ -357,6 +370,9 @@ struct AccountsView: View {
             }
             .sheet(isPresented: $showingClassificationReview) {
                 PlaidClassificationReviewSheet().environment(container)
+            }
+            .sheet(isPresented: $showingGroupedReview) {
+                GroupedHistoricalReviewSheet().environment(container)
             }
             .sheet(isPresented: $showingPlaidAccountMapping) {
                 PlaidAccountMappingSheet().environment(container)

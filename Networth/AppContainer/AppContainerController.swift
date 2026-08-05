@@ -19,6 +19,7 @@ public final class AppContainerController {
     public let syncCoordinator: SyncCoordinator
     public let plaidSyncCoordinator: PlaidSyncCoordinator
     public let plaidTransactionSyncCoordinator: PlaidTransactionSyncCoordinator
+    public let ynabReferenceImportCoordinator: YNABReferenceImportCoordinator
     public let claudeDataSyncCoordinator: ClaudeDataSyncCoordinator
     public let ibrLoanStore: any IBRLoanStore
     public let ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore
@@ -63,6 +64,12 @@ public final class AppContainerController {
             inferenceProvider: transactionInferenceProvider,
             mainContext: ctx
         )
+        self.ynabReferenceImportCoordinator = YNABReferenceImportCoordinator(
+            client: ynabClient,
+            mainContext: ctx
+        )
+        self.ynabReferenceImportCoordinator.plaidCoordinator =
+            plaidTransactionSyncCoordinator
         self.claudeDataSyncCoordinator = ClaudeDataSyncCoordinator(
             client: plaidClient,
             mainContext: ctx
@@ -758,6 +765,10 @@ public final class AppContainerController {
     /// external source; the retained YNAB token exists solely for explicit
     /// user-initiated reference imports.
     public func syncNow() async {
+        // Never overlap a running YNAB reference import: both mutate the
+        // shared main context and each other's saves/rollbacks would
+        // interleave.
+        if case .running = ynabReferenceImportCoordinator.phase { return }
         if hasPlaidBackendToken, plaidBackendBaseURL != nil {
             var allSucceeded = true
             if await plaidSyncCoordinator.syncAll() {
@@ -784,6 +795,35 @@ public final class AppContainerController {
         if let settings = try? modelContainer.mainContext.fetch(descriptor).first {
             selectedBudgetId = settings.selectedBudgetId
         }
+    }
+
+    /// Approves a reviewed cluster of historical transactions in one save.
+    /// Returns the number approved (0 when validation fails).
+    @discardableResult
+    public func approvePlaidTransactionCluster(
+        ids: [String],
+        displayName: String,
+        payeeCanonicalId: String?,
+        categoryName: String?,
+        categoryCanonicalId: String?,
+        treatment: ForecastTreatment
+    ) -> Int {
+        plaidTransactionSyncCoordinator.approveTransactions(
+            ids: ids,
+            displayName: displayName,
+            payeeCanonicalId: payeeCanonicalId,
+            categoryName: categoryName,
+            categoryCanonicalId: categoryCanonicalId,
+            treatment: treatment
+        )
+    }
+
+    /// Explicit, user-initiated YNAB reference import — the only path that
+    /// may use the retained YNAB token after the clean start.
+    @discardableResult
+    public func buildYNABReference() async -> Bool {
+        guard hasYNABToken else { return false }
+        return await ynabReferenceImportCoordinator.buildReference()
     }
 
     /// Stamps the sync markers a successful Plaid sync maintains: the
@@ -818,9 +858,11 @@ public final class AppContainerController {
     /// `DurableNetWorthSnapshot` rows — after the clean start, Net Worth
     /// history is never reconstructed, so snapshots are irreplaceable.
     public func forceFullResync() async {
-        // Block the wipe while a sync is running — we don't want to delete
-        // cursors out from under it.
+        // Block the wipe while a sync or reference import is running — we
+        // don't want to delete cursors out from under one, or commit the
+        // other's partial writes with our save.
         if case .syncing = plaidTransactionSyncCoordinator.phase { return }
+        if case .running = ynabReferenceImportCoordinator.phase { return }
         let ctx = modelContainer.mainContext
         if let cursors = try? ctx.fetch(FetchDescriptor<PlaidTransactionCursor>()) {
             for cursor in cursors { ctx.delete(cursor) }

@@ -97,7 +97,48 @@ public enum ForecastTreatment: String, Codable, Sendable, CaseIterable {
     case internalTransfer
     case cardPayment
     case refund
+    /// Money moved into an investment account. Stays outside every spending
+    /// total while remaining distinguishable from generic exclusions.
+    /// Additive raw value; persisted fields default elsewhere, so this case
+    /// is CloudKit-safe.
+    case investmentContribution
     case excluded
+}
+
+/// The type-first review contract: which category roles are valid for each
+/// transaction type, and which types take no ordinary category at all.
+/// Incompatible type/category combinations must never be saved.
+public enum TransactionTypeRules {
+    /// Nil means the type uses an account relationship (transfer, card
+    /// payment) or an explicit exclusion instead of an ordinary category.
+    public static func allowedCategoryRoles(
+        for treatment: ForecastTreatment
+    ) -> Set<CategoryReportingRole>? {
+        switch treatment {
+        case .ordinarySpending, .refund: [.spending]
+        case .income: [.income]
+        case .investmentContribution: [.investment]
+        case .internalTransfer, .cardPayment, .excluded: nil
+        }
+    }
+
+    public static func requiresCategory(_ treatment: ForecastTreatment) -> Bool {
+        allowedCategoryRoles(for: treatment) != nil
+    }
+
+    /// A nil role (category not yet assigned to a Networth-owned group) is
+    /// accepted for any category-taking type so review never dead-ends
+    /// before groups exist; a known role must match the type.
+    public static func isValidCombination(
+        treatment: ForecastTreatment,
+        categoryRole: CategoryReportingRole?
+    ) -> Bool {
+        guard let allowed = allowedCategoryRoles(for: treatment) else {
+            return categoryRole == nil
+        }
+        guard let categoryRole else { return true }
+        return allowed.contains(categoryRole)
+    }
 }
 
 public enum ClassificationConfidence: String, Codable, Sendable, Comparable {

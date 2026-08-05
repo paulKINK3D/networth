@@ -751,9 +751,13 @@ public final class CachedFinancialTransaction {
     }
 
     public func toProjectionSummary() -> TransactionSummary? {
+        // Investment contributions stay out of the historical ordinary-spend
+        // estimate; their dated cash-outflow modeling arrives with recurring
+        // expectations (Phase 1 step 4).
         guard !deleted, !pending, !requiresReview,
               forecastTreatment != .excluded,
               forecastTreatment != .internalTransfer,
+              forecastTreatment != .investmentContribution,
               forecastTreatment != .cardPayment else {
             return nil
         }
@@ -843,6 +847,77 @@ public final class PlaidAccountCoverage {
         self.latestImportedDate = latestImportedDate
         self.gapsData = gapsData
         self.updatedAt = updatedAt
+    }
+}
+
+/// One row of the rebuildable YNAB reference table: the matched Plaid and
+/// YNAB transaction identities plus the suggested classification (payee,
+/// category, treatment, split), confidence, and score needed to explain and
+/// reproduce the suggestion. Suggestions prefill review — they are never
+/// reviewed decisions, and only new user decisions are authoritative. Lives
+/// in the local re-fetchable tier, never CloudKit; a reference re-import
+/// deletes and rebuilds every row.
+@Model
+public final class YNABReferenceSuggestion {
+    @Attribute(.unique) public var plaidTransactionId: String
+    public var ynabTransactionId: String
+    public var payeeCanonicalId: String?
+    public var payeeNameSnapshot: String
+    public var categoryCanonicalId: String?
+    public var categoryNameSnapshot: String?
+    public var forecastTreatmentRaw: String
+    /// JSON `[SubTransactionSummary]` when the YNAB side was a split.
+    public var subtransactionsData: Data?
+    public var confidenceRaw: String
+    public var score: Int
+    /// Mirrors the matcher's `isAutomatic`: unique/high-quality evidence.
+    /// Nothing auto-applies either way; this exists to explain the match.
+    public var strong: Bool
+    public var createdAt: Date
+
+    public init(
+        plaidTransactionId: String,
+        ynabTransactionId: String,
+        payeeCanonicalId: String? = nil,
+        payeeNameSnapshot: String = "",
+        categoryCanonicalId: String? = nil,
+        categoryNameSnapshot: String? = nil,
+        forecastTreatment: ForecastTreatment = .ordinarySpending,
+        subtransactionsData: Data? = nil,
+        confidence: ClassificationConfidence = .low,
+        score: Int = 0,
+        strong: Bool = false,
+        createdAt: Date = .now
+    ) {
+        self.plaidTransactionId = plaidTransactionId
+        self.ynabTransactionId = ynabTransactionId
+        self.payeeCanonicalId = payeeCanonicalId
+        self.payeeNameSnapshot = payeeNameSnapshot
+        self.categoryCanonicalId = categoryCanonicalId
+        self.categoryNameSnapshot = categoryNameSnapshot
+        self.forecastTreatmentRaw = forecastTreatment.rawValue
+        self.subtransactionsData = subtransactionsData
+        self.confidenceRaw = confidence.rawValue
+        self.score = score
+        self.strong = strong
+        self.createdAt = createdAt
+    }
+
+    public var forecastTreatment: ForecastTreatment {
+        ForecastTreatment(rawValue: forecastTreatmentRaw) ?? .ordinarySpending
+    }
+
+    public var confidence: ClassificationConfidence {
+        ClassificationConfidence(rawValue: confidenceRaw) ?? .low
+    }
+
+    public var subtransactions: [SubTransactionSummary] {
+        guard let subtransactionsData, !subtransactionsData.isEmpty else {
+            return []
+        }
+        return (try? JSONDecoder().decode(
+            [SubTransactionSummary].self, from: subtransactionsData
+        )) ?? []
     }
 }
 

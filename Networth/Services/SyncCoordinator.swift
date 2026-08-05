@@ -1947,6 +1947,16 @@ public final class PlaidTransactionSyncCoordinator {
         aliasesByKey: [String: [DurablePayeeAlias]],
         decisions: [DurableCanonicalTransactionDecision]
     ) {
+        // YNAB reference suggestions are the lowest prefill layer: they fill
+        // rows the alias/decision evidence cannot resolve and are re-applied
+        // on every pass, so they survive syncs without ever marking a row
+        // reviewed. User decisions and alias evidence always win.
+        let suggestionRows = (try? mainContext.fetch(
+            FetchDescriptor<YNABReferenceSuggestion>()
+        )) ?? []
+        let suggestionsByPlaidID = Dictionary(
+            uniqueKeysWithValues: suggestionRows.map { ($0.plaidTransactionId, $0) }
+        )
         var payeeByID: [String: DurableCanonicalPayee] = [:]
         for payee in payees.sorted(by: { $0.updatedAt < $1.updatedAt }) {
             payeeByID[payee.canonicalId] = payee
@@ -2066,6 +2076,15 @@ public final class PlaidTransactionSyncCoordinator {
             guard resolvedIDs.count == 1,
                   let payeeID = resolvedIDs.first,
                   let payee = payeeByID[payeeID] else {
+                // Suggestions fill only the no-evidence case. Conflicting or
+                // suppressed alias evidence must leave the row unresolved —
+                // the user, not YNAB history, breaks the tie.
+                if resolvedIDs.isEmpty,
+                   !hasSuppressedIdentityEvidence,
+                   let suggestion = suggestionsByPlaidID[row.id] {
+                    applyReferenceSuggestion(suggestion, to: row)
+                    continue
+                }
                 row.payeeCanonicalId = nil
                 let hasModelNameSuggestion =
                     row.classificationProvenanceRaw
@@ -2109,6 +2128,22 @@ public final class PlaidTransactionSyncCoordinator {
                     ClassificationConfidence.high.rawValue
                 row.classificationProvenanceRaw =
                     ClassificationProvenance.historicalMatch.rawValue
+                // A decision pattern outranks any earlier split suggestion.
+                row.subtransactionsData = nil
+            } else if let suggestion = suggestionsByPlaidID[row.id] {
+                // The alias resolved the payee but decision patterns can't
+                // pick a category; the reference suggestion still can.
+                row.categoryCanonicalId = suggestion.categoryCanonicalId
+                row.categoryName = suggestion.categoryNameSnapshot
+                row.forecastTreatmentRaw = suggestion.forecastTreatmentRaw
+                row.subtransactionsData = suggestion.subtransactionsData
+                if let name = suggestion.categoryNameSnapshot {
+                    row.nativeCategoryRaw =
+                        nativeCategory(forCategoryName: name).rawValue
+                }
+                row.classificationConfidenceRaw = suggestion.confidenceRaw
+                row.classificationProvenanceRaw =
+                    ClassificationProvenance.historicalMatch.rawValue
             } else {
                 row.categoryCanonicalId = nil
                 row.categoryName = nil
@@ -2118,6 +2153,36 @@ public final class PlaidTransactionSyncCoordinator {
             // the user even when history provides a strong prefill.
             row.requiresReview = true
         }
+    }
+
+    /// Prefills one row from its YNAB reference suggestion. Never marks the
+    /// row reviewed: suggestions are not decisions.
+    private func applyReferenceSuggestion(
+        _ suggestion: YNABReferenceSuggestion,
+        to row: CachedFinancialTransaction
+    ) {
+        row.payeeCanonicalId = suggestion.payeeCanonicalId
+        if !suggestion.payeeNameSnapshot.isEmpty {
+            row.displayName = suggestion.payeeNameSnapshot
+        } else if row.displayName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty {
+            row.displayName = row.toSummary().fallbackDisplayName
+        }
+        row.categoryCanonicalId = suggestion.categoryCanonicalId
+        row.categoryName = suggestion.categoryNameSnapshot
+        row.forecastTreatmentRaw = suggestion.forecastTreatmentRaw
+        row.subtransactionsData = suggestion.subtransactionsData
+        if let name = suggestion.categoryNameSnapshot {
+            row.nativeCategoryRaw =
+                nativeCategory(forCategoryName: name).rawValue
+        }
+        row.classificationConfidenceRaw = suggestion.confidenceRaw
+        row.classificationProvenanceRaw =
+            ClassificationProvenance.historicalMatch.rawValue
+        row.requiresNameReview = suggestion.payeeCanonicalId == nil
+        row.requiresReview = true
+        row.updatedAt = .now
     }
 
     private func applyCanonicalDecision(
@@ -2300,18 +2365,11 @@ public final class PlaidTransactionSyncCoordinator {
         let cleanedName = displayName.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        guard !cleanedName.isEmpty,
-              let payee = resolveOrCreateCanonicalPayee(
-                named: cleanedName,
-                preferredCanonicalId:
-                    payeeCanonicalId ?? row.payeeCanonicalId
-              ) else {
-            return false
-        }
-        let requiresCategory =
-            treatment != .cardPayment && treatment != .internalTransfer
+        guard !cleanedName.isEmpty else { return false }
+        // Validate the category BEFORE creating/renaming the payee so a
+        // rejected save leaves no pending directory mutation behind.
         let category: DurableCanonicalCategory?
-        if requiresCategory {
+        if TransactionTypeRules.requiresCategory(treatment) {
             guard let resolved = resolveCanonicalCategory(
                 canonicalId: categoryCanonicalId,
                 name: categoryName,
@@ -2319,9 +2377,25 @@ public final class PlaidTransactionSyncCoordinator {
             ) else {
                 return false
             }
+            // Type-first contract: an incompatible type/category combination
+            // must never be saved. A category with no Networth-owned group
+            // has no role yet and is accepted for any category-taking type.
+            guard TransactionTypeRules.isValidCombination(
+                treatment: treatment,
+                categoryRole: reportingRole(for: resolved)
+            ) else {
+                return false
+            }
             category = resolved
         } else {
             category = nil
+        }
+        guard let payee = resolveOrCreateCanonicalPayee(
+            named: cleanedName,
+            preferredCanonicalId:
+                payeeCanonicalId ?? row.payeeCanonicalId
+        ) else {
+            return false
         }
 
         assignAliases(for: [row], to: payee)
@@ -2433,6 +2507,14 @@ public final class PlaidTransactionSyncCoordinator {
                         : "ynab:\($0)"
                 },
                 name: split.categoryName
+            ) else {
+                return false
+            }
+            // Outgoing split legs are ordinary spending: an income- or
+            // investment-group category must not slip in through a split.
+            guard TransactionTypeRules.isValidCombination(
+                treatment: .ordinarySpending,
+                categoryRole: reportingRole(for: category)
             ) else {
                 return false
             }
@@ -2565,6 +2647,120 @@ public final class PlaidTransactionSyncCoordinator {
                     == .orderedSame
         }
         return exact.count == 1 ? exact[0] : nil
+    }
+
+    /// Re-applies alias/decision/suggestion state and refreshes review
+    /// counts after a YNAB reference import rebuilt the suggestion table.
+    public func reapplyCanonicalStateAfterReferenceImport() {
+        applyCurrentCanonicalState()
+        refreshCanonicalReviewCounts()
+    }
+
+    /// The reporting role of the category's Networth-owned group, or nil
+    /// when the category has not been assigned to a group yet.
+    func reportingRole(
+        for category: DurableCanonicalCategory
+    ) -> CategoryReportingRole? {
+        guard let identity = category.categoryGroupIdentity else { return nil }
+        let groups = (try? mainContext.fetch(
+            FetchDescriptor<DurableCategoryGroup>(
+                predicate: #Predicate { $0.groupIdentity == identity }
+            )
+        )) ?? []
+        return groups.first?.reportingRole
+    }
+
+    /// Approves a reviewed cluster in one pass: writes one authoritative
+    /// `.user` decision per transaction, learns alias evidence once, and
+    /// commits a single save. Returns the number of approved transactions
+    /// (0 when validation fails or nothing was saved).
+    public func approveTransactions(
+        ids: [String],
+        displayName: String,
+        payeeCanonicalId: String? = nil,
+        categoryName: String?,
+        categoryCanonicalId: String? = nil,
+        treatment: ForecastTreatment
+    ) -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let selectedIDs = ids
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                selectedIDs.contains($0.id) && !$0.deleted && !$0.pending
+            }
+        )
+        guard let rows = try? mainContext.fetch(descriptor),
+              !rows.isEmpty else {
+            return 0
+        }
+        let cleanedName = displayName.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !cleanedName.isEmpty else { return 0 }
+        // Validate the category BEFORE creating/renaming the payee so a
+        // rejected batch leaves no pending directory mutation behind.
+        let category: DurableCanonicalCategory?
+        if TransactionTypeRules.requiresCategory(treatment) {
+            guard let resolved = resolveCanonicalCategory(
+                canonicalId: categoryCanonicalId,
+                name: categoryName,
+                allowHidden: categoryCanonicalId != nil
+            ), TransactionTypeRules.isValidCombination(
+                treatment: treatment,
+                categoryRole: reportingRole(for: resolved)
+            ) else {
+                return 0
+            }
+            category = resolved
+        } else {
+            category = nil
+        }
+        guard let payee = resolveOrCreateCanonicalPayee(
+            named: cleanedName,
+            preferredCanonicalId: payeeCanonicalId
+                ?? rows.compactMap(\.payeeCanonicalId).first
+        ) else {
+            return 0
+        }
+
+        assignAliases(for: rows, to: payee)
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        let latestByID = latestCanonicalDecisionsByTransactionID(decisions)
+        for row in rows {
+            let decision: DurableCanonicalTransactionDecision
+            if let existing = latestByID[row.externalId] {
+                decision = existing
+            } else {
+                decision = DurableCanonicalTransactionDecision(
+                    transactionExternalId: row.externalId
+                )
+                mainContext.insert(decision)
+            }
+            decision.ynabTransactionId = nil
+            decision.payeeCanonicalId = payee.canonicalId
+            decision.payeeNameSnapshot = payee.name
+            decision.categoryCanonicalId = category?.canonicalId
+            decision.categoryNameSnapshot = category?.name
+            decision.amountSign = Int(row.amountMilliunits.signum())
+            decision.forecastTreatment = treatment
+            decision.subtransactionsData = nil
+            decision.reviewed = true
+            decision.provenanceRaw = ClassificationProvenance.user.rawValue
+            decision.updatedAt = .now
+            applyCanonicalDecision(decision, to: row)
+        }
+        updateCachedPayeeName(payee)
+        applyCurrentCanonicalState()
+        guard mainContext.safeSave(
+            source: "plaidTransactions.approveCluster"
+        ) else {
+            mainContext.rollback()
+            return 0
+        }
+        refreshCanonicalReviewCounts()
+        return rows.count
     }
 
     private func assignAliases(

@@ -2422,6 +2422,261 @@ struct AppContainerTests {
         #expect(!rule.categoryReusable)
     }
 
+    // MARK: - YNAB reference import (step 2)
+
+    @Test func ynabReferenceImportBuildsSuggestionsAndSeedsDirectory() async throws {
+        func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
+            try JSONDecoder().decode(T.self, from: Data(json.utf8))
+        }
+        let budgets = try decode(
+            [YNABBudgetSummary].self,
+            #"[{"id":"budget-1","name":"Main","last_modified_on":null,"currency_format":null}]"#
+        )
+        let payees = try decode(
+            YNABPayeesResponse.self,
+            #"{"payees":[{"id":"payee-1","name":"Cafe","transfer_account_id":null,"deleted":false}],"server_knowledge":0}"#
+        )
+        let categories = try decode(
+            YNABCategoriesResponse.self,
+            #"{"category_groups":[{"id":"grp-food","name":"Food","hidden":false,"deleted":false,"categories":[{"id":"cat-dining","category_group_id":"grp-food","name":"Dining","hidden":false,"deleted":false}]},{"id":"grp-inc","name":"Income","hidden":false,"deleted":false,"categories":[{"id":"cat-pay","category_group_id":"grp-inc","name":"Paycheck","hidden":false,"deleted":false}]}],"server_knowledge":0}"#
+        )
+        let transactions = try decode(
+            YNABTransactionsResponse.self,
+            #"{"transactions":[{"id":"y-1","date":"2026-07-24","amount":-42500,"cleared":"cleared","approved":true,"account_id":"ynab-checking","payee_id":"payee-1","payee_name":"Cafe","category_id":"cat-dining","category_name":"Dining","transfer_account_id":null,"transfer_transaction_id":null,"import_id":null,"memo":null,"deleted":false,"subtransactions":[]}],"server_knowledge":0}"#
+        )
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(seed: [
+                .ynabPersonalAccessToken: "token"
+            ]),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            ynabClient: RecordedYNABClient(
+                budgets: budgets,
+                payees: payees,
+                categories: categories,
+                transactions: transactions
+            ),
+            plaidClient: RecordedPlaidClient(),
+            modelContainer: modelContainer
+        )
+        await container.bootstrap()
+        let ctx = modelContainer.mainContext
+        // Seed the reconciled Plaid side after the clean start.
+        ctx.insert(CachedFinancialAccount(
+            canonicalAccountId: "canonical-checking",
+            externalId: "plaid-checking",
+            itemId: "bank-item",
+            source: .plaid,
+            institutionName: "Bank",
+            name: "Checking",
+            officialName: nil,
+            mask: "1234",
+            type: .checking,
+            subtype: "checking",
+            currentBalanceMilliunits: 0,
+            availableBalanceMilliunits: nil,
+            creditLimitMilliunits: nil,
+            isoCurrencyCode: "USD"
+        ))
+        ctx.insert(DurableCanonicalAccountBinding(
+            canonicalAccountId: "canonical-checking",
+            plaidAccountId: "plaid-checking",
+            ynabAccountId: "ynab-checking",
+            itemId: "bank-item",
+            institutionName: "Bank",
+            accountName: "Checking",
+            accountType: .checking,
+            reviewed: true
+        ))
+        let day = try #require(
+            YNABTransactionDTO.dateParser.date(from: "2026-07-24")
+        )
+        ctx.insert(PlaidAccountCoverage(
+            plaidAccountId: "plaid-checking",
+            itemId: "bank-item",
+            earliestImportedDate: day.addingTimeInterval(-86_400 * 30),
+            latestImportedDate: day.addingTimeInterval(86_400)
+        ))
+        let plaidSummary = try #require(
+            PlaidTransactionDTO(
+                id: "p-1",
+                accountId: "plaid-checking",
+                date: "2026-07-24",
+                amount: 42.50,
+                name: "SQ *CAFE",
+                merchantName: "Cafe"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        ctx.insert(CachedFinancialTransaction(
+            summary: plaidSummary,
+            classification: TransactionClassifier().classify(
+                plaidSummary, rules: []
+            ),
+            requiresNameReview: true
+        ))
+        try ctx.save()
+
+        let succeeded = await container.buildYNABReference()
+        #expect(succeeded)
+
+        // Suggestion row carries the matched identities + classification.
+        let suggestions = try ctx.fetch(
+            FetchDescriptor<YNABReferenceSuggestion>()
+        )
+        let suggestion = try #require(suggestions.first)
+        #expect(suggestions.count == 1)
+        #expect(suggestion.ynabTransactionId == "y-1")
+        #expect(suggestion.payeeCanonicalId == "ynab:payee-1")
+        #expect(suggestion.categoryCanonicalId == "ynab:cat-dining")
+        #expect(suggestion.forecastTreatment == .ordinarySpending)
+
+        // Directory seeded with roles; raw YNAB rows never persisted.
+        let groups = try ctx.fetch(FetchDescriptor<DurableCategoryGroup>())
+        #expect(groups.first {
+            $0.groupIdentity == "ynab:grp-inc"
+        }?.reportingRole == .income)
+        #expect(groups.first {
+            $0.groupIdentity == "ynab:grp-food"
+        }?.reportingRole == .spending)
+        let seededCategory = try #require(
+            try ctx.fetch(FetchDescriptor<DurableCanonicalCategory>())
+                .first { $0.canonicalId == "ynab:cat-dining" }
+        )
+        #expect(seededCategory.categoryGroupIdentity == "ynab:grp-food")
+        #expect(try ctx.fetch(FetchDescriptor<CachedTransaction>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<CachedCategory>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).isEmpty)
+
+        // The Plaid row is prefilled as a suggestion but never auto-approved.
+        let row = try #require(
+            try ctx.fetch(FetchDescriptor<CachedFinancialTransaction>()).first
+        )
+        #expect(row.displayName == "Cafe")
+        #expect(row.categoryName == "Dining")
+        #expect(row.requiresReview == true)
+        let userDecisions = try ctx.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        ).filter { $0.provenanceRaw == ClassificationProvenance.user.rawValue }
+        #expect(userDecisions.isEmpty)
+    }
+
+    @Test func approveClusterWritesAuthoritativeDecisionsInOneSave() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let ctx = modelContainer.mainContext
+        ctx.insert(DurableCanonicalPayee(
+            canonicalId: "ynab:payee-1", name: "Cafe", sourceName: "Cafe"
+        ))
+        ctx.insert(DurableCategoryGroup(
+            groupIdentity: "ynab:grp-food", name: "Food",
+            reportingRole: .spending
+        ))
+        ctx.insert(DurableCanonicalCategory(
+            canonicalId: "ynab:cat-dining",
+            name: "Dining",
+            groupName: "Food",
+            categoryGroupIdentity: "ynab:grp-food"
+        ))
+        var ids: [String] = []
+        for index in 0..<2 {
+            let summary = try #require(
+                PlaidTransactionDTO(
+                    id: "cluster-\(index)",
+                    accountId: "card-1",
+                    date: "2026-07-2\(index + 1)",
+                    amount: 10,
+                    name: "SQ *CAFE",
+                    merchantName: "Cafe"
+                ).financialSummary(canonicalAccountId: "canonical-card")
+            )
+            ids.append(summary.id)
+            ctx.insert(CachedFinancialTransaction(
+                summary: summary,
+                classification: TransactionClassifier().classify(
+                    summary, rules: []
+                )
+            ))
+        }
+        try ctx.save()
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(),
+            mainContext: ctx
+        )
+
+        let approved = coordinator.approveTransactions(
+            ids: ids,
+            displayName: "Cafe",
+            categoryName: "Dining",
+            categoryCanonicalId: "ynab:cat-dining",
+            treatment: .ordinarySpending
+        )
+
+        #expect(approved == 2)
+        let rows = try ctx.fetch(FetchDescriptor<CachedFinancialTransaction>())
+        #expect(rows.allSatisfy { !$0.requiresReview })
+        let decisions = try ctx.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )
+        #expect(decisions.count == 2)
+        #expect(decisions.allSatisfy {
+            $0.reviewed
+                && $0.provenanceRaw == ClassificationProvenance.user.rawValue
+        })
+    }
+
+    @Test func confirmRejectsIncompatibleTypeCategoryCombination() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let ctx = modelContainer.mainContext
+        ctx.insert(DurableCategoryGroup(
+            groupIdentity: "ynab:grp-inc", name: "Income",
+            reportingRole: .income
+        ))
+        ctx.insert(DurableCanonicalCategory(
+            canonicalId: "ynab:cat-pay",
+            name: "Paycheck",
+            groupName: "Income",
+            categoryGroupIdentity: "ynab:grp-inc"
+        ))
+        let summary = try #require(
+            PlaidTransactionDTO(
+                id: "deposit-1",
+                accountId: "checking-1",
+                date: "2026-07-24",
+                amount: -2_000,
+                name: "EMPLOYER PAYROLL"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        ctx.insert(CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassifier().classify(
+                summary, rules: []
+            )
+        ))
+        try ctx.save()
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(),
+            mainContext: ctx
+        )
+
+        // An income-group category on an expense must not save; the same
+        // category with the income type must.
+        #expect(!coordinator.confirmTransaction(
+            id: summary.id,
+            displayName: "Employer",
+            categoryName: "Paycheck",
+            treatment: .ordinarySpending,
+            categoryCanonicalId: "ynab:cat-pay"
+        ))
+        #expect(coordinator.confirmTransaction(
+            id: summary.id,
+            displayName: "Employer",
+            categoryName: "Paycheck",
+            treatment: .income,
+            categoryCanonicalId: "ynab:cat-pay"
+        ))
+    }
+
     // MARK: - Historical backfill (retired)
 
     @Test func historyBackfillNeverRunsAfterCleanStart() async throws {

@@ -26,6 +26,7 @@ public enum ModelContainerFactory {
             CachedFinancialTransaction.self,
             PlaidTransactionCursor.self,
             PlaidAccountCoverage.self,
+            YNABReferenceSuggestion.self,
             LegacyTransactionMatchRow.self
         ])
         let durableSchema = Schema([
@@ -94,6 +95,7 @@ public enum ModelContainerFactory {
             CachedFinancialTransaction.self,
             PlaidTransactionCursor.self,
             PlaidAccountCoverage.self,
+            YNABReferenceSuggestion.self,
             LegacyTransactionMatchRow.self,
             DurableManualAsset.self,
             DurableManualAssetValue.self,

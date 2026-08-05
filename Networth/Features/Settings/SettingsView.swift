@@ -43,6 +43,7 @@ struct SettingsView: View {
     @State private var showingCardSheet: CachedAccount? = nil
     @State private var showingExclusionsSheet = false
     @State private var showingForceResyncConfirm = false
+    @State private var showingGroupedReview = false
     @State private var showingIncludedClosed = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
@@ -168,6 +169,60 @@ struct SettingsView: View {
                                     icon: .success
                                 )
                             } else {
+                                NwIcon.chevron.image
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if container.hasYNABToken, hasTransactionConnection {
+                        Button {
+                            Task { await container.buildYNABReference() }
+                        } label: {
+                            Label {
+                                Text("Build YNAB Reference")
+                            } icon: {
+                                NwIcon.sync.image
+                                    .foregroundStyle(NwAppColors.primary)
+                            }
+                        }
+                        .disabled(isReferenceImportRunning)
+
+                        switch container.ynabReferenceImportCoordinator.phase {
+                        case .running(let label):
+                            HStack(spacing: NwSpacing.sm) {
+                                ProgressView().controlSize(.small)
+                                Text(label).foregroundStyle(.secondary)
+                            }
+                        case .error(let message):
+                            Text(message)
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(NwAppColors.caution)
+                        case .completed(let summary):
+                            Text("Reference built: \(summary)")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        case .idle:
+                            EmptyView()
+                        }
+
+                        Button {
+                            showingGroupedReview = true
+                        } label: {
+                            HStack {
+                                Label {
+                                    Text("Review Imported History")
+                                } icon: {
+                                    NwIcon.confirm.image
+                                        .foregroundStyle(NwAppColors.primary)
+                                }
+                                Spacer()
+                                let pending = container
+                                    .plaidTransactionSyncCoordinator
+                                    .pendingTransactionReviewCount
+                                if pending > 0 {
+                                    Text("\(pending)")
+                                        .foregroundStyle(.secondary)
+                                }
                                 NwIcon.chevron.image
                                     .foregroundStyle(.secondary)
                             }
@@ -569,6 +624,9 @@ struct SettingsView: View {
             .sheet(isPresented: $showingExclusionsSheet) {
                 ExcludedCategoriesSheet().environment(container)
             }
+            .sheet(isPresented: $showingGroupedReview) {
+                GroupedHistoricalReviewSheet().environment(container)
+            }
             .sheet(isPresented: $showingIncludedClosed) {
                 IncludedClosedAccountsSheet().environment(container)
             }
@@ -642,9 +700,17 @@ struct SettingsView: View {
         return false
     }
 
+    private var isReferenceImportRunning: Bool {
+        if case .running = container.ynabReferenceImportCoordinator.phase {
+            return true
+        }
+        return false
+    }
+
     private var isAnySyncing: Bool {
         if isSyncing { return true }
         if case .syncing = container.plaidSyncCoordinator.phase { return true }
+        if isReferenceImportRunning { return true }
         return false
     }
 
@@ -1498,6 +1564,10 @@ struct PlaidAccountMappingSheet: View {
     @Query(sort: \CachedAccount.name) private var ynabAccounts: [CachedAccount]
     @Query private var financialAccounts: [CachedFinancialAccount]
     @Query private var historicalMatches: [LegacyTransactionMatchRow]
+    /// Post-clean-start there is no YNAB cache; the sheet fetches account
+    /// options into memory on demand instead. Nothing is persisted.
+    @State private var liveOptions: [YNABAccountOption] = []
+    @State private var isLoadingOptions = false
 
     private static let notReviewed = "__not_reviewed__"
     private static let noMatch = "__no_match__"
@@ -1509,6 +1579,24 @@ struct PlaidAccountMappingSheet: View {
                     Text("Match each Plaid account to the YNAB account it replaces. Choose “No YNAB match” for a genuinely new account. Networth will not merge accounts unless you confirm the identity.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
+                }
+
+                if isLoadingOptions {
+                    Section {
+                        HStack(spacing: NwSpacing.sm) {
+                            ProgressView().controlSize(.small)
+                            Text("Loading YNAB accounts…")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if accountOptions.isEmpty {
+                    Section {
+                        Text(container.hasYNABToken
+                            ? "No YNAB accounts were found for this token."
+                            : "Add your YNAB token in Settings to load matching accounts.")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 ForEach(activeBindings) { binding in
@@ -1556,7 +1644,28 @@ struct PlaidAccountMappingSheet: View {
                     .accessibilityLabel("Done")
                 }
             }
+            .task {
+                guard ynabAccounts.isEmpty,
+                      liveOptions.isEmpty,
+                      container.hasYNABToken else { return }
+                isLoadingOptions = true
+                liveOptions = await container.ynabReferenceImportCoordinator
+                    .fetchAccountOptions()
+                isLoadingOptions = false
+            }
         }
+    }
+
+    /// Cached YNAB accounts when present (legacy path), else the live
+    /// in-memory options fetched for the post-clean-start mapping step.
+    private var accountOptions: [YNABAccountOption] {
+        let cached = ynabAccounts.filter { !$0.deleted && !$0.closed }
+        guard cached.isEmpty else {
+            return cached.map {
+                YNABAccountOption(id: $0.id, name: $0.name, kind: $0.kind)
+            }
+        }
+        return liveOptions
     }
 
     private var activeBindings: [DurableCanonicalAccountBinding] {
@@ -1584,8 +1693,8 @@ struct PlaidAccountMappingSheet: View {
 
     private func eligibleYNABAccounts(
         for binding: DurableCanonicalAccountBinding
-    ) -> [CachedAccount] {
-        let candidates = ynabAccounts.filter { !$0.deleted && !$0.closed }
+    ) -> [YNABAccountOption] {
+        let candidates = accountOptions
         switch binding.accountType {
         case .checking, .savings, .cash:
             return candidates.filter { $0.kind.isCashLike }
@@ -1899,6 +2008,238 @@ private struct PlaidSplitDraft: Identifiable {
     }
 }
 
+/// One cluster of unreviewed historical transactions sharing the same
+/// suggested payee, category, and type. Approving writes an authoritative
+/// user decision for every member in a single save.
+struct HistoricalReviewCluster: Identifiable {
+    let id: String
+    let displayName: String
+    let payeeCanonicalId: String?
+    let categoryName: String?
+    let categoryCanonicalId: String?
+    let treatment: ForecastTreatment
+    let transactionIDs: [String]
+    let totalMilliunits: Int64
+
+    var canBatchApprove: Bool {
+        guard !displayName.isEmpty else { return false }
+        guard treatment.requiresCategory else { return true }
+        return categoryCanonicalId != nil
+            || categoryName?.isEmpty == false
+    }
+
+    static func build(
+        from rows: [CachedFinancialTransaction]
+    ) -> [HistoricalReviewCluster] {
+        let grouped = Dictionary(grouping: rows) { row -> String in
+            let payeeKey = row.payeeCanonicalId
+                ?? row.displayName.trimmed.lowercased()
+            let categoryKey = row.categoryCanonicalId
+                ?? row.categoryName?.trimmed.lowercased()
+                ?? ""
+            // Unit separator: user-visible names can contain any printable
+            // delimiter, so a printable one could collide two clusters.
+            return [payeeKey, categoryKey, row.forecastTreatmentRaw]
+                .joined(separator: "\u{1F}")
+        }
+        return grouped.map { key, members in
+            let sample = members[0]
+            return HistoricalReviewCluster(
+                id: key,
+                displayName: sample.displayName.trimmed,
+                payeeCanonicalId: sample.payeeCanonicalId,
+                categoryName: sample.categoryName?.trimmed,
+                categoryCanonicalId: sample.categoryCanonicalId,
+                treatment: sample.forecastTreatment,
+                transactionIDs: members.map(\.id),
+                totalMilliunits: members.reduce(0) {
+                    $0 + $1.amountMilliunits
+                }
+            )
+        }
+        .sorted {
+            if $0.transactionIDs.count != $1.transactionIDs.count {
+                return $0.transactionIDs.count > $1.transactionIDs.count
+            }
+            return $0.displayName.localizedCaseInsensitiveCompare(
+                $1.displayName
+            ) == .orderedAscending
+        }
+    }
+}
+
+/// Grouped review of imported history: one row per suggested payee/category
+/// cluster with a large always-visible Approve target; anything that needs
+/// edits drills into the individual type-first editor, whose corrections
+/// become new training evidence.
+struct GroupedHistoricalReviewSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+
+    @State private var clusters: [HistoricalReviewCluster] = []
+    @State private var rowsByID: [String: CachedFinancialTransaction] = [:]
+    @State private var approveError: String?
+    @State private var loaded = false
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if !loaded {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if clusters.isEmpty {
+                    NwEmptyState(
+                        title: "History reviewed",
+                        message: "Every imported transaction has been approved.",
+                        icon: .success
+                    )
+                } else {
+                    List {
+                        if let approveError {
+                            NwInlineNotice(
+                                "Couldn't approve",
+                                message: approveError,
+                                tone: .warning
+                            )
+                            .listRowBackground(Color.clear)
+                        }
+                        ForEach(clusters) { cluster in
+                            clusterRow(cluster)
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("Review History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+            .onAppear(perform: reload)
+        }
+    }
+
+    @ViewBuilder
+    private func clusterRow(_ cluster: HistoricalReviewCluster) -> some View {
+        HStack(spacing: NwSpacing.md) {
+            NavigationLink {
+                clusterDetail(cluster)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(cluster.displayName.isEmpty
+                        ? "Unnamed merchant"
+                        : cluster.displayName)
+                        .font(NwTypography.body.weight(.semibold))
+                    Text(clusterSubtitle(cluster))
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+            if cluster.canBatchApprove {
+                Button {
+                    approve(cluster)
+                } label: {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(NwAppColors.positive)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(
+                    "Approve \(cluster.transactionIDs.count) transactions"
+                )
+            }
+        }
+    }
+
+    private func clusterDetail(_ cluster: HistoricalReviewCluster) -> some View {
+        List {
+            ForEach(cluster.transactionIDs, id: \.self) { id in
+                if let row = rowsByID[id] {
+                    NavigationLink {
+                        PlaidTransactionReviewEditor(
+                            transaction: row,
+                            matchingTransactions: [],
+                            dismissAfterSave: true,
+                            onSaved: reload
+                        )
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.displayName)
+                            Text(
+                                "\(row.postedDate.formatted(date: .abbreviated, time: .omitted)) · \(CurrencyFormatter.currency(Money(milliunits: row.amountMilliunits)))"
+                            )
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(cluster.displayName.isEmpty
+            ? "Transactions"
+            : cluster.displayName)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func clusterSubtitle(_ cluster: HistoricalReviewCluster) -> String {
+        var parts: [String] = []
+        if let categoryName = cluster.categoryName, !categoryName.isEmpty {
+            parts.append(categoryName)
+        } else {
+            parts.append(cluster.treatment.displayName)
+        }
+        parts.append("\(cluster.transactionIDs.count) transactions")
+        parts.append(
+            CurrencyFormatter.currency(
+                Money(milliunits: cluster.totalMilliunits).absolute
+            )
+        )
+        return parts.joined(separator: " · ")
+    }
+
+    private func approve(_ cluster: HistoricalReviewCluster) {
+        approveError = nil
+        let approved = container.approvePlaidTransactionCluster(
+            ids: cluster.transactionIDs,
+            displayName: cluster.displayName,
+            payeeCanonicalId: cluster.payeeCanonicalId,
+            categoryName: cluster.categoryName,
+            categoryCanonicalId: cluster.categoryCanonicalId,
+            treatment: cluster.treatment
+        )
+        if approved == 0 {
+            approveError = "This group could not be approved. Open it and review a transaction to fix the details."
+        }
+        reload()
+    }
+
+    private func reload() {
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.requiresReview && !$0.deleted && !$0.pending
+            }
+        )
+        let rows = (try? container.modelContainer.mainContext.fetch(
+            descriptor
+        )) ?? []
+        let historical = rows.filter { $0.reviewOriginRaw == "historical" }
+        clusters = HistoricalReviewCluster.build(from: historical)
+        rowsByID = Dictionary(
+            uniqueKeysWithValues: historical.map { ($0.id, $0) }
+        )
+        loaded = true
+    }
+}
+
 struct PlaidTransactionReviewEditor: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
@@ -1906,6 +2247,7 @@ struct PlaidTransactionReviewEditor: View {
     private var canonicalPayees: [DurableCanonicalPayee]
     @Query(sort: \DurableCanonicalCategory.name)
     private var canonicalCategories: [DurableCanonicalCategory]
+    @Query private var durableCategoryGroups: [DurableCategoryGroup]
     @Query(sort: \CachedFinancialAccount.name)
     private var financialAccounts: [CachedFinancialAccount]
     let transaction: CachedFinancialTransaction
@@ -2052,6 +2394,19 @@ struct PlaidTransactionReviewEditor: View {
                 )
             }
 
+            // Type-first: the user confirms what the transaction IS before
+            // any classification fields appear; only fields valid for the
+            // chosen type are shown below.
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                reviewSectionTitle("Type")
+                typeControls
+                if let classificationFooter {
+                    Text(classificationFooter)
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
                 reviewSectionTitle("Contact")
                 NwCard(style: .primary, padding: 0) {
@@ -2082,13 +2437,10 @@ struct PlaidTransactionReviewEditor: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                reviewSectionTitle("Classification")
-                classificationControls
-                if let classificationFooter {
-                    Text(classificationFooter)
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
+            if !isSplit {
+                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                    reviewSectionTitle("Category")
+                    categoryControls
                 }
             }
 
@@ -2166,75 +2518,116 @@ struct PlaidTransactionReviewEditor: View {
         }
     }
 
-    private var classificationControls: some View {
+    private var typeControls: some View {
         NwCard(style: .primary, padding: 0) {
             VStack(spacing: 0) {
+                Picker("Transaction type", selection: $treatment) {
+                    ForEach(ForecastTreatment.allCases, id: \.self) {
+                        Text($0.displayName).tag($0)
+                    }
+                }
+                .pickerStyle(.menu)
+                .padding(NwSpacing.md)
+                .onChange(of: treatment) {
+                    // A type change invalidates a selected category whose
+                    // group role no longer fits the new type.
+                    if let id = categoryCanonicalId,
+                       let selected = activeCategoryByID[id],
+                       !TransactionTypeRules.isValidCombination(
+                           treatment: treatment,
+                           categoryRole: selected.role
+                       ) {
+                        categoryCanonicalId = nil
+                        categoryName = ""
+                    }
+                }
+
+                Divider()
                 Toggle("Split transaction", isOn: $isSplit)
                     .onChange(of: isSplit) {
                         splitSaveError = nil
                     }
                     .padding(NwSpacing.md)
-
-                nonSplitClassificationControls
-                    .frame(height: isSplit ? 0 : nil, alignment: .top)
-                    .clipped()
-                    .opacity(isSplit ? 0 : 1)
-                    .allowsHitTesting(!isSplit)
-                    .accessibilityHidden(isSplit)
             }
         }
     }
 
-    private var nonSplitClassificationControls: some View {
-        VStack(spacing: 0) {
-            Divider()
-            Picker("Transaction type", selection: $treatment) {
-                ForEach(ForecastTreatment.allCases, id: \.self) {
-                    Text($0.displayName).tag($0)
-                }
-            }
-            .pickerStyle(.menu)
-            .padding(NwSpacing.md)
+    /// Only the groups whose reporting role fits the chosen type. Groups
+    /// without a role (not yet assigned to a Networth-owned group) stay
+    /// visible for every category-taking type.
+    private var visibleCategoryGroups: [PlaidCategoryGroup] {
+        categoryGroups(allowedFor: treatment)
+    }
 
-            Divider()
-            if treatment.requiresCategory {
-                NavigationLink {
-                    PlaidCategoryPicker(
-                        selection: $categoryName,
-                        groups: cachedCategoryGroups,
-                        onSelect: { option in
-                            categoryCanonicalId =
-                                option.categoryID
+    /// Outgoing split legs are ordinary spending, whatever the parent type.
+    private var splitLegCategoryGroups: [PlaidCategoryGroup] {
+        categoryGroups(allowedFor: .ordinarySpending)
+    }
+
+    private func categoryGroups(
+        allowedFor treatment: ForecastTreatment
+    ) -> [PlaidCategoryGroup] {
+        guard let allowed = TransactionTypeRules.allowedCategoryRoles(
+            for: treatment
+        ) else { return [] }
+        return cachedCategoryGroups.compactMap { group in
+            let options = group.options.filter { option in
+                guard let role = option.role else { return true }
+                return allowed.contains(role)
+            }
+            guard !options.isEmpty else { return nil }
+            return PlaidCategoryGroup(
+                groupName: group.groupName, options: options
+            )
+        }
+    }
+
+    private var categoryControls: some View {
+        NwCard(style: .primary, padding: 0) {
+            VStack(spacing: 0) {
+                if treatment.requiresCategory {
+                    NavigationLink {
+                        PlaidCategoryPicker(
+                            selection: $categoryName,
+                            groups: visibleCategoryGroups,
+                            onSelect: { option in
+                                categoryCanonicalId =
+                                    option.categoryID
+                            }
+                        )
+                    } label: {
+                        LabeledContent("Category") {
+                            Text(
+                                selectedCategoryName
+                                    ?? "Select category"
+                            )
+                                .foregroundStyle(.secondary)
                         }
-                    )
-                } label: {
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(NwSpacing.md)
+                    if selectedCategoryName == nil,
+                       !categoryName.trimmed.isEmpty {
+                        Text(
+                            "Suggested: \(categoryName.trimmed). Tap Category to select it."
+                        )
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, NwSpacing.md)
+                        .padding(.bottom, NwSpacing.md)
+                    }
+                } else {
                     LabeledContent("Category") {
                         Text(
-                            selectedCategoryName
-                                ?? "Select category"
+                            treatment == .excluded
+                                ? "Not applicable"
+                                : "Uses the account relationship"
                         )
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(NwSpacing.md)
-                if selectedCategoryName == nil,
-                   !categoryName.trimmed.isEmpty {
-                    Text(
-                        "Suggested: \(categoryName.trimmed). Tap Category to select it."
-                    )
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, NwSpacing.md)
-                    .padding(.bottom, NwSpacing.md)
-                }
-            } else {
-                LabeledContent("Category") {
-                    Text("Not applicable")
                         .foregroundStyle(.secondary)
+                    }
+                    .padding(NwSpacing.md)
                 }
-                .padding(NwSpacing.md)
             }
         }
     }
@@ -2310,7 +2703,7 @@ struct PlaidTransactionReviewEditor: View {
                                 NavigationLink {
                                     PlaidCategoryPicker(
                                         selection: $draft.categoryName,
-                                        groups: cachedCategoryGroups,
+                                        groups: splitLegCategoryGroups,
                                         onSelect: { option in
                                             draft.categoryID =
                                                 option.categoryID
@@ -2615,6 +3008,10 @@ struct PlaidTransactionReviewEditor: View {
             uniquingKeysWith: { _, newest in newest }
         )
 
+        let roleByIdentity = Dictionary(
+            durableCategoryGroups.map { ($0.groupIdentity, $0.reportingRole) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var options: [PlaidCategoryOption] = []
         var byID: [String: PlaidCategoryOption] = [:]
         var byName: [String: PlaidCategoryOption] = [:]
@@ -2627,7 +3024,9 @@ struct PlaidTransactionReviewEditor: View {
                 name: category.name.trimmed,
                 groupName: category.groupName.trimmed.isEmpty
                     ? "Networth Categories"
-                    : category.groupName.trimmed
+                    : category.groupName.trimmed,
+                role: category.categoryGroupIdentity
+                    .flatMap { roleByIdentity[$0] }
             )
             options.append(option)
             byID[category.canonicalId] = option
@@ -2875,15 +3274,20 @@ private struct PlaidCategoryOption: Identifiable {
     let categoryID: String?
     let name: String
     let groupName: String
+    /// Reporting role of the category's Networth-owned group; nil until the
+    /// category is assigned to a group.
+    let role: CategoryReportingRole?
 
     init(
         categoryID: String? = nil,
         name: String,
-        groupName: String
+        groupName: String,
+        role: CategoryReportingRole? = nil
     ) {
         self.categoryID = categoryID
         self.name = name
         self.groupName = groupName
+        self.role = role
     }
 
     var id: String { "\(groupName.lowercased()):\(name.lowercased())" }
@@ -3090,16 +3494,17 @@ private struct PlaidNewCategorySheet: View {
 
 extension ForecastTreatment {
     var requiresCategory: Bool {
-        self != .cardPayment && self != .internalTransfer
+        TransactionTypeRules.requiresCategory(self)
     }
 
     var displayName: String {
         switch self {
         case .income: "Income"
-        case .ordinarySpending: "Ordinary spending"
+        case .ordinarySpending: "Expense"
         case .internalTransfer: "Internal transfer"
         case .cardPayment: "Credit-card payment"
         case .refund: "Refund"
+        case .investmentContribution: "Investment contribution"
         case .excluded: "Exclude from forecast"
         }
     }

@@ -985,6 +985,58 @@ struct FinancialTransactionsTests {
         return calendar
     }
 
+    // MARK: - Type-first review rules
+
+    @Test func typeRulesRequireMatchingCategoryRoles() {
+        #expect(TransactionTypeRules.isValidCombination(
+            treatment: .ordinarySpending, categoryRole: .spending
+        ))
+        #expect(TransactionTypeRules.isValidCombination(
+            treatment: .refund, categoryRole: .spending
+        ))
+        #expect(TransactionTypeRules.isValidCombination(
+            treatment: .income, categoryRole: .income
+        ))
+        #expect(TransactionTypeRules.isValidCombination(
+            treatment: .investmentContribution, categoryRole: .investment
+        ))
+        // Incompatible combinations must be rejected.
+        #expect(!TransactionTypeRules.isValidCombination(
+            treatment: .ordinarySpending, categoryRole: .income
+        ))
+        #expect(!TransactionTypeRules.isValidCombination(
+            treatment: .income, categoryRole: .spending
+        ))
+        #expect(!TransactionTypeRules.isValidCombination(
+            treatment: .investmentContribution, categoryRole: .spending
+        ))
+    }
+
+    @Test func typeRulesUseAccountRelationshipsForTransfersAndCardPayments() {
+        for treatment in [ForecastTreatment.internalTransfer, .cardPayment, .excluded] {
+            #expect(!TransactionTypeRules.requiresCategory(treatment))
+            #expect(TransactionTypeRules.isValidCombination(
+                treatment: treatment, categoryRole: nil
+            ))
+            // An ordinary category on a transfer/card payment is invalid.
+            #expect(!TransactionTypeRules.isValidCombination(
+                treatment: treatment, categoryRole: .spending
+            ))
+        }
+    }
+
+    @Test func typeRulesAcceptUngroupedCategoriesLeniently() {
+        // A category not yet assigned to a Networth-owned group has no role;
+        // review must not dead-end before groups exist.
+        for treatment in [ForecastTreatment.ordinarySpending, .income,
+                          .refund, .investmentContribution] {
+            #expect(TransactionTypeRules.requiresCategory(treatment))
+            #expect(TransactionTypeRules.isValidCombination(
+                treatment: treatment, categoryRole: nil
+            ))
+        }
+    }
+
 }
 
 private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {

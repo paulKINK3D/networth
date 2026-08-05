@@ -152,6 +152,7 @@ enum FreshStart {
               deleteAllRows(CachedFinancialTransaction.self, context: context),
               deleteAllRows(PlaidTransactionCursor.self, context: context),
               deleteAllRows(PlaidAccountCoverage.self, context: context),
+              deleteAllRows(YNABReferenceSuggestion.self, context: context),
               deleteAllRows(LegacyTransactionMatchRow.self, context: context)
         else { return false }
         return true
@@ -215,6 +216,7 @@ enum FreshStart {
             && isEmpty(CachedFinancialTransaction.self, context: context)
             && isEmpty(PlaidTransactionCursor.self, context: context)
             && isEmpty(PlaidAccountCoverage.self, context: context)
+            && isEmpty(YNABReferenceSuggestion.self, context: context)
             && isEmpty(LegacyTransactionMatchRow.self, context: context)
             && isEmpty(DurableManualAsset.self, context: context)
             && isEmpty(DurableManualAssetValue.self, context: context)
