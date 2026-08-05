@@ -1,6 +1,11 @@
 # WORKING
 
-## Current State (2026-08-04 — Phase 1 step 4 implemented, uncommitted)
+## Current State (2026-08-04 — Phase 1 COMPLETE; all four steps committed)
+
+Commits: 79fa7b2 (step 1) · 18ea60d (step 2) · 8da7e06 (step 3) ·
+78f16b1 (step 4), all on feature/budget-phase-1, pushed. Pending manual
+cleanup in Xcode: delete BudgetView.swift, ResetChartHistorySheet.swift,
+and the dead DiscretionaryBudgetSettingsSheet struct in SettingsView.swift.
 
 ### Step 4 — Recurring expectations in Cash Projections (this session)
 
