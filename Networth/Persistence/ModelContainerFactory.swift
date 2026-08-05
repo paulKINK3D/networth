@@ -53,6 +53,7 @@ public enum ModelContainerFactory {
             DurableFixedCommitment.self,
             DurableBudgetCategoryAssignment.self,
             DurableIncomePatternOverride.self,
+            DurableRecurringExpectation.self,
             DurableSinkingFund.self,
             DurableFundEvent.self
         ])
@@ -120,6 +121,7 @@ public enum ModelContainerFactory {
             DurableFixedCommitment.self,
             DurableBudgetCategoryAssignment.self,
             DurableIncomePatternOverride.self,
+            DurableRecurringExpectation.self,
             DurableSinkingFund.self,
             DurableFundEvent.self
         ])

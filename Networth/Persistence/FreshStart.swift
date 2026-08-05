@@ -184,6 +184,7 @@ enum FreshStart {
               deleteAllRows(DurableFixedCommitment.self, context: context),
               deleteAllRows(DurableBudgetCategoryAssignment.self, context: context),
               deleteAllRows(DurableIncomePatternOverride.self, context: context),
+              deleteAllRows(DurableRecurringExpectation.self, context: context),
               deleteAllRows(DurableSinkingFund.self, context: context),
               deleteAllRows(DurableFundEvent.self, context: context)
         else { return false }
@@ -241,6 +242,7 @@ enum FreshStart {
             && isEmpty(DurableFixedCommitment.self, context: context)
             && isEmpty(DurableBudgetCategoryAssignment.self, context: context)
             && isEmpty(DurableIncomePatternOverride.self, context: context)
+            && isEmpty(DurableRecurringExpectation.self, context: context)
             && isEmpty(DurableSinkingFund.self, context: context)
             && isEmpty(DurableFundEvent.self, context: context)
     }

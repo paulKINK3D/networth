@@ -1389,9 +1389,32 @@ private actor ProjectionsDataActor {
         let history = usesPlaid
             ? financialTransactions.compactMap { $0.toProjectionSummary() }
             : allTransactions.map { $0.toSummary() }
-        let scheduledSummaries = usesPlaid
-            ? []
-            : scheduled.filter { !$0.deleted }.map { $0.toSummary() }
+        // Plaid-first: user-authored recurring expectations are the only
+        // authoritative dated future events — YNAB schedules never enter
+        // projections on any path. Expectations on card accounts raise that
+        // card's projected statement; only the generated autopay reaches
+        // the pool.
+        let expectations = ((try? context.fetch(
+            FetchDescriptor<DurableRecurringExpectation>(
+                predicate: #Predicate { !$0.archived }
+            )
+        )) ?? []).map { $0.toCore() }
+        let scheduledSummaries = expectations.map { $0.toScheduledSummary() }
+        // Exactly-once is id-based: historical actuals matched to an active
+        // expectation are excluded from the ordinary-spending estimate (at
+        // their real amounts), and EVERY expectation is exempt from the
+        // theoretical scheduled-occurrence subtraction — a new expectation
+        // must never invent past occurrences that erase unrelated spending.
+        let estimateExemptIds = Set(scheduledSummaries.map(\.id))
+        let expectationMatchedIds = RecurringExpectations.matchedHistoricalIds(
+            transactions: history,
+            expectations: expectations
+        )
+        // Card variable-charge estimation must not also count actuals the
+        // expectation now models explicitly.
+        let cardHistory = expectationMatchedIds.isEmpty
+            ? history
+            : history.filter { !expectationMatchedIds.contains($0.id) }
         let spendIds = Set(availableAccounts.filter { !$0.deleted && $0.kind.isSpendAccount }.map(\.id))
 
         let forecaster = CCPaymentForecaster()
@@ -1400,7 +1423,7 @@ private actor ProjectionsDataActor {
                 card: card,
                 settings: setting,
                 scheduled: scheduledSummaries,
-                historicalTransactions: history,
+                historicalTransactions: cardHistory,
                 spendAccountIds: spendIds,
                 asOf: .now,
                 horizonDays: horizonDays
@@ -1419,9 +1442,11 @@ private actor ProjectionsDataActor {
             fundedCardAccountIds: fundedCardIds,
             cardPayments: payments,
             scheduled: scheduledSummaries,
+            estimateExemptScheduledIds: estimateExemptIds,
             historicalTransactions: history,
             excludedCategoryIds: excludedCategoryIds,
-            excludedTransactionIds: Set(transactionExclusions.map(\.transactionId)),
+            excludedTransactionIds: Set(transactionExclusions.map(\.transactionId))
+                .union(expectationMatchedIds),
             outflowOnlyExcludedCategoryIds: hiddenInternalCategoryIds,
             spendAccountIds: spendIds,
             lookbackDays: 365,

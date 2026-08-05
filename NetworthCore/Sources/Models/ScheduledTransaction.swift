@@ -113,7 +113,7 @@ extension ScheduledTransactionSummary {
         case .daily:           return calendar.date(byAdding: .day,   value:  1  * direction, to: date)
         case .weekly:          return calendar.date(byAdding: .day,   value:  7  * direction, to: date)
         case .everyOtherWeek:  return calendar.date(byAdding: .day,   value:  14 * direction, to: date)
-        case .twiceAMonth:     return calendar.date(byAdding: .day,   value:  15 * direction, to: date)
+        case .twiceAMonth:     return SemimonthlyMath.step(date, calendar: calendar, direction: direction)
         case .every4Weeks:     return calendar.date(byAdding: .day,   value:  28 * direction, to: date)
         case .monthly:         return calendar.date(byAdding: .month, value:  1  * direction, to: date)
         case .everyOtherMonth: return calendar.date(byAdding: .month, value:  2  * direction, to: date)
@@ -122,6 +122,44 @@ extension ScheduledTransactionSummary {
         case .twiceAYear:      return calendar.date(byAdding: .month, value:  6  * direction, to: date)
         case .yearly:          return calendar.date(byAdding: .year,  value:  1  * direction, to: date)
         case .everyOtherYear:  return calendar.date(byAdding: .year,  value:  2  * direction, to: date)
+        }
+    }
+}
+
+/// Twice-a-month stepping anchored to paired days of month (1st/16th style)
+/// instead of a drifting 15-day interval: a January 1 anchor stays on the
+/// 1st and 16th all year.
+public enum SemimonthlyMath {
+    public static func step(
+        _ date: Date, calendar: Calendar, direction: Int = 1
+    ) -> Date? {
+        let day = calendar.component(.day, from: date)
+        func anchored(day target: Int, inMonthOf reference: Date) -> Date? {
+            var components = calendar.dateComponents(
+                [.year, .month], from: reference
+            )
+            let monthLength = calendar.range(
+                of: .day, in: .month, for: reference
+            )?.count ?? 28
+            components.day = min(max(target, 1), monthLength)
+            return calendar.date(from: components)
+        }
+        if direction >= 1 {
+            if day < 16 {
+                return anchored(day: day + 15, inMonthOf: date)
+            }
+            guard let nextMonth = calendar.date(
+                byAdding: .month, value: 1, to: date
+            ) else { return nil }
+            return anchored(day: day - 15, inMonthOf: nextMonth)
+        } else {
+            if day >= 16 {
+                return anchored(day: day - 15, inMonthOf: date)
+            }
+            guard let previousMonth = calendar.date(
+                byAdding: .month, value: -1, to: date
+            ) else { return nil }
+            return anchored(day: day + 15, inMonthOf: previousMonth)
         }
     }
 }

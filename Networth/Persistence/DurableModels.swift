@@ -1262,6 +1262,87 @@ public final class DurableIncomePatternOverride {
     }
 }
 
+/// User-authored recurring expectation: the only authoritative dated future
+/// events after the Plaid-first clean start. Card payments are never modeled
+/// here — the statement/autopay forecaster owns them. All fields defaulted
+/// for additive CloudKit schema compatibility.
+@Model
+public final class DurableRecurringExpectation {
+    public var id: UUID = UUID()
+    /// Canonical account the activity posts to (cash account or card).
+    public var accountCanonicalId: String = ""
+    /// Transfer destination; nil for non-transfers.
+    public var destinationAccountCanonicalId: String? = nil
+    public var payeeName: String = ""
+    public var payeeCanonicalId: String? = nil
+    public var categoryCanonicalId: String? = nil
+    public var categoryName: String? = nil
+    public var forecastTreatmentRaw: String = ForecastTreatment.ordinarySpending.rawValue
+    public var cadenceRaw: String = CommitmentCadence.monthly.rawValue
+    public var nextOccurrenceAt: Date = Date.now
+    /// Signed: negative outflow, positive income.
+    public var amountMilliunits: Int64 = 0
+    public var archived: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        accountCanonicalId: String = "",
+        destinationAccountCanonicalId: String? = nil,
+        payeeName: String = "",
+        payeeCanonicalId: String? = nil,
+        categoryCanonicalId: String? = nil,
+        categoryName: String? = nil,
+        forecastTreatment: ForecastTreatment = .ordinarySpending,
+        cadence: CommitmentCadence = .monthly,
+        nextOccurrenceAt: Date = .now,
+        amountMilliunits: Int64 = 0,
+        archived: Bool = false
+    ) {
+        self.id = id
+        self.accountCanonicalId = accountCanonicalId
+        self.destinationAccountCanonicalId = destinationAccountCanonicalId
+        self.payeeName = payeeName
+        self.payeeCanonicalId = payeeCanonicalId
+        self.categoryCanonicalId = categoryCanonicalId
+        self.categoryName = categoryName
+        self.forecastTreatmentRaw = forecastTreatment.rawValue
+        self.cadenceRaw = cadence.rawValue
+        self.nextOccurrenceAt = nextOccurrenceAt
+        self.amountMilliunits = amountMilliunits
+        self.archived = archived
+    }
+
+    public var forecastTreatment: ForecastTreatment {
+        get { ForecastTreatment(rawValue: forecastTreatmentRaw) ?? .ordinarySpending }
+        set { forecastTreatmentRaw = newValue.rawValue }
+    }
+
+    public var cadence: CommitmentCadence {
+        get { CommitmentCadence(rawValue: cadenceRaw) ?? .monthly }
+        set { cadenceRaw = newValue.rawValue }
+    }
+
+    public var amount: Money { Money(milliunits: amountMilliunits) }
+
+    public func toCore() -> RecurringExpectation {
+        RecurringExpectation(
+            id: id.uuidString,
+            accountId: accountCanonicalId,
+            destinationAccountId: destinationAccountCanonicalId,
+            payeeName: payeeName,
+            payeeCanonicalId: payeeCanonicalId,
+            categoryCanonicalId: categoryCanonicalId,
+            categoryName: categoryName,
+            treatment: forecastTreatment,
+            cadence: cadence,
+            nextOccurrence: nextOccurrenceAt,
+            amount: amount
+        )
+    }
+}
+
 /// Resolves which current investment balances come from Plaid without
 /// double-counting a matched manual asset. Manual model values remain intact;
 /// a valid match overlays them only while the Plaid cache has a supported

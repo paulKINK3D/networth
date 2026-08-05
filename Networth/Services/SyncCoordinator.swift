@@ -2434,6 +2434,7 @@ public final class PlaidTransactionSyncCoordinator {
             mainContext.insert(decision)
         }
         applyCanonicalDecision(decision, to: row)
+        advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
         applyCurrentCanonicalState()
         guard mainContext.safeSave(
@@ -2569,6 +2570,7 @@ public final class PlaidTransactionSyncCoordinator {
         decision.provenanceRaw = ClassificationProvenance.user.rawValue
         decision.updatedAt = .now
         applyCanonicalDecision(decision, to: row)
+        advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
         applyCurrentCanonicalState()
         guard mainContext.safeSave(
@@ -2647,6 +2649,60 @@ public final class PlaidTransactionSyncCoordinator {
                     == .orderedSame
         }
         return exact.count == 1 ? exact[0] : nil
+    }
+
+    /// An approved posted transaction that matches an active expectation's
+    /// next occurrence (account, payee, treatment, direction, bounded date
+    /// window) replaces that occurrence: the expectation advances one
+    /// cadence. Expectations otherwise advance only through explicit skip
+    /// or reschedule. Mutates rows for the caller's save.
+    private func advanceRecurringExpectations(
+        for rows: [CachedFinancialTransaction]
+    ) {
+        let expectations = (try? mainContext.fetch(
+            FetchDescriptor<DurableRecurringExpectation>(
+                predicate: #Predicate { !$0.archived }
+            )
+        )) ?? []
+        guard !expectations.isEmpty else { return }
+        let calendar = Calendar.current
+        // Chronological order so a batch containing consecutive occurrences
+        // (July's and August's rent) advances the expectation stepwise.
+        let orderedRows = rows
+            .filter { !$0.deleted && !$0.pending }
+            .sorted { $0.postedDate < $1.postedDate }
+        for row in orderedRows {
+            let summary = TransactionSummary(
+                id: row.id,
+                accountId: row.canonicalAccountId,
+                date: row.postedDate,
+                amount: Money(milliunits: row.amountMilliunits),
+                cleared: true,
+                approved: true,
+                payeeName: row.displayName,
+                categoryName: row.categoryName,
+                payeeCanonicalId: row.payeeCanonicalId,
+                categoryCanonicalId: row.categoryCanonicalId,
+                forecastTreatment: row.forecastTreatment,
+                memo: nil,
+                deleted: false
+            )
+            // One approval advances at most one expectation — the best
+            // occurrence match, re-evaluated against advanced dates.
+            guard let best = RecurringExpectations.bestOccurrenceMatch(
+                for: summary,
+                among: expectations.map { $0.toCore() },
+                calendar: calendar
+            ), let target = expectations.first(where: {
+                $0.id.uuidString == best.id
+            }) else { continue }
+            target.nextOccurrenceAt = RecurringExpectations.advance(
+                target.nextOccurrenceAt,
+                cadence: target.cadence,
+                calendar: calendar
+            )
+            target.updatedAt = .now
+        }
     }
 
     /// Re-applies alias/decision/suggestion state and refreshes review
@@ -2751,6 +2807,7 @@ public final class PlaidTransactionSyncCoordinator {
             decision.updatedAt = .now
             applyCanonicalDecision(decision, to: row)
         }
+        advanceRecurringExpectations(for: rows)
         updateCachedPayeeName(payee)
         applyCurrentCanonicalState()
         guard mainContext.safeSave(

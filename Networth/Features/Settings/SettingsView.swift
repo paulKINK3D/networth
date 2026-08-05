@@ -36,11 +36,15 @@ struct SettingsView: View {
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
     @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
+    @Query(sort: \DurableRecurringExpectation.nextOccurrenceAt)
+    private var recurringExpectations: [DurableRecurringExpectation]
 
     @State private var showingTokenSheet = false
     @State private var showingAssetForm: DurableManualAsset? = nil
     @State private var showingNewAsset = false
-    @State private var showingCardSheet: CachedAccount? = nil
+    @State private var showingExpectationForm: DurableRecurringExpectation? = nil
+    @State private var showingNewExpectation = false
+    @State private var showingCardSheet: CardSettingsTarget? = nil
     @State private var showingExclusionsSheet = false
     @State private var showingForceResyncConfirm = false
     @State private var showingGroupedReview = false
@@ -542,14 +546,17 @@ struct SettingsView: View {
 
             if page == .budget {
                 Section {
-                    ForEach(creditCardAccounts) { acct in
-                        let setting = cardSettings.first { $0.accountId == acct.id }
+                    ForEach(cardSettingsTargets) { target in
+                        let setting = cardSettings.first {
+                            ($0.canonicalAccountId ?? $0.accountId) == target.id
+                                || $0.accountId == target.id
+                        }
                         Button {
-                            showingCardSheet = acct
+                            showingCardSheet = target
                         } label: {
                             HStack {
                                 Label {
-                                    Text(acct.name)
+                                    Text(target.name)
                                         .foregroundStyle(NwAppColors.textPrimary)
                                 } icon: {
                                     NwIcon.creditCard.image.foregroundStyle(NwAppColors.accent)
@@ -566,6 +573,77 @@ struct SettingsView: View {
                     Text("Credit Card Statements")
                 } footer: {
                     Text("Full-statement autopay assumed.")
+                }
+            }
+
+            if page == .budget {
+                Section {
+                    Button {
+                        showingNewExpectation = true
+                    } label: {
+                        Label("Add Recurring Item", systemImage: "plus")
+                    }
+                    ForEach(activeExpectations) { expectation in
+                        Button {
+                            showingExpectationForm = expectation
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(expectation.payeeName)
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                    Text(expectationSubtitle(expectation))
+                                        .font(NwTypography.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(CurrencyFormatter.currency(
+                                    expectation.amount, showCents: false
+                                ))
+                                .foregroundStyle(
+                                    expectation.amountMilliunits < 0
+                                        ? NwAppColors.textPrimary
+                                        : NwAppColors.positive
+                                )
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .swipeActions(allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                let prior = expectation.archived
+                                expectation.archived = true
+                                expectation.updatedAt = .now
+                                if !container.modelContainer.mainContext
+                                    .safeSave(source: "settings.archiveExpectation") {
+                                    // Revert so the row doesn't look deleted
+                                    // while the store still has it.
+                                    expectation.archived = prior
+                                }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            Button {
+                                let prior = expectation.nextOccurrenceAt
+                                expectation.nextOccurrenceAt =
+                                    RecurringExpectations.advance(
+                                        expectation.nextOccurrenceAt,
+                                        cadence: expectation.cadence,
+                                        calendar: Calendar.current
+                                    )
+                                expectation.updatedAt = .now
+                                if !container.modelContainer.mainContext
+                                    .safeSave(source: "settings.skipExpectation") {
+                                    expectation.nextOccurrenceAt = prior
+                                }
+                            } label: {
+                                Label("Skip Next", systemImage: "arrow.uturn.forward")
+                            }
+                            .tint(NwAppColors.info)
+                        }
+                    }
+                } header: {
+                    Text("Recurring")
+                } footer: {
+                    Text("Your authoritative upcoming bills, income, transfers, and investment contributions. An approved matching transaction advances the next date automatically.")
                 }
             }
 
@@ -600,8 +678,16 @@ struct SettingsView: View {
             .sheet(item: $showingAssetForm) { asset in
                 ManualAssetForm(asset: asset).environment(container)
             }
-            .sheet(item: $showingCardSheet) { account in
-                CardSettingsForm(account: account).environment(container)
+            .sheet(item: $showingExpectationForm) { expectation in
+                RecurringExpectationForm(expectation: expectation)
+                    .environment(container)
+            }
+            .sheet(isPresented: $showingNewExpectation) {
+                RecurringExpectationForm(expectation: nil)
+                    .environment(container)
+            }
+            .sheet(item: $showingCardSheet) { target in
+                CardSettingsForm(target: target).environment(container)
             }
             .sheet(isPresented: $showingExclusionsSheet) {
                 ExcludedCategoriesSheet().environment(container)
@@ -794,6 +880,19 @@ struct SettingsView: View {
         manualAssets.filter { !$0.deleted }.count
     }
 
+    private var activeExpectations: [DurableRecurringExpectation] {
+        recurringExpectations.filter { !$0.archived }
+    }
+
+    private func expectationSubtitle(
+        _ expectation: DurableRecurringExpectation
+    ) -> String {
+        let next = expectation.nextOccurrenceAt.formatted(
+            date: .abbreviated, time: .omitted
+        )
+        return "\(expectation.cadence.displayName) · next \(next)"
+    }
+
     private var selectedCashAccountCount: Int {
         if usesPlaidTransactions {
             var overridesByCanonicalID: [String: Bool] = [:]
@@ -867,13 +966,40 @@ struct SettingsView: View {
         accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCreditCardLike }
     }
 
+    /// Post-clean-start, configurable cards are Plaid financial accounts;
+    /// the legacy YNAB list only applies before the cutover.
+    private var cardSettingsTargets: [CardSettingsTarget] {
+        if usesPlaidTransactions {
+            return financialAccounts
+                .filter { !$0.deleted && $0.type == .creditCard }
+                .map {
+                    CardSettingsTarget(
+                        id: $0.canonicalAccountId,
+                        name: $0.name,
+                        isCanonical: true
+                    )
+                }
+        }
+        return creditCardAccounts.map {
+            CardSettingsTarget(id: $0.id, name: $0.name, isCanonical: false)
+        }
+    }
+
     private func cardSettingsSummary(_ setting: DurableCardSettings?) -> String {
-        guard let setting,
-              setting.paymentDueDay >= 1,
-              let paymentId = setting.paymentAccountId,
-              let paymentName = accounts.first(where: { $0.id == paymentId })?.name else {
+        guard let setting, setting.paymentDueDay >= 1 else {
             return "Finish setup"
         }
+        let paymentName = [
+            setting.canonicalPaymentAccountId, setting.paymentAccountId
+        ]
+        .compactMap { id -> String? in
+            guard let id else { return nil }
+            return financialAccounts.first {
+                $0.canonicalAccountId == id
+            }?.name ?? accounts.first { $0.id == id }?.name
+        }
+        .first
+        guard let paymentName else { return "Finish setup" }
         return "Closes \(setting.statementCycleDay) · pays \(setting.paymentDueDay)\n\(paymentName)"
     }
 
@@ -4224,4 +4350,292 @@ private struct ClaudeDataAccessView: View {
 
 private extension String {
     var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+/// Create/edit a recurring expectation. Created manually or prefilled from a
+/// recent approved transaction; the amount is the user's expected value.
+struct RecurringExpectationForm: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query(sort: \CachedFinancialAccount.name)
+    private var financialAccounts: [CachedFinancialAccount]
+    let expectation: DurableRecurringExpectation?
+
+    @State private var payeeName = ""
+    @State private var payeeCanonicalId: String?
+    @State private var treatment: ForecastTreatment = .ordinarySpending
+    @State private var accountId = ""
+    @State private var destinationId = ""
+    @State private var categoryName = ""
+    @State private var categoryCanonicalId: String?
+    @State private var cadence: CommitmentCadence = .monthly
+    // Projection events start tomorrow; a today-dated expectation would be
+    // silently absent until its next cycle.
+    @State private var nextDate = Calendar.current.date(
+        byAdding: .day, value: 1, to: .now
+    ) ?? .now
+    @State private var amountText = ""
+    @State private var saveError: String?
+    @State private var recent: [CachedFinancialTransaction] = []
+    @State private var loaded = false
+    @State private var programmaticNameChange = false
+
+    private var openAccounts: [CachedFinancialAccount] {
+        financialAccounts.filter { !$0.deleted }
+    }
+
+    /// Bills may live on cash accounts or cards (an expected card purchase
+    /// raises that card's projected statement); everything else is cash.
+    private var sourceAccounts: [CachedFinancialAccount] {
+        switch treatment {
+        case .ordinarySpending:
+            openAccounts.filter {
+                $0.type == .checking || $0.type == .savings
+                    || $0.type == .cash || $0.type == .creditCard
+            }
+        default:
+            openAccounts.filter {
+                $0.type == .checking || $0.type == .savings
+                    || $0.type == .cash
+            }
+        }
+    }
+
+    /// Card destinations are card payments, which the statement/autopay
+    /// forecaster owns — never a transfer expectation.
+    private var transferDestinationAccounts: [CachedFinancialAccount] {
+        openAccounts.filter {
+            $0.canonicalAccountId != accountId && $0.type != .creditCard
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if expectation == nil, !recent.isEmpty {
+                    Section {
+                        Menu("Start from a recent transaction") {
+                            ForEach(recent, id: \.id) { row in
+                                Button(recentLabel(row)) { prefill(from: row) }
+                            }
+                        }
+                    }
+                }
+
+                Section("Details") {
+                    TextField("Payee", text: $payeeName)
+                        .onChange(of: payeeName) {
+                            // A manual rename breaks the prefilled canonical
+                            // link; matching falls back to the typed name.
+                            // Programmatic prefill/load sets are exempt.
+                            if programmaticNameChange {
+                                programmaticNameChange = false
+                            } else {
+                                payeeCanonicalId = nil
+                            }
+                        }
+                    Picker("Type", selection: $treatment) {
+                        ForEach(
+                            RecurringExpectations.allowedTreatments,
+                            id: \.self
+                        ) {
+                            Text($0.displayName).tag($0)
+                        }
+                    }
+                    .onChange(of: treatment) {
+                        // A type change invalidates an account the new type
+                        // cannot execute (e.g. income on a card).
+                        if !sourceAccounts.contains(where: {
+                            $0.canonicalAccountId == accountId
+                        }) {
+                            accountId = ""
+                        }
+                        if treatment != .internalTransfer {
+                            destinationId = ""
+                        }
+                    }
+                    Picker("Account", selection: $accountId) {
+                        Text("Select account").tag("")
+                        ForEach(sourceAccounts, id: \.canonicalAccountId) {
+                            Text($0.name).tag($0.canonicalAccountId)
+                        }
+                    }
+                    if treatment == .internalTransfer {
+                        Picker("To account", selection: $destinationId) {
+                            Text("Outside accounts").tag("")
+                            ForEach(
+                                transferDestinationAccounts,
+                                id: \.canonicalAccountId
+                            ) {
+                                Text($0.name).tag($0.canonicalAccountId)
+                            }
+                        }
+                    }
+                    if treatment == .ordinarySpending
+                        || treatment == .investmentContribution {
+                        TextField("Category (optional)", text: $categoryName)
+                    }
+                }
+
+                Section("Schedule") {
+                    Picker("Repeats", selection: $cadence) {
+                        ForEach(CommitmentCadence.allCases) {
+                            Text($0.displayName).tag($0)
+                        }
+                    }
+                    DatePicker(
+                        "Next date",
+                        selection: $nextDate,
+                        displayedComponents: .date
+                    )
+                }
+
+                Section("Expected Amount") {
+                    TextField("Amount", text: $amountText)
+                        .keyboardType(.decimalPad)
+                }
+
+                if let saveError {
+                    Section {
+                        Text(saveError)
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.caution)
+                    }
+                }
+            }
+            .navigationTitle(
+                expectation == nil ? "New Recurring" : "Edit Recurring"
+            )
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        save()
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(NwAppColors.positive)
+                    }
+                    .accessibilityLabel("Save")
+                    .disabled(!canSave)
+                }
+            }
+            .onAppear(perform: load)
+        }
+    }
+
+    private var parsedAmount: Money? {
+        CurrencyInputFormatter.money(from: amountText)
+    }
+
+    private var canSave: Bool {
+        !payeeName.trimmed.isEmpty
+            && sourceAccounts.contains {
+                $0.canonicalAccountId == accountId
+            }
+            && (parsedAmount.map { $0 > .zero } ?? false)
+    }
+
+    private func load() {
+        guard !loaded else { return }
+        loaded = true
+        if let expectation {
+            programmaticNameChange = true
+            payeeName = expectation.payeeName
+            payeeCanonicalId = expectation.payeeCanonicalId
+            treatment = expectation.forecastTreatment
+            accountId = expectation.accountCanonicalId
+            destinationId = expectation.destinationAccountCanonicalId ?? ""
+            categoryName = expectation.categoryName ?? ""
+            categoryCanonicalId = expectation.categoryCanonicalId
+            cadence = expectation.cadence
+            nextDate = expectation.nextOccurrenceAt
+            amountText = CurrencyInputFormatter.text(
+                for: expectation.amount.absolute
+            )
+        } else {
+            var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    !$0.deleted && !$0.pending && !$0.requiresReview
+                },
+                sortBy: [SortDescriptor(\.postedDate, order: .reverse)]
+            )
+            descriptor.fetchLimit = 15
+            recent = (try? container.modelContainer.mainContext.fetch(
+                descriptor
+            )) ?? []
+        }
+    }
+
+    private func recentLabel(_ row: CachedFinancialTransaction) -> String {
+        let amount = CurrencyFormatter.currency(
+            Money(milliunits: row.amountMilliunits).absolute,
+            showCents: false
+        )
+        return "\(row.displayName) · \(amount)"
+    }
+
+    private func prefill(from row: CachedFinancialTransaction) {
+        programmaticNameChange = true
+        payeeName = row.displayName
+        if RecurringExpectations.allowedTreatments
+            .contains(row.forecastTreatment) {
+            treatment = row.forecastTreatment
+        }
+        accountId = row.canonicalAccountId
+        categoryName = row.categoryName ?? ""
+        categoryCanonicalId = row.categoryCanonicalId
+        amountText = CurrencyInputFormatter.text(
+            for: Money(milliunits: row.amountMilliunits).absolute
+        )
+        nextDate = Calendar.current.date(
+            byAdding: .month, value: 1, to: row.postedDate
+        ) ?? .now
+        // Set the canonical link LAST: the payeeName onChange above clears
+        // it for manual edits.
+        payeeCanonicalId = row.payeeCanonicalId
+    }
+
+    private func save() {
+        guard let amount = parsedAmount else { return }
+        // Direction follows the type: income flows in, everything else out.
+        let signed = treatment == .income ? amount : -amount
+        let ctx = container.modelContainer.mainContext
+        let target = expectation ?? {
+            let created = DurableRecurringExpectation()
+            ctx.insert(created)
+            return created
+        }()
+        target.payeeName = payeeName.trimmed
+        target.payeeCanonicalId = payeeCanonicalId
+        target.forecastTreatment = treatment
+        target.accountCanonicalId = accountId
+        target.destinationAccountCanonicalId =
+            treatment == .internalTransfer && !destinationId.isEmpty
+                ? destinationId
+                : nil
+        target.categoryName = categoryName.trimmed.isEmpty
+            ? nil
+            : categoryName.trimmed
+        target.categoryCanonicalId = categoryName.trimmed.isEmpty
+            ? nil
+            : categoryCanonicalId
+        target.cadence = cadence
+        target.nextOccurrenceAt = Calendar.current.startOfDay(for: nextDate)
+        target.amountMilliunits = signed.milliunits
+        target.updatedAt = .now
+        guard ctx.safeSave(source: "settings.saveExpectation") else {
+            saveError = "Saving failed. Your entries are still here — try again."
+            return
+        }
+        dismiss()
+    }
 }

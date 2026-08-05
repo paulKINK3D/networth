@@ -2,11 +2,21 @@ import SwiftUI
 import SwiftData
 import NetworthCore
 
+/// Identity for a configurable card: canonical Plaid account id after the
+/// clean start, legacy YNAB account id before it.
+struct CardSettingsTarget: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let isCanonical: Bool
+}
+
 struct CardSettingsForm: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppContainerController.self) private var container
-    let account: CachedAccount
+    let target: CardSettingsTarget
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
+    @Query(sort: \CachedFinancialAccount.name)
+    private var financialAccounts: [CachedFinancialAccount]
     @Query private var canonicalBindings: [DurableCanonicalAccountBinding]
 
     @State private var cycleDay: Int = 1
@@ -16,7 +26,7 @@ struct CardSettingsForm: View {
 
     var body: some View {
         NwModalLayout(
-            title: account.name,
+            title: target.name,
             onClose: { dismiss() },
             onConfirm: save
         ) {
@@ -56,8 +66,8 @@ struct CardSettingsForm: View {
                         .foregroundStyle(.secondary).textCase(.uppercase)
                     Picker("Payment account", selection: $paymentAccountId) {
                         Text("Select account").tag("")
-                        ForEach(cashAccounts) { cashAccount in
-                            Text(cashAccount.name).tag(cashAccount.id)
+                        ForEach(cashAccountOptions, id: \.id) { option in
+                            Text(option.name).tag(option.id)
                         }
                     }
                     .pickerStyle(.menu)
@@ -69,16 +79,25 @@ struct CardSettingsForm: View {
     }
 
     private func prefill() {
-        let targetId = account.id
-        let descriptor = FetchDescriptor<DurableCardSettings>(
-            predicate: #Predicate { $0.accountId == targetId }
-        )
-        if let existing = try? container.modelContainer.mainContext.fetch(descriptor).first {
+        if let existing = existingSetting() {
             cycleDay = existing.statementCycleDay
             if existing.paymentDueDay >= 1 {
                 dueDay = existing.paymentDueDay
             }
-            paymentAccountId = existing.paymentAccountId ?? ""
+            paymentAccountId = target.isCanonical
+                ? (existing.canonicalPaymentAccountId
+                    ?? existing.paymentAccountId ?? "")
+                : (existing.paymentAccountId ?? "")
+        }
+    }
+
+    private func existingSetting() -> DurableCardSettings? {
+        let rows = (try? container.modelContainer.mainContext.fetch(
+            FetchDescriptor<DurableCardSettings>()
+        )) ?? []
+        return rows.first {
+            ($0.canonicalAccountId ?? $0.accountId) == target.id
+                || $0.accountId == target.id
         }
     }
 
@@ -88,17 +107,13 @@ struct CardSettingsForm: View {
             return
         }
         let ctx = container.modelContainer.mainContext
-        let targetId = account.id
-        let descriptor = FetchDescriptor<DurableCardSettings>(
-            predicate: #Predicate { $0.accountId == targetId }
-        )
         let isNew: Bool
         let setting: DurableCardSettings
-        if let existing = try? ctx.fetch(descriptor).first {
+        if let existing = existingSetting() {
             setting = existing
             isNew = false
         } else {
-            setting = DurableCardSettings(accountId: account.id)
+            setting = DurableCardSettings(accountId: target.id)
             ctx.insert(setting)
             isNew = true
         }
@@ -113,12 +128,18 @@ struct CardSettingsForm: View {
         setting.statementCycleDay = max(1, min(31, cycleDay))
         setting.paymentDueDay = max(1, min(31, dueDay))
         setting.paymentAccountId = paymentAccountId
-        setting.canonicalAccountId = canonicalBindings.first {
-            $0.ynabAccountId == account.id
-        }?.canonicalAccountId
-        setting.canonicalPaymentAccountId = canonicalBindings.first {
-            $0.ynabAccountId == paymentAccountId
-        }?.canonicalAccountId
+        if target.isCanonical {
+            // Post-clean-start path: card and payment ids are canonical.
+            setting.canonicalAccountId = target.id
+            setting.canonicalPaymentAccountId = paymentAccountId
+        } else {
+            setting.canonicalAccountId = canonicalBindings.first {
+                $0.ynabAccountId == target.id
+            }?.canonicalAccountId
+            setting.canonicalPaymentAccountId = canonicalBindings.first {
+                $0.ynabAccountId == paymentAccountId
+            }?.canonicalAccountId
+        }
         let succeeded = ctx.safeSave(source: "cardSettings.save")
         guard succeeded else {
             if isNew {
@@ -136,7 +157,14 @@ struct CardSettingsForm: View {
         dismiss()
     }
 
-    private var cashAccounts: [CachedAccount] {
-        accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
+    private var cashAccountOptions: [(id: String, name: String)] {
+        if target.isCanonical {
+            return financialAccounts
+                .filter { !$0.deleted && $0.type.isCashLike }
+                .map { ($0.canonicalAccountId, $0.name) }
+        }
+        return accounts
+            .filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
+            .map { ($0.id, $0.name) }
     }
 }

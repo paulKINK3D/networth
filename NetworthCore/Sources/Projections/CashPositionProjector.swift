@@ -100,6 +100,10 @@ public struct CashPositionProjector: Sendable {
         fundedCardAccountIds: Set<String>,
         cardPayments: [UpcomingCardPayment],
         scheduled: [ScheduledTransactionSummary],
+        /// Scheduled ids whose actuals never enter projection history
+        /// (transfers, investment contributions): dated events only, never
+        /// subtracted from the ordinary-spending estimate.
+        estimateExemptScheduledIds: Set<String> = [],
         historicalTransactions: [TransactionSummary],
         excludedCategoryIds: Set<String> = [],
         excludedTransactionIds: Set<String> = [],
@@ -145,6 +149,7 @@ public struct CashPositionProjector: Sendable {
             selectedCashAccountIds: selectedCashAccountIds,
             fundedCardAccountIds: fundedCardAccountIds,
             scheduled: scheduled,
+            estimateExemptScheduledIds: estimateExemptScheduledIds,
             historicalTransactions: historicalTransactions,
             excludedCategoryIds: excludedCategoryIds,
             excludedTransactionIds: excludedTransactionIds,
@@ -436,6 +441,7 @@ public struct CashPositionProjector: Sendable {
         selectedCashAccountIds: Set<String>,
         fundedCardAccountIds: Set<String>,
         scheduled: [ScheduledTransactionSummary],
+        estimateExemptScheduledIds: Set<String>,
         historicalTransactions: [TransactionSummary],
         excludedCategoryIds: Set<String>,
         excludedTransactionIds: Set<String>,
@@ -534,7 +540,13 @@ public struct CashPositionProjector: Sendable {
 
         var scheduledOutflows = Money.zero
         var scheduledByMonth: [Date: Money] = [:]
-        for item in scheduled where !item.deleted && eligibleIds.contains(item.accountId) && item.amount.isNegative {
+        // Exempt items exist as dated events only: their actuals never enter
+        // the historical estimate (transfers, investment contributions), so
+        // subtracting their occurrences would understate ordinary spending.
+        for item in scheduled where !item.deleted
+            && !estimateExemptScheduledIds.contains(item.id)
+            && eligibleIds.contains(item.accountId)
+            && item.amount.isNegative {
             if let transfer = item.transferAccountId, spendAccountIds.contains(transfer) { continue }
             if excluded(categoryId: item.categoryId, amount: item.amount) { continue }
             for occurrence in item.occurrences(from: earliest, through: today, calendar: calendar)

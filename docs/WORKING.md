@@ -1,6 +1,78 @@
 # WORKING
 
-## Current State (2026-08-04 — Phase 1 step 3 implemented, uncommitted)
+## Current State (2026-08-04 — Phase 1 step 4 implemented, uncommitted)
+
+### Step 4 — Recurring expectations in Cash Projections (this session)
+
+- `NetworthCore/Projections/RecurringExpectations.swift`:
+  `RecurringExpectation` (account, optional destination, payee, treatment ∈
+  {ordinarySpending, income, internalTransfer, investmentContribution},
+  cadence, next occurrence, signed user-entered amount).
+  `toScheduledSummary()` compiles an expectation into the existing
+  scheduled-summary pipeline: cash bills → dated outflows; income → dated
+  inflows; expected card purchases (bill on a card account) raise that
+  card's projected statement via CCPaymentForecaster (only the generated
+  autopay reaches the pool); pool-internal transfers net out via existing
+  buildScheduledEvents logic; investment contributions are pool outflows
+  while staying outside spending. Card payments are never expectations.
+- Exactly-once: the projector's existing scheduled-outflow subtraction
+  removes matched history from the ordinary-spend estimate for
+  ordinary-spending expectations; NEW `estimateExemptScheduledIds`
+  parameter on `CashPositionProjector.project` keeps transfers/investment
+  expectations (whose actuals never enter projection history) out of the
+  subtraction so they are dated events only.
+- Matching: `RecurringExpectations.matchesNextOccurrence` (account, payee
+  canonical-id-or-name, treatment, direction, ±7-day window).
+  `advanceRecurringExpectations(for:)` runs inside all three confirm paths
+  (single, split, batch): an approved matching transaction replaces the
+  occurrence and advances the cadence; otherwise only explicit Skip
+  (swipe) or reschedule (edit) advances. `advance` handles all six
+  CommitmentCadence cases with month-end clamping.
+- `DurableRecurringExpectation` (durable store, CloudKit-safe, `toCore()`),
+  registered in ModelContainerFactory + FreshStart wipe/emptiness lists.
+- ProjectionsDataActor fetches active expectations → summaries feed both
+  `upcomingPayments` (card purchases) and `project(scheduled:)`; exempt
+  ids for non-ordinary treatments. YNAB schedules remain dead.
+- UI: Settings → Projections page "Recurring" section (add, edit sheet,
+  swipe Delete = archive, swipe Skip Next); `RecurringExpectationForm`
+  (payee, type, account [cards allowed for bills], destination for
+  transfers, optional category, cadence, next date, amount; "start from a
+  recent transaction" prefill). Events surface in the existing
+  Projections timeline rows automatically.
+- Tests: 9 recurring tests. NetworthCore 159/159; Debug + Release + test
+  bundle build.
+
+### Step-4 Codex review — 2 blockers + 5 majors, all fixed same session
+- BLOCKER redesign: exactly-once is now ID-BASED. Every expectation summary
+  is estimate-exempt (the theoretical backward-occurrence subtraction never
+  runs for expectations — a new bill can no longer invent past occurrences
+  that erase unrelated spending), and `matchedHistoricalIds` (authoritative)
+  excludes matched actuals at their REAL amounts from the estimate via
+  `excludedTransactionIds` (incl. split leg ids) and from the card
+  variable-charge history fed to `upcomingPayments`.
+- BLOCKER: card statement settings now configure Plaid cards —
+  `CardSettingsTarget` (canonical vs legacy), CardSettingsForm reworked
+  (payment accounts from CachedFinancialAccount on the canonical path;
+  canonical ids persisted directly), Settings section lists Plaid cards
+  post-cutover.
+- Semimonthly = paired days of month via shared `SemimonthlyMath` (used by
+  both `advance` and the ScheduleFrequency walker) — no drift; 24 steps
+  from Jan 1 land exactly on next Jan 1.
+- Advancement: rows processed chronologically; one approval advances at
+  most ONE expectation (`bestOccurrenceMatch` by date then amount);
+  cadence-capped match windows (weekly 3d, biweekly/semimonthly 6d, else
+  7d) prevent re-confirm double-advance; category disambiguates same-payee
+  expectations when both sides carry canonical categories.
+- Form: preserves payee/category canonical ids from prefill (with
+  programmatic-change guard on the name field); next date defaults to
+  tomorrow (projection events start tomorrow); type change clears an
+  incompatible account; canSave validates account against the type's
+  allowed list; transfer destinations exclude cards; swipe archive/skip
+  revert on failed save. Legacy YNAB schedules removed from BOTH paths.
+- New tests: semimonthly no-drift, exactly-once with differing
+  actual/expected amounts (real amounts removed, groceries reserve
+  preserved), new-expectation-no-history estimate invariance, income dated
+  inflow invariance.
 
 ### Step 3 — Spending History screen (this session)
 
