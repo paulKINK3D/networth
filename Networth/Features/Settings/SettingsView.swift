@@ -2722,6 +2722,11 @@ struct ClusterBatchEditSheet: View {
     @State private var saveError: String?
     @State private var loaded = false
     @State private var isApproving = false
+    /// Built once (and on treatment/category changes), never per keystroke:
+    /// recomputing hundreds of options on every Payee character makes
+    /// typing lag.
+    @State private var categoryOptionsCache: [PlaidCategoryOption] = []
+    @State private var visibleGroupsCache: [PlaidCategoryGroup] = []
 
     var body: some View {
         NavigationStack {
@@ -2756,8 +2761,9 @@ struct ClusterBatchEditSheet: View {
                         // Keep the category only when its role provably fits
                         // the new type; a stale name-only prefill would pass
                         // the enable check but fail validation on save.
+                        defer { rebuildVisibleGroups() }
                         guard let id = categoryCanonicalId,
-                              let selected = categoryOptions.first(where: {
+                              let selected = categoryOptionsCache.first(where: {
                                   $0.categoryID == id
                               }),
                               TransactionTypeRules.isValidCombination(
@@ -2780,7 +2786,7 @@ struct ClusterBatchEditSheet: View {
                         NavigationLink {
                             PlaidCategoryPicker(
                                 selection: $categoryName,
-                                groups: visibleCategoryGroups,
+                                groups: visibleGroupsCache,
                                 onSelect: { option in
                                     categoryCanonicalId = option.categoryID
                                 }
@@ -2834,6 +2840,9 @@ struct ClusterBatchEditSheet: View {
             }
             .interactiveDismissDisabled(isApproving)
             .onAppear(perform: load)
+            .onChange(of: canonicalCategories.count) {
+                rebuildOptionCaches()
+            }
         }
     }
 
@@ -2841,6 +2850,25 @@ struct ClusterBatchEditSheet: View {
         !displayName.trimmed.isEmpty
             && (!treatment.requiresCategory
                 || !categoryName.trimmed.isEmpty)
+    }
+
+    private func rebuildOptionCaches() {
+        categoryOptionsCache = categoryOptions
+        rebuildVisibleGroups()
+    }
+
+    private func rebuildVisibleGroups() {
+        guard let allowed = TransactionTypeRules.allowedCategoryRoles(
+            for: treatment
+        ) else {
+            visibleGroupsCache = []
+            return
+        }
+        let options = categoryOptionsCache.filter { option in
+            guard let role = option.role else { return true }
+            return allowed.contains(role)
+        }
+        visibleGroupsCache = PlaidCategoryGroup.makeGroups(from: options)
     }
 
     private var categoryOptions: [PlaidCategoryOption] {
@@ -2866,17 +2894,6 @@ struct ClusterBatchEditSheet: View {
         }
     }
 
-    private var visibleCategoryGroups: [PlaidCategoryGroup] {
-        guard let allowed = TransactionTypeRules.allowedCategoryRoles(
-            for: treatment
-        ) else { return [] }
-        let options = categoryOptions.filter { option in
-            guard let role = option.role else { return true }
-            return allowed.contains(role)
-        }
-        return PlaidCategoryGroup.makeGroups(from: options)
-    }
-
     private func load() {
         guard !loaded else { return }
         loaded = true
@@ -2884,6 +2901,7 @@ struct ClusterBatchEditSheet: View {
         treatment = cluster.treatment
         categoryName = cluster.categoryName ?? ""
         categoryCanonicalId = cluster.categoryCanonicalId
+        rebuildOptionCaches()
     }
 
     private func approveAll() {
