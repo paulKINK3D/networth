@@ -294,9 +294,8 @@ struct SpendingHistoryView: View {
                 Text(group.name)
                     .font(NwTypography.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                    .minimumScaleFactor(0.8)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
                     .frame(maxWidth: flexible ? .infinity : 72)
             }
             .frame(maxWidth: flexible ? .infinity : nil)

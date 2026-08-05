@@ -1,5 +1,13 @@
 # WORKING
 
+## Phase 2 candidates from first-use feedback (2026-08-05)
+- Full group management: rename/create groups, move categories between
+  groups, set roles — user wants the Spending columns to be exactly
+  Fixed / Necessities / Surplus / Savings / Investment; today's controls
+  are hide (long-press column) + Move Left ordering only.
+- Consider preserving YNAB memos in reference suggestions (transfers are
+  easier to identify with them).
+
 ## Current State (2026-08-04 — Phase 1 COMPLETE; all four steps committed)
 
 Commits: 79fa7b2 (step 1) · 18ea60d (step 2) · 8da7e06 (step 3) ·
