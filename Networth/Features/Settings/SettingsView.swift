@@ -48,6 +48,7 @@ struct SettingsView: View {
     @State private var showingExclusionsSheet = false
     @State private var showingForceResyncConfirm = false
     @State private var showingGroupedReview = false
+    @State private var showingAccountMapping = false
     @State private var showingIncludedClosed = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
@@ -178,6 +179,22 @@ struct SettingsView: View {
                         }
                     }
                     if container.hasYNABToken, hasTransactionConnection {
+                        Button {
+                            showingAccountMapping = true
+                        } label: {
+                            HStack {
+                                Label {
+                                    Text("Map YNAB Accounts")
+                                } icon: {
+                                    NwIcon.accounts.image
+                                        .foregroundStyle(NwAppColors.primary)
+                                }
+                                Spacer()
+                                NwIcon.chevron.image
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
                         Button {
                             Task { await container.buildYNABReference() }
                         } label: {
@@ -694,6 +711,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingGroupedReview) {
                 GroupedHistoricalReviewSheet().environment(container)
+            }
+            .sheet(isPresented: $showingAccountMapping) {
+                PlaidAccountMappingSheet().environment(container)
             }
             .sheet(isPresented: $showingIncludedClosed) {
                 IncludedClosedAccountsSheet().environment(container)
