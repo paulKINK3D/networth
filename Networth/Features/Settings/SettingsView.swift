@@ -2215,6 +2215,8 @@ struct GroupedHistoricalReviewSheet: View {
 
     @State private var clusters: [HistoricalReviewCluster] = []
     @State private var rowsByID: [String: CachedFinancialTransaction] = [:]
+    @State private var accountNamesByID: [String: String] = [:]
+    @State private var ynabEvidenceByID: [String: String] = [:]
     @State private var approveError: String?
     @State private var loaded = false
     @State private var editingCluster: HistoricalReviewCluster?
@@ -2330,10 +2332,15 @@ struct GroupedHistoricalReviewSheet: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(row.displayName)
                             Text(
-                                "\(row.postedDate.formatted(date: .abbreviated, time: .omitted)) · \(CurrencyFormatter.currency(Money(milliunits: row.amountMilliunits)))"
+                                "\(row.postedDate.formatted(date: .abbreviated, time: .omitted)) · \(accountName(for: row)) · \(CurrencyFormatter.currency(Money(milliunits: row.amountMilliunits)))"
                             )
                             .font(NwTypography.footnote)
                             .foregroundStyle(.secondary)
+                            if let evidence = ynabEvidenceByID[row.id] {
+                                Text(evidence)
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(NwAppColors.accent)
+                            }
                         }
                     }
                 }
@@ -2377,19 +2384,50 @@ struct GroupedHistoricalReviewSheet: View {
         reload()
     }
 
+    private func accountName(for row: CachedFinancialTransaction) -> String {
+        accountNamesByID[row.canonicalAccountId] ?? "Account"
+    }
+
     private func reload() {
+        let ctx = container.modelContainer.mainContext
         let descriptor = FetchDescriptor<CachedFinancialTransaction>(
             predicate: #Predicate {
                 $0.requiresReview && !$0.deleted && !$0.pending
             }
         )
-        let rows = (try? container.modelContainer.mainContext.fetch(
-            descriptor
-        )) ?? []
+        let rows = (try? ctx.fetch(descriptor)) ?? []
         let historical = rows.filter { $0.reviewOriginRaw == "historical" }
         clusters = HistoricalReviewCluster.build(from: historical)
         rowsByID = Dictionary(
             uniqueKeysWithValues: historical.map { ($0.id, $0) }
+        )
+        let accounts = (try? ctx.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        )) ?? []
+        accountNamesByID = Dictionary(
+            accounts.map { ($0.canonicalAccountId, $0.name) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let suggestions = (try? ctx.fetch(
+            FetchDescriptor<YNABReferenceSuggestion>()
+        )) ?? []
+        ynabEvidenceByID = Dictionary(
+            suggestions.map { suggestion in
+                var parts = ["YNAB"]
+                if !suggestion.payeeNameSnapshot.isEmpty {
+                    parts.append(suggestion.payeeNameSnapshot)
+                }
+                if let category = suggestion.categoryNameSnapshot,
+                   !category.isEmpty {
+                    parts.append(category)
+                }
+                parts.append(suggestion.confidence.rawValue)
+                return (
+                    suggestion.plaidTransactionId,
+                    parts.joined(separator: " · ")
+                )
+            },
+            uniquingKeysWith: { first, _ in first }
         )
         loaded = true
     }
@@ -2801,6 +2839,7 @@ struct PlaidTransactionReviewEditor: View {
     @State private var splitDrafts: [PlaidSplitDraft]
     @State private var splitTransactionID: String
     @State private var splitSaveError: String?
+    @State private var ynabEvidence: String?
     @FocusState private var splitAmountFocusedID: UUID?
 
     init(
@@ -2892,6 +2931,7 @@ struct PlaidTransactionReviewEditor: View {
         .onAppear {
             prepareDirectoryIndexes()
             resolveDisplayedSelections()
+            loadYNABEvidence()
         }
         .onChange(of: canonicalPayees.count) {
             prepareDirectoryIndexes()
@@ -2920,6 +2960,39 @@ struct PlaidTransactionReviewEditor: View {
                     message: splitSaveError,
                     tone: .warning
                 )
+            }
+
+            // The facts of the transaction under review: without date,
+            // account, and amount, a "potential transfer" is undecidable.
+            NwCard(style: .primary) {
+                VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                    HStack {
+                        Text(transaction.postedDate.formatted(
+                            date: .abbreviated, time: .omitted
+                        ))
+                        .font(NwTypography.bodyEmphasis)
+                        Spacer()
+                        NwAmountText(
+                            Money(milliunits: transaction.amountMilliunits),
+                            variant: .body
+                        )
+                    }
+                    Text(accountLabel(for: transaction))
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                    if transaction.rawDescription != transaction.displayName {
+                        Text(transaction.rawDescription)
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    if let evidence = ynabEvidence {
+                        Text(evidence)
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.accent)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             // Type-first: the user confirms what the transaction IS before
@@ -3003,6 +3076,31 @@ struct PlaidTransactionReviewEditor: View {
         }
         let fallback = categoryName.trimmed
         return fallback.isEmpty ? nil : fallback
+    }
+
+    /// The reference-match evidence line: which YNAB transaction backed
+    /// this suggestion, so a "potential transfer" is decidable at a glance.
+    private func loadYNABEvidence() {
+        let transactionID = transaction.id
+        var descriptor = FetchDescriptor<YNABReferenceSuggestion>(
+            predicate: #Predicate { $0.plaidTransactionId == transactionID }
+        )
+        descriptor.fetchLimit = 1
+        guard let suggestion = try? container.modelContainer.mainContext
+            .fetch(descriptor).first else {
+            ynabEvidence = nil
+            return
+        }
+        var parts = ["Matched YNAB"]
+        if !suggestion.payeeNameSnapshot.isEmpty {
+            parts.append(suggestion.payeeNameSnapshot)
+        }
+        if let category = suggestion.categoryNameSnapshot,
+           !category.isEmpty {
+            parts.append(category)
+        }
+        parts.append("\(suggestion.confidence.rawValue) confidence")
+        ynabEvidence = parts.joined(separator: " · ")
     }
 
     private func resolveDisplayedSelections() {
