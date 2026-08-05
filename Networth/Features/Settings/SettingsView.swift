@@ -2669,8 +2669,14 @@ struct ClusterBatchEditSheet: View {
                     Button {
                         approveAll()
                     } label: {
+                        // The hard-coded green previously masked the
+                        // disabled state entirely.
                         Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(NwAppColors.positive)
+                            .foregroundStyle(
+                                canApprove && !isApproving
+                                    ? NwAppColors.positive
+                                    : Color.secondary.opacity(0.35)
+                            )
                     }
                     .accessibilityLabel(
                         "Approve all \(cluster.transactionIDs.count)"
