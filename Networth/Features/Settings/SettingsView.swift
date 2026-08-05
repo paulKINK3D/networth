@@ -2243,6 +2243,11 @@ struct GroupedHistoricalReviewSheet: View {
                             )
                             .listRowBackground(Color.clear)
                         }
+                        Section {
+                            Text("✓ approves the group exactly as shown. ✎ changes the payee, type, or category first. Tap a row to review transactions one by one.")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                         ForEach(clusters) { cluster in
                             clusterRow(cluster)
                         }
@@ -2640,7 +2645,7 @@ struct ClusterBatchEditSheet: View {
                             .foregroundStyle(NwAppColors.caution)
                     }
                 }
-                Section("Type") {
+                Section {
                     Picker("Transaction type", selection: $treatment) {
                         ForEach(ForecastTreatment.allCases, id: \.self) {
                             Text($0.displayName).tag($0)
@@ -2663,6 +2668,10 @@ struct ClusterBatchEditSheet: View {
                             return
                         }
                     }
+                } header: {
+                    Text("Type")
+                } footer: {
+                    Text(typeConsequenceFootnote(for: treatment))
                 }
                 Section("Details") {
                     TextField("Payee", text: $displayName)
@@ -3003,6 +3012,9 @@ struct PlaidTransactionReviewEditor: View {
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
                 reviewSectionTitle("Type")
                 typeControls
+                Text(typeConsequenceFootnote(for: treatment))
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
                 if let classificationFooter {
                     Text(classificationFooter)
                         .font(NwTypography.footnote)
@@ -4120,6 +4132,29 @@ func noCategoryLabel(for treatment: ForecastTreatment) -> String {
     switch treatment {
     case .internalTransfer, .cardPayment: "Uses the account relationship"
     default: "Not needed for this type"
+    }
+}
+
+/// One sentence on what choosing this type DOES to the money — the
+/// difference between an expense and a card payment is whether $70k of
+/// history counts as spending, so the consequence must be visible at the
+/// moment of choice.
+func typeConsequenceFootnote(for treatment: ForecastTreatment) -> String {
+    switch treatment {
+    case .ordinarySpending:
+        "Counts as spending in its category."
+    case .refund:
+        "Reduces spending in its category."
+    case .income:
+        "Money in. Never counts as spending."
+    case .internalTransfer:
+        "Money moving between your own accounts. Excluded from spending."
+    case .cardPayment:
+        "Paying a card bill. Excluded from spending — the card purchases are the spending."
+    case .investmentContribution:
+        "Money into investments. Excluded from spending; appears in cash projections."
+    case .excluded:
+        "Ignored by spending totals and projections."
     }
 }
 
