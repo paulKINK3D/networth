@@ -1324,9 +1324,6 @@ private actor ProjectionsDataActor {
                 }
             )
         )) ?? []
-        let scheduled = (try? context.fetch(
-            FetchDescriptor<CachedScheduledTransaction>()
-        )) ?? []
         let categories = (try? context.fetch(
             FetchDescriptor<CachedCategory>()
         )) ?? []

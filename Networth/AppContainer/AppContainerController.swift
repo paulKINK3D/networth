@@ -675,6 +675,7 @@ public final class AppContainerController {
             if row.discretionaryCategoryIdsData != nil { value += 2 }
             if row.historyBackfillVersion > 0 { value += 2 }
             if row.canonicalTransactionDataVersion > 0 { value += 2 }
+            if row.spendingGroupSetupVersion > 0 { value += 1 }
             if row.primaryFinancialDataSource == .plaid { value += 2 }
             if row.plaidTransactionsEnabled { value += 1 }
             if row.hasSeenTutorial { value += 1 }
@@ -737,6 +738,10 @@ public final class AppContainerController {
             survivor.canonicalTransactionDataVersion = max(
                 survivor.canonicalTransactionDataVersion,
                 other.canonicalTransactionDataVersion
+            )
+            survivor.spendingGroupSetupVersion = max(
+                survivor.spendingGroupSetupVersion,
+                other.spendingGroupSetupVersion
             )
             survivor.freshStartVersion = max(
                 survivor.freshStartVersion, other.freshStartVersion

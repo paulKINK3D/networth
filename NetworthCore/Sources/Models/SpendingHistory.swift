@@ -10,6 +10,10 @@ public struct SpendingHistoryEntry: Sendable, Hashable {
     /// Networth convention: outflow negative, inflow positive.
     public let amountMilliunits: Int64
     public let treatment: ForecastTreatment?
+    /// Internal reporting classification for this entry's destination group.
+    /// Ordinary categories use `.spending`; savings-account transfer activity
+    /// uses `.transfer`; investment contributions use `.investment`.
+    public let reportingRole: CategoryReportingRole?
     public let groupIdentity: String?
     public let groupName: String?
     public let categoryKey: String
@@ -20,6 +24,7 @@ public struct SpendingHistoryEntry: Sendable, Hashable {
         date: Date,
         amountMilliunits: Int64,
         treatment: ForecastTreatment?,
+        reportingRole: CategoryReportingRole? = nil,
         groupIdentity: String?,
         groupName: String?,
         categoryKey: String,
@@ -29,10 +34,24 @@ public struct SpendingHistoryEntry: Sendable, Hashable {
         self.date = date
         self.amountMilliunits = amountMilliunits
         self.treatment = treatment
+        self.reportingRole = reportingRole
         self.groupIdentity = groupIdentity
         self.groupName = groupName
         self.categoryKey = categoryKey
         self.categoryName = categoryName
+    }
+}
+
+/// A user-visible group that should remain present even in zero-activity
+/// months. This keeps the Spending columns stable while preserving zero-fill
+/// across the 24-month chart window.
+public struct SpendingHistoryGroupDefinition: Sendable, Hashable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
     }
 }
 
@@ -94,8 +113,10 @@ public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
 /// Counting rules (the product contract):
 /// - Negative ordinary transactions count as spending; positive refunds are
 ///   offsets within the same category.
-/// - Income, investment contributions, transfers, card payments, and
-///   explicit exclusions never enter a spending total.
+/// - Net savings-account transfers and net investment contributions appear
+///   alongside ordinary spending so the report answers where money went.
+/// - Income, card payments, other internal transfers, and explicit exclusions
+///   never enter a spending total.
 /// - The current month is month-to-date; completed months are final.
 /// - Month bucketing uses the supplied calendar, so grouping is
 ///   timezone-safe: a transaction's civil day decides its month.
@@ -104,12 +125,14 @@ public enum SpendingHistoryBuilder {
     public static let ungroupedName = "Other"
 
     public static func contributesToSpending(
-        _ treatment: ForecastTreatment?
+        _ treatment: ForecastTreatment?,
+        reportingRole: CategoryReportingRole? = nil
     ) -> Bool {
         switch treatment {
         case .ordinarySpending, .refund, nil: true
-        case .income, .internalTransfer, .cardPayment,
-             .investmentContribution, .excluded: false
+        case .internalTransfer: reportingRole == .transfer
+        case .investmentContribution: reportingRole == .investment
+        case .income, .cardPayment, .excluded: false
         }
     }
 
@@ -117,6 +140,7 @@ public enum SpendingHistoryBuilder {
     /// first, including zero months so charts keep continuity.
     public static func build(
         entries: [SpendingHistoryEntry],
+        groups groupDefinitions: [SpendingHistoryGroupDefinition] = [],
         monthsBack: Int = 24,
         now: Date,
         calendar: Calendar
@@ -150,17 +174,35 @@ public enum SpendingHistoryBuilder {
         var months: [Date: [String: GroupBucket]] = [:]
 
         for entry in entries {
-            guard contributesToSpending(entry.treatment) else { continue }
+            guard contributesToSpending(
+                entry.treatment,
+                reportingRole: entry.reportingRole
+            ) else { continue }
             // The sign matrix is strict: NEGATIVE ordinary transactions are
             // spending and POSITIVE refunds are offsets. A positive amount
             // classified as ordinary spending or a negative refund is a
             // mismatched classification and must not distort totals.
+            let reportedAmount: Int64
             switch entry.treatment {
             case .ordinarySpending, nil:
                 guard entry.amountMilliunits < 0 else { continue }
+                reportedAmount = -entry.amountMilliunits
             case .refund:
                 guard entry.amountMilliunits > 0 else { continue }
-            default:
+                reportedAmount = -entry.amountMilliunits
+            case .investmentContribution:
+                guard entry.reportingRole == .investment,
+                      entry.amountMilliunits != 0 else { continue }
+                // A negative contribution adds to Investment; a positive
+                // withdrawal offsets that month's net contribution.
+                reportedAmount = -entry.amountMilliunits
+            case .internalTransfer:
+                guard entry.reportingRole == .transfer,
+                      entry.amountMilliunits != 0 else { continue }
+                // The app supplies only the savings-account side: deposits
+                // are positive and withdrawals are negative.
+                reportedAmount = entry.amountMilliunits
+            case .income, .cardPayment, .excluded:
                 continue
             }
             guard entry.date >= windowStart, entry.date <= now,
@@ -175,9 +217,7 @@ public enum SpendingHistoryBuilder {
             var group = groups[groupID] ?? GroupBucket(name: groupName)
             var category = group.categories[entry.categoryKey]
                 ?? CategoryBucket(name: entry.categoryName)
-            // Spending is positive; outflows are negative amounts, refunds
-            // offset by their (positive) amount within the category.
-            category.spent -= entry.amountMilliunits
+            category.spent += reportedAmount
             // Split legs share the parent id; list each transaction once.
             if !category.transactionIds.contains(entry.transactionId) {
                 category.transactionIds.append(entry.transactionId)
@@ -188,7 +228,12 @@ public enum SpendingHistoryBuilder {
         }
 
         return monthStarts.map { month in
-            let groups = (months[month] ?? [:]).map { groupID, bucket in
+            var monthGroups = months[month] ?? [:]
+            for definition in groupDefinitions
+            where monthGroups[definition.id] == nil {
+                monthGroups[definition.id] = GroupBucket(name: definition.name)
+            }
+            let groups = monthGroups.map { groupID, bucket in
                 let categories = bucket.categories
                     .map { key, category in
                         SpendingHistoryCategoryTotal(

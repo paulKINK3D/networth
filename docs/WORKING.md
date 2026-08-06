@@ -1,12 +1,57 @@
 # WORKING
 
-## Phase 2 candidates from first-use feedback (2026-08-05)
-- Full group management: rename/create groups, move categories between
-  groups, set roles — user wants the Spending columns to be exactly
-  Fixed / Necessities / Surplus / Savings / Investment; today's controls
-  are hide (long-press column) + Move Left ordering only.
-- Consider preserving YNAB memos in reference suggestions (transfers are
-  easier to identify with them).
+## Phase 2 — Spending groups (2026-08-05)
+
+- Spending remains the screen/tab name and now answers where money went:
+  ordinary category spending plus net Savings and net Investment allocations.
+  Credit-card payments and checking-to-checking counterparts stay excluded to
+  prevent double-counting.
+- Spending groups are entirely user-defined. Networth seeds no destination
+  names, and YNAB group identities remain reference metadata only: they never
+  become Spending columns or cleanup work.
+- Spending toolbar → group manager starts with `Create Group`, lists only the
+  user's Networth groups, and exposes visible rename/hide controls plus Edit
+  ordering. `Unassigned Categories` is the explicit inbox for categories that
+  do not yet belong to one of those groups. Both assigned and unassigned lists
+  show only categories referenced by stored transactions. Select mode supports
+  circular checkmarks and a batch `Add to Group` menu.
+- `Savings Transfers` and `Investment Contributions` are Networth-owned
+  automatic categories in that same inbox. The user assigns them to any group;
+  Networth calculates their amounts without exposing reporting-role controls.
+- Savings counts only the savings-account side of confirmed internal transfers:
+  deposits add, withdrawals offset. Investment counts only the cash-account
+  side of confirmed investment contributions: contributions add, withdrawals
+  offset. Projection treatment remains unchanged.
+- Zero-activity groups remain visible so the selected-month columns stay stable.
+- Month navigation no longer uses blue arrow buttons. A horizontal swipe on
+  the Spent card moves between months (right = previous, left = next), with
+  equivalent VoiceOver accessibility actions. Tapping the Spent card selects
+  All Spending history. The month header no longer repeats "Month to date."
+- The 24-month history is a single monthly column series. Tapping a selected-
+  month group column chooses that group's history; the group name becomes the
+  chart label. The current partial month uses a lighter bar without an MTD
+  label. There is no picker, trend line, or point layer. A chart tap selects
+  that month and, for group series, opens its category detail. The chart is
+  horizontally scrollable with roughly eight wider month bars visible at once,
+  so its 24-month drill-down targets remain practical on iPhone. Month taps use
+  the chart's native spatial-tap gesture rather than a transparent overlay, so
+  the overlay cannot intercept horizontal scrolling.
+- Group detail navigates category → transaction list → the existing full
+  transaction editor. Transaction rows reuse `NwTransactionRow`; split rows
+  retain the selected category leg amount while the detail screen shows the
+  complete parent transaction, classification, account, and split information.
+- `DurableUserSettings.spendingGroupSetupVersion` is an additive, defaulted
+  CloudKit field. Legacy/restored rows hydrate at 0; version 3 retires untouched
+  seeded defaults and preserves renamed groups. After a completed Plaid sync
+  with no posted reviews remaining, version 4 deletes canonical categories with
+  no transaction, split, durable decision, or recurring-expectation reference.
+  Automatic allocation categories are created only when matching transactions
+  exist.
+- Validation: NetworthCore 162/162; generic-device Debug + Release builds and
+  the app test bundle compile.
+
+Remaining candidate: preserve YNAB memos in reference suggestions (transfers
+are easier to identify with them).
 
 ## Current State (2026-08-04 — Phase 1 COMPLETE; all four steps committed)
 
@@ -97,10 +142,10 @@ and the dead DiscretionaryBudgetSettingsSheet struct in SettingsView.swift.
   calendar; current month is MTD. 5 new tests (146 total pass).
 - `Networth/Features/Spending/SpendingHistoryView.swift` (new group
   Features/Spending, registered in pbxproj) replaces BudgetView as the
-  Spending tab: review card (grouped + one-by-one), month header with
-  clamped chevrons, MTD-labeled month total, tappable per-group columns,
-  24-month stacked chart (Swift Charts) with tap-to-segment drill-down,
-  `SpendingGroupDetailSheet` (categories → DisclosureGroup transactions).
+  Spending tab: review card (grouped + one-by-one), swipeable month total,
+  selectable per-group columns, and a 24-month monthly column chart (Swift
+  Charts) with tap-to-group drill-down,
+  `SpendingGroupDetailSheet` (categories → transactions → full editor).
   Off-main aggregation via `SpendingHistoryBuildActor` (@ModelActor) with
   0.6s-debounced save-notification rebuilds.
 - Chart palette: `NwAppColors.chartCategorical` — 8 fixed dynamic

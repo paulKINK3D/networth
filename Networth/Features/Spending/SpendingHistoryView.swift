@@ -8,19 +8,23 @@ import NetworthCore
 ///
 /// Month navigation, the review card for posted transactions awaiting
 /// approval, the selected month's total and per-group columns, and a
-/// 24-month stacked column chart by category group. Only approved activity
-/// counts; the current month is month-to-date, completed months are final.
+/// 24-month selectable spending trend. Only approved activity counts; the
+/// current month is month-to-date, completed months are final.
 struct SpendingHistoryView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
 
     @State private var model: SpendingHistoryModel?
     @State private var selectedMonth: Date?
+    @State private var selectedChartSeriesID = "networth:spending:all"
+    @State private var historyChartScrollPosition = Date.now
     @State private var detailSelection: SpendingGroupDetailSelection?
     @State private var showingGroupedReview = false
     @State private var showingIndividualReview = false
+    @State private var showingGroupManager = false
     @State private var rebuildTask: Task<Void, Never>?
 
     private let calendar = Calendar.current
+    private let historyVisibleDuration: TimeInterval = 60 * 60 * 24 * 30.5 * 8
 
     var body: some View {
         NavigationStack {
@@ -32,7 +36,7 @@ struct SpendingHistoryView: View {
                     if let model {
                         monthHeader(model)
                         if let month = displayedMonth(model) {
-                            monthTotalCard(month)
+                            monthTotalCard(month, model: model)
                             groupColumns(month)
                         }
                         historyChartCard(model)
@@ -47,8 +51,21 @@ struct SpendingHistoryView: View {
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Spending History")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingGroupManager = true
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .accessibilityLabel("Manage spending groups")
+                }
+            }
         }
-        .task { await rebuild() }
+        .task {
+            ensureSpendingGroupSetup()
+            await rebuild()
+        }
         .onReceive(
             NotificationCenter.default
                 .publisher(for: .networthModelContextSaved)
@@ -76,6 +93,9 @@ struct SpendingHistoryView: View {
         }
         .sheet(isPresented: $showingIndividualReview) {
             PlaidClassificationReviewSheet().environment(container)
+        }
+        .sheet(isPresented: $showingGroupManager) {
+            SpendingGroupManagementSheet().environment(container)
         }
     }
 
@@ -121,54 +141,15 @@ struct SpendingHistoryView: View {
 
     private func monthHeader(_ model: SpendingHistoryModel) -> some View {
         let current = displayedMonth(model)
-        let index = model.months.firstIndex { $0.month == current?.month }
-        let canGoBack = (index ?? 0) > 0
-        let canGoForward = index.map { $0 < model.months.count - 1 } ?? false
-        return HStack {
-            Button {
-                if let index, canGoBack {
-                    selectedMonth = model.months[index - 1].month
-                }
-            } label: {
-                Image(systemName: "chevron.left.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(
-                        canGoBack ? NwAppColors.primary : Color.secondary.opacity(0.4)
-                    )
-            }
-            .disabled(!canGoBack)
-            .accessibilityLabel("Previous month")
-
-            Spacer()
-            VStack(spacing: 2) {
-                Text(
-                    current?.month.formatted(
-                        .dateTime.month(.wide).year()
-                    ) ?? ""
-                )
-                .font(NwTypography.titleSmall)
-                if isCurrentMonth(current?.month) {
-                    Text("Month to date")
-                        .font(NwTypography.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-
-            Button {
-                if let index, canGoForward {
-                    selectedMonth = model.months[index + 1].month
-                }
-            } label: {
-                Image(systemName: "chevron.right.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(
-                        canGoForward ? NwAppColors.primary : Color.secondary.opacity(0.4)
-                    )
-            }
-            .disabled(!canGoForward)
-            .accessibilityLabel("Next month")
+        return VStack(spacing: 2) {
+            Text(
+                current?.month.formatted(
+                    .dateTime.month(.wide).year()
+                ) ?? ""
+            )
+            .font(NwTypography.titleSmall)
         }
+        .frame(maxWidth: .infinity)
     }
 
     private func isCurrentMonth(_ month: Date?) -> Bool {
@@ -178,7 +159,10 @@ struct SpendingHistoryView: View {
 
     // MARK: - Selected month
 
-    private func monthTotalCard(_ month: SpendingHistoryMonth) -> some View {
+    private func monthTotalCard(
+        _ month: SpendingHistoryMonth,
+        model: SpendingHistoryModel
+    ) -> some View {
         NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.xs) {
                 Text("Spent")
@@ -188,11 +172,47 @@ struct SpendingHistoryView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedChartSeriesID = Self.allSpendingSeriesID
+        }
+        .gesture(
+            DragGesture(minimumDistance: 30)
+                .onEnded { value in
+                    guard abs(value.translation.width)
+                            > abs(value.translation.height),
+                          abs(value.translation.width) >= 50 else { return }
+                    moveDisplayedMonth(
+                        in: model,
+                        by: value.translation.width > 0 ? -1 : 1
+                    )
+                }
+        )
+        .accessibilityAction(named: "Previous Month") {
+            moveDisplayedMonth(in: model, by: -1)
+        }
+        .accessibilityAction(named: "Next Month") {
+            moveDisplayedMonth(in: model, by: 1)
+        }
+        .accessibilityHint("Double-tap to show all spending history")
+    }
+
+    private func moveDisplayedMonth(
+        in model: SpendingHistoryModel,
+        by offset: Int
+    ) {
+        guard let current = displayedMonth(model),
+              let index = model.months.firstIndex(where: {
+                  $0.month == current.month
+              }) else { return }
+        let destination = index + offset
+        guard model.months.indices.contains(destination) else { return }
+        selectedMonth = model.months[destination].month
     }
 
     /// Vertical columns for the selected month's groups in the user's group
-    /// order; tapping a column opens that month/group detail. Few groups
-    /// share the full width; many scroll.
+    /// order; tapping a column selects that group's 24-month history. Few
+    /// groups share the full width; many scroll.
     private func groupColumns(_ month: SpendingHistoryMonth) -> some View {
         let groups = orderedGroups(in: month)
         let maxSpent = max(groups.map(\.spentMilliunits).max() ?? 1, 1)
@@ -274,14 +294,13 @@ struct SpendingHistoryView: View {
         maxSpent: Int64,
         flexible: Bool
     ) -> some View {
+        let isSelected = selectedChartSeriesID == group.id
         let height = max(
             12,
             CGFloat(group.spentMilliunits) / CGFloat(maxSpent) * 120
         )
         return Button {
-            detailSelection = SpendingGroupDetailSelection(
-                month: month, group: group
-            )
+            selectedChartSeriesID = group.id
         } label: {
             VStack(spacing: NwSpacing.xs) {
                 Text(CurrencyFormatter.currency(group.spent, showCents: false))
@@ -304,16 +323,25 @@ struct SpendingHistoryView: View {
                         height: height
                     )
                 Text(group.name)
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
+                    .font(
+                        isSelected
+                            ? NwTypography.caption.weight(.semibold)
+                            : NwTypography.caption
+                    )
+                    .foregroundStyle(
+                        isSelected ? NwAppColors.primary : .secondary
+                    )
                     .lineLimit(1)
                     .frame(maxWidth: flexible ? .infinity : 72)
             }
             .frame(maxWidth: flexible ? .infinity : nil)
         }
         .buttonStyle(.plain)
+        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityHint("Shows this group's spending history")
         .contextMenu {
-            if group.id != SpendingHistoryBuilder.ungroupedIdentity {
+            if group.id != SpendingHistoryBuilder.ungroupedIdentity
+                && group.id != SpendingGroupSetup.unassignedIdentity {
                 Button {
                     moveGroupEarlier(group.id)
                 } label: {
@@ -347,6 +375,12 @@ struct SpendingHistoryView: View {
         ctx.safeSave(source: "spending.groupHidden")
     }
 
+    /// Prepare Networth's assignable automatic categories and migrate away
+    /// from the retired seeded-group experiment. Users own every real group.
+    private func ensureSpendingGroupSetup() {
+        SpendingGroupSetup.ensure(in: container.modelContainer.mainContext)
+    }
+
     /// Column order is user-owned: swap the group one position earlier
     /// after normalizing display orders to a clean sequence.
     private func moveGroupEarlier(_ identity: String) {
@@ -354,7 +388,7 @@ struct SpendingHistoryView: View {
         let groups = ((try? ctx.fetch(
             FetchDescriptor<DurableCategoryGroup>()
         )) ?? [])
-            .filter { $0.reportingRole == .spending && !$0.hidden }
+            .filter { SpendingGroupSetup.isUserGroup($0) && !$0.hidden }
             .sorted {
                 if $0.displayOrder != $1.displayOrder {
                     return $0.displayOrder < $1.displayOrder
@@ -377,63 +411,47 @@ struct SpendingHistoryView: View {
 
     // MARK: - 24-month chart
 
+    private static let allSpendingSeriesID = "networth:spending:all"
+
     private struct ChartDatum: Identifiable {
         let month: Date
-        let seriesID: String
-        let seriesName: String
-        /// Explicit stack bounds: the chart renders exactly the cumulative
-        /// order the tap resolution walks, with no framework stacking-order
-        /// assumption.
-        let startDollars: Double
-        let endDollars: Double
-        var id: String { "\(month.timeIntervalSince1970):\(seriesID)" }
+        let dollars: Double
+        let isPartial: Bool
+        var id: Date { month }
     }
 
-    /// Chart series for one month in fixed palette order (bottom-up), with
-    /// every group beyond the fixed categorical order folded into "Other".
-    /// Net-negative groups (refunds exceeding spending) are visible in the
-    /// month's group columns but excluded from the stacked chart.
-    private func chartSeries(
-        for month: SpendingHistoryMonth,
-        model: SpendingHistoryModel
+    private func chartData(
+        _ model: SpendingHistoryModel
     ) -> [ChartDatum] {
-        var byID: [String: (name: String, milliunits: Int64)] = [:]
-        for group in month.groups where group.spentMilliunits > 0 {
-            let folded = model.paletteIndex(for: group.id) == nil
-            let seriesID = folded
-                ? SpendingHistoryBuilder.ungroupedIdentity
-                : group.id
-            let name = folded
-                ? SpendingHistoryBuilder.ungroupedName
-                : group.name
-            var bucket = byID[seriesID] ?? (name, 0)
-            bucket.milliunits += group.spentMilliunits
-            byID[seriesID] = bucket
-        }
-        let ordered = byID
-            .map { (id: $0.key, name: $0.value.name, milliunits: $0.value.milliunits) }
-            .sorted {
-                seriesOrder($0.id, model: model)
-                    < seriesOrder($1.id, model: model)
+        model.months.map { month in
+            let milliunits: Int64
+            if selectedChartSeriesID == Self.allSpendingSeriesID {
+                milliunits = month.totalMilliunits
+            } else {
+                milliunits = max(
+                    0,
+                    month.groups.first {
+                        $0.id == selectedChartSeriesID
+                    }?.spentMilliunits ?? 0
+                )
             }
-        var cumulative = 0.0
-        return ordered.map { series in
-            let start = cumulative
-            cumulative += Double(series.milliunits) / 1000
             return ChartDatum(
                 month: month.month,
-                seriesID: series.id,
-                seriesName: series.name,
-                startDollars: start,
-                endDollars: cumulative
+                dollars: Double(milliunits) / 1000,
+                isPartial: isCurrentMonth(month.month)
             )
         }
     }
 
-    private func seriesOrder(
-        _ seriesID: String, model: SpendingHistoryModel
-    ) -> Int {
-        model.orderIndexByGroupID[seriesID] ?? Int.max
+    private func selectedChartSeriesName(
+        in model: SpendingHistoryModel
+    ) -> String {
+        guard selectedChartSeriesID != Self.allSpendingSeriesID else {
+            return "All Spending"
+        }
+        return model.months.lazy
+            .flatMap(\.groups)
+            .first { $0.id == selectedChartSeriesID }?.name ?? "All Spending"
     }
 
     private func color(for groupID: String) -> Color {
@@ -444,28 +462,29 @@ struct SpendingHistoryView: View {
     }
 
     private func historyChartCard(_ model: SpendingHistoryModel) -> some View {
-        let data = model.months.flatMap { chartSeries(for: $0, model: model) }
-        let seriesIDs = orderedSeriesIDs(in: data, model: model)
-        let names = seriesIDs.compactMap { id in
-            data.first { $0.seriesID == id }?.seriesName
-        }
-        let colors = seriesIDs.map { color(for: $0) }
+        let data = chartData(model)
+        let seriesName = selectedChartSeriesName(in: model)
+        let chartColor = selectedChartSeriesID == Self.allSpendingSeriesID
+            ? NwAppColors.primary
+            : color(for: selectedChartSeriesID)
         return NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                Text("Last 24 Months")
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
+                Text(seriesName)
+                    .font(NwTypography.body.weight(.semibold))
+                    .foregroundStyle(NwAppColors.textPrimary)
+
                 Chart(data) { datum in
                     BarMark(
                         x: .value("Month", datum.month, unit: .month),
-                        yStart: .value("Spent", datum.startDollars),
-                        yEnd: .value("Spent", datum.endDollars)
+                        y: .value("Monthly spending", datum.dollars),
+                        width: .ratio(0.68)
                     )
-                    .foregroundStyle(by: .value("Group", datum.seriesName))
-                    .cornerRadius(2)
+                    .foregroundStyle(
+                        chartColor.opacity(datum.isPartial ? 0.45 : 0.9)
+                    )
+                    .cornerRadius(3)
                 }
-                .chartForegroundStyleScale(domain: names, range: colors)
-                .chartLegend(position: .bottom, spacing: NwSpacing.sm)
+                .chartLegend(.hidden)
                 .chartYAxis {
                     AxisMarks(position: .leading) { value in
                         AxisGridLine().foregroundStyle(NwAppColors.strokeSubtle)
@@ -481,55 +500,38 @@ struct SpendingHistoryView: View {
                         }
                     }
                 }
+                .chartYScale(domain: .automatic(includesZero: true))
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: historyVisibleDuration)
+                .chartScrollPosition(x: $historyChartScrollPosition)
                 .frame(height: 220)
-                .chartOverlay { proxy in
-                    GeometryReader { geo in
-                        Rectangle()
-                            .fill(Color.clear)
-                            .contentShape(Rectangle())
-                            .onTapGesture { location in
-                                handleChartTap(
-                                    at: location,
-                                    proxy: proxy,
-                                    geo: geo,
-                                    model: model
-                                )
-                            }
+                .accessibilityLabel(
+                    "Monthly \(seriesName)"
+                )
+                .chartGesture { proxy in
+                    SpatialTapGesture()
+                        .onEnded { value in
+                            handleChartTap(
+                                atX: value.location.x,
+                                proxy: proxy,
+                                model: model,
+                                seriesID: selectedChartSeriesID
+                            )
                     }
                 }
             }
         }
     }
 
-    private func orderedSeriesIDs(
-        in data: [ChartDatum], model: SpendingHistoryModel
-    ) -> [String] {
-        var seen = Set<String>()
-        var ids: [String] = []
-        for datum in data where !seen.contains(datum.seriesID) {
-            seen.insert(datum.seriesID)
-            ids.append(datum.seriesID)
-        }
-        return ids.sorted {
-            seriesOrder($0, model: model) < seriesOrder($1, model: model)
-        }
-    }
-
-    /// Resolves a tap to the month column and the stacked group segment at
-    /// that height, then opens the month/group detail.
+    /// A tap selects the underlying month. For a selected group, it also opens
+    /// that month's unsmoothed category detail.
     private func handleChartTap(
-        at location: CGPoint,
+        atX xPosition: CGFloat,
         proxy: ChartProxy,
-        geo: GeometryProxy,
-        model: SpendingHistoryModel
+        model: SpendingHistoryModel,
+        seriesID: String
     ) {
-        guard let plotFrame = proxy.plotFrame else { return }
-        let origin = geo[plotFrame].origin
-        let position = CGPoint(
-            x: location.x - origin.x, y: location.y - origin.y
-        )
-        guard let tappedDate: Date = proxy.value(atX: position.x),
-              let tappedDollars: Double = proxy.value(atY: position.y),
+        guard let tappedDate: Date = proxy.value(atX: xPosition),
               let monthStart = calendar.dateInterval(
                 of: .month, for: tappedDate
               )?.start,
@@ -539,46 +541,12 @@ struct SpendingHistoryView: View {
             return
         }
         selectedMonth = month.month
-        // Walk the same explicit stack bounds the chart rendered.
-        for datum in chartSeries(for: month, model: model)
-        where tappedDollars <= datum.endDollars {
-            openDetail(for: datum.seriesID, in: month, model: model)
-            return
-        }
-    }
-
-    private func openDetail(
-        for seriesID: String,
-        in month: SpendingHistoryMonth,
-        model: SpendingHistoryModel
-    ) {
-        if seriesID == SpendingHistoryBuilder.ungroupedIdentity {
-            // Merge exactly what the chart's "Other" segment shows: folded
-            // groups with positive spend. Net-negative folded groups stay
-            // visible in the month's group columns instead.
-            let folded = month.groups.filter {
-                model.paletteIndex(for: $0.id) == nil
-                    && $0.spentMilliunits > 0
-            }
-            guard !folded.isEmpty else { return }
-            let merged = SpendingHistoryGroupTotal(
-                id: SpendingHistoryBuilder.ungroupedIdentity,
-                name: SpendingHistoryBuilder.ungroupedName,
-                spentMilliunits: folded.reduce(0) { $0 + $1.spentMilliunits },
-                categories: folded.flatMap(\.categories).sorted {
-                    $0.spentMilliunits > $1.spentMilliunits
-                }
-            )
-            detailSelection = SpendingGroupDetailSelection(
-                month: month, group: merged
-            )
-        } else if let group = month.groups.first(where: {
-            $0.id == seriesID
-        }) {
-            detailSelection = SpendingGroupDetailSelection(
-                month: month, group: group
-            )
-        }
+        guard seriesID != Self.allSpendingSeriesID,
+              let group = month.groups.first(where: { $0.id == seriesID }),
+              !group.categories.isEmpty else { return }
+        detailSelection = SpendingGroupDetailSelection(
+            month: month, group: group
+        )
     }
 
     // MARK: - Build
@@ -596,9 +564,918 @@ struct SpendingHistoryView: View {
         }.value
         guard let built, !Task.isCancelled else { return }
         model = built
+        if selectedChartSeriesID != Self.allSpendingSeriesID,
+           !built.months.contains(where: { month in
+               month.groups.contains { $0.id == selectedChartSeriesID }
+           }) {
+            selectedChartSeriesID = Self.allSpendingSeriesID
+        }
         if let selectedMonth,
            !built.months.contains(where: { $0.month == selectedMonth }) {
             self.selectedMonth = nil
+        }
+    }
+}
+
+// MARK: - Group management
+
+enum SpendingGroupSetup {
+    static let userOwnedGroupsVersion = 3
+    static let currentVersion = 4
+    static let userGroupIdentityPrefix = "networth:spending:user:"
+    static let unassignedIdentity = "networth:spending:unassigned"
+    static let unassignedName = "Unassigned"
+    static let savingsCategoryIdentity = "networth:savings-transfers"
+    static let investmentCategoryIdentity = "networth:investment-contributions"
+    static let automaticCategoryIdentities: Set<String> = [
+        savingsCategoryIdentity, investmentCategoryIdentity
+    ]
+
+    private struct RetiredDefault {
+        let identity: String
+        let name: String
+    }
+
+    private static let retiredDefaults = [
+        RetiredDefault(identity: "networth:spending:fixed", name: "Fixed"),
+        RetiredDefault(
+            identity: "networth:spending:necessities",
+            name: "Necessities"
+        ),
+        RetiredDefault(identity: "networth:spending:surplus", name: "Surplus"),
+        RetiredDefault(identity: "networth:spending:savings", name: "Savings"),
+        RetiredDefault(
+            identity: "networth:spending:investment",
+            name: "Investment"
+        )
+    ]
+
+    static func isUserGroup(_ group: DurableCategoryGroup) -> Bool {
+        group.reportingRole == .spending
+            && !group.groupIdentity.hasPrefix("ynab:")
+            && group.groupIdentity != unassignedIdentity
+            && !retiredDefaults.contains {
+                $0.identity == group.groupIdentity && $0.name == group.name
+            }
+    }
+
+    static func isAssignableCategory(
+        _ category: DurableCanonicalCategory,
+        groupByIdentity: [String: DurableCategoryGroup]
+    ) -> Bool {
+        guard !category.deletedAtSource else { return false }
+        if automaticCategoryIdentities.contains(category.canonicalId) {
+            return true
+        }
+        guard let identity = category.categoryGroupIdentity,
+              let sourceGroup = groupByIdentity[identity] else {
+            return true
+        }
+        return sourceGroup.reportingRole == .spending
+    }
+
+    static func isUnassignedCategory(
+        _ category: DurableCanonicalCategory,
+        userGroupIdentities: Set<String>
+    ) -> Bool {
+        guard let identity = category.categoryGroupIdentity else { return true }
+        return !userGroupIdentities.contains(identity)
+    }
+
+    static func categoryIdentitiesWithTransactions(
+        transactions: [CachedFinancialTransaction],
+        accounts: [CachedFinancialAccount]
+    ) -> Set<String> {
+        let accountTypeByIdentity = Dictionary(
+            accounts.map { ($0.canonicalAccountId, $0.type) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var identities = Set<String>()
+        for transaction in transactions where !transaction.deleted {
+            if transaction.forecastTreatment == .internalTransfer,
+               accountTypeByIdentity[transaction.canonicalAccountId] == .savings {
+                identities.insert(savingsCategoryIdentity)
+            }
+            if transaction.forecastTreatment == .investmentContribution,
+               accountTypeByIdentity[transaction.canonicalAccountId]?.isCashLike
+                    == true {
+                identities.insert(investmentCategoryIdentity)
+            }
+
+            let legs = transaction.subtransactions.filter { !$0.deleted }
+            if legs.isEmpty {
+                if let categoryID = transaction.categoryCanonicalId {
+                    identities.insert(categoryID)
+                }
+            } else {
+                for leg in legs {
+                    if let categoryID = leg.categoryCanonicalId ?? leg.categoryId {
+                        identities.insert(categoryID)
+                    }
+                }
+            }
+        }
+        return identities
+    }
+
+    /// User-created groups are the only Spending structure. YNAB grouping is
+    /// retained solely as reference metadata and is never surfaced here.
+    @MainActor
+    static func ensure(in context: ModelContext) {
+        let settings = (try? context.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ))?.first
+        let existing = (try? context.fetch(
+            FetchDescriptor<DurableCategoryGroup>()
+        )) ?? []
+        let categories = (try? context.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )) ?? []
+        let transactions = (try? context.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []
+        let accounts = (try? context.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        )) ?? []
+        var changed = false
+
+        if (settings?.spendingGroupSetupVersion ?? 0) < userOwnedGroupsVersion {
+            // Retire only untouched defaults. A renamed row represents a group
+            // the user chose to keep and remains fully editable.
+            for retired in retiredDefaults {
+                let matchingRows = existing.filter {
+                    $0.groupIdentity == retired.identity
+                }
+                guard !matchingRows.isEmpty,
+                      matchingRows.allSatisfy({ $0.name == retired.name }) else {
+                    continue
+                }
+                for category in categories
+                where category.categoryGroupIdentity == retired.identity {
+                    category.categoryGroupIdentity = nil
+                    category.groupName = ""
+                    category.updatedAt = .now
+                }
+                for row in matchingRows {
+                    row.hidden = true
+                    row.updatedAt = .now
+                }
+                changed = true
+            }
+        }
+
+        let automaticCategories = [
+            (savingsCategoryIdentity, "Savings Transfers"),
+            (investmentCategoryIdentity, "Investment Contributions")
+        ]
+        let transactionCategoryIDs = categoryIdentitiesWithTransactions(
+            transactions: transactions,
+            accounts: accounts
+        )
+        for automatic in automaticCategories
+        where transactionCategoryIDs.contains(automatic.0)
+            && !categories.contains(where: { $0.canonicalId == automatic.0 }) {
+            context.insert(DurableCanonicalCategory(
+                canonicalId: automatic.0,
+                name: automatic.1,
+                sourceName: automatic.1,
+                userEdited: true
+            ))
+            changed = true
+        }
+
+        if let settings,
+           settings.spendingGroupSetupVersion < userOwnedGroupsVersion {
+            settings.spendingGroupSetupVersion = userOwnedGroupsVersion
+            changed = true
+        }
+
+        let activeTransactions = transactions.filter { !$0.deleted }
+        let canPruneUnusedCategories = (settings?.spendingGroupSetupVersion
+                ?? 0) < currentVersion
+            && settings?.firstPlaidSyncCompletedAt != nil
+            && !activeTransactions.isEmpty
+            && !activeTransactions.contains {
+                !$0.pending && $0.requiresReview
+            }
+        if canPruneUnusedCategories {
+            var retainedCategoryIDs = transactionCategoryIDs
+            let decisions = (try? context.fetch(
+                FetchDescriptor<DurableCanonicalTransactionDecision>()
+            )) ?? []
+            for decision in decisions {
+                if let categoryID = decision.categoryCanonicalId {
+                    retainedCategoryIDs.insert(categoryID)
+                }
+                for leg in decision.subtransactions where !leg.deleted {
+                    if let categoryID = leg.categoryCanonicalId ?? leg.categoryId {
+                        retainedCategoryIDs.insert(categoryID)
+                    }
+                }
+            }
+            let overrides = (try? context.fetch(
+                FetchDescriptor<DurableTransactionOverride>()
+            )) ?? []
+            for override in overrides {
+                for leg in override.subtransactions where !leg.deleted {
+                    if let categoryID = leg.categoryCanonicalId ?? leg.categoryId {
+                        retainedCategoryIDs.insert(categoryID)
+                    }
+                }
+            }
+            let expectations = (try? context.fetch(
+                FetchDescriptor<DurableRecurringExpectation>()
+            )) ?? []
+            for expectation in expectations {
+                if let categoryID = expectation.categoryCanonicalId {
+                    retainedCategoryIDs.insert(categoryID)
+                }
+            }
+            for category in categories
+            where !retainedCategoryIDs.contains(category.canonicalId) {
+                context.delete(category)
+                changed = true
+            }
+            settings?.spendingGroupSetupVersion = currentVersion
+            changed = true
+        }
+        if changed {
+            context.safeSave(source: "spending.groupSetup")
+        }
+    }
+}
+
+private struct ManagedSpendingGroup: Identifiable, Hashable {
+    let identity: String
+    let name: String
+    let displayOrder: Int
+    let hidden: Bool
+
+    var id: String { identity }
+
+    var subtitle: String {
+        "Categories"
+    }
+}
+
+private struct SpendingGroupEditorTarget: Identifiable {
+    let identity: String?
+    let initialName: String
+    var id: String { identity ?? "new" }
+}
+
+struct SpendingGroupManagementSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query private var groupRows: [DurableCategoryGroup]
+    @Query private var categoryRows: [DurableCanonicalCategory]
+    @Query private var transactionRows: [CachedFinancialTransaction]
+    @Query private var accountRows: [CachedFinancialAccount]
+
+    @State private var editorTarget: SpendingGroupEditorTarget?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        editorTarget = SpendingGroupEditorTarget(
+                            identity: nil,
+                            initialName: ""
+                        )
+                    } label: {
+                        Label("Create Group", systemImage: "plus.circle.fill")
+                    }
+                } footer: {
+                    Text("Create your groups, then assign categories to them.")
+                }
+
+                Section {
+                    if visibleGroups.isEmpty {
+                        Text("No groups yet")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(visibleGroups) { group in
+                            managedGroupRow(group)
+                        }
+                        .onMove(perform: moveGroups)
+                    }
+                } header: {
+                    Text("Your Groups")
+                }
+
+                Section {
+                    NavigationLink {
+                        SpendingGroupCategoryList(group: unassignedGroup)
+                            .environment(container)
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Unassigned Categories")
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                                Text("Tap to place categories into your groups")
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text("\(unassignedCategoryCount)")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } footer: {
+                    Text(
+                        "Savings Transfers and Investment Contributions are automatic categories; you decide which group contains them."
+                    )
+                }
+
+                if !hiddenGroups.isEmpty {
+                    Section("Hidden") {
+                        ForEach(hiddenGroups) { group in
+                            Button {
+                                setHidden(group.identity, hidden: false)
+                            } label: {
+                                HStack {
+                                    groupLabel(group)
+                                    Spacer()
+                                    Image(systemName: "eye")
+                                        .foregroundStyle(NwAppColors.primary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Spending Groups")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Close")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    EditButton()
+                }
+            }
+        }
+        .onAppear {
+            SpendingGroupSetup.ensure(
+                in: container.modelContainer.mainContext
+            )
+        }
+        .sheet(item: $editorTarget) { target in
+            SpendingGroupEditorSheet(target: target) {
+                editorTarget = nil
+            }
+            .environment(container)
+        }
+    }
+
+    private var groups: [ManagedSpendingGroup] {
+        let rowsByIdentity = Dictionary(grouping: groupRows) {
+            $0.groupIdentity
+        }
+        return rowsByIdentity.compactMap { identity, rows in
+            guard let latest = rows.max(by: { $0.updatedAt < $1.updatedAt }),
+                  SpendingGroupSetup.isUserGroup(latest) else {
+                return nil
+            }
+            return ManagedSpendingGroup(
+                identity: identity,
+                name: latest.name,
+                displayOrder: latest.displayOrder,
+                hidden: rows.contains(where: \.hidden)
+            )
+        }
+        .sorted(by: groupSort)
+    }
+
+    private var visibleGroups: [ManagedSpendingGroup] {
+        groups.filter { !$0.hidden }
+    }
+
+    private var hiddenGroups: [ManagedSpendingGroup] {
+        groups.filter(\.hidden)
+    }
+
+    private var unassignedGroup: ManagedSpendingGroup {
+        ManagedSpendingGroup(
+            identity: SpendingGroupSetup.unassignedIdentity,
+            name: SpendingGroupSetup.unassignedName,
+            displayOrder: Int.max,
+            hidden: false
+        )
+    }
+
+    private var unassignedCategoryCount: Int {
+        assignableCategories.filter(isUnassigned).count
+    }
+
+    private var assignableCategories: [DurableCanonicalCategory] {
+        let latestGroupByIdentity = Dictionary(
+            grouping: groupRows,
+            by: \.groupIdentity
+        ).compactMapValues { rows in
+            rows.max(by: { $0.updatedAt < $1.updatedAt })
+        }
+        let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
+            transactions: transactionRows,
+            accounts: accountRows
+        )
+        return categoryRows.filter {
+            categoryIDs.contains($0.canonicalId)
+                && SpendingGroupSetup.isAssignableCategory(
+                    $0,
+                    groupByIdentity: latestGroupByIdentity
+                )
+        }
+    }
+
+    private func isUnassigned(_ category: DurableCanonicalCategory) -> Bool {
+        SpendingGroupSetup.isUnassignedCategory(
+            category,
+            userGroupIdentities: Set(groups.map(\.identity))
+        )
+    }
+
+    private func groupSort(
+        _ lhs: ManagedSpendingGroup,
+        _ rhs: ManagedSpendingGroup
+    ) -> Bool {
+        if lhs.displayOrder != rhs.displayOrder {
+            return lhs.displayOrder < rhs.displayOrder
+        }
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+            == .orderedAscending
+    }
+
+    private func groupLabel(_ group: ManagedSpendingGroup) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(group.name)
+                .foregroundStyle(NwAppColors.textPrimary)
+            Text(group.subtitle)
+                .font(NwTypography.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private func managedGroupRow(_ group: ManagedSpendingGroup) -> some View {
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            NavigationLink {
+                SpendingGroupCategoryList(group: group)
+                    .environment(container)
+            } label: {
+                HStack {
+                    groupLabel(group)
+                    Spacer()
+                    Text("\(categoryCount(for: group.identity))")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: NwSpacing.md) {
+                Button {
+                    edit(group)
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                Button(role: .destructive) {
+                    setHidden(group.identity, hidden: true)
+                } label: {
+                    Label("Hide", systemImage: "eye.slash")
+                }
+            }
+            .font(NwTypography.footnote)
+            .buttonStyle(.borderless)
+        }
+        .padding(.vertical, NwSpacing.xs)
+    }
+
+    private func categoryCount(for identity: String) -> Int {
+        let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
+            transactions: transactionRows,
+            accounts: accountRows
+        )
+        return Set(categoryRows.lazy.filter {
+            $0.categoryGroupIdentity == identity
+                && !$0.deletedAtSource
+                && categoryIDs.contains($0.canonicalId)
+        }.map(\.canonicalId)).count
+    }
+
+    private func edit(_ group: ManagedSpendingGroup) {
+        editorTarget = SpendingGroupEditorTarget(
+            identity: group.identity,
+            initialName: group.name
+        )
+    }
+
+    private func setHidden(_ identity: String, hidden: Bool) {
+        let matches = groupRows.filter { $0.groupIdentity == identity }
+        guard !matches.isEmpty else { return }
+        for row in matches {
+            row.hidden = hidden
+            row.updatedAt = .now
+        }
+        container.modelContainer.mainContext.safeSave(
+            source: "spending.groupManagement.visibility"
+        )
+    }
+
+    private func moveGroups(from offsets: IndexSet, to destination: Int) {
+        var reordered = visibleGroups
+        reordered.move(fromOffsets: offsets, toOffset: destination)
+        let orderByIdentity = Dictionary(
+            uniqueKeysWithValues: reordered.enumerated().map {
+                ($0.element.identity, $0.offset)
+            }
+        )
+        for row in groupRows {
+            guard let order = orderByIdentity[row.groupIdentity] else { continue }
+            row.displayOrder = order
+            row.updatedAt = .now
+        }
+        container.modelContainer.mainContext.safeSave(
+            source: "spending.groupManagement.order"
+        )
+    }
+
+}
+
+private struct SpendingGroupEditorSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    let target: SpendingGroupEditorTarget
+    let onSaved: () -> Void
+
+    @State private var name: String
+
+    init(target: SpendingGroupEditorTarget, onSaved: @escaping () -> Void) {
+        self.target = target
+        self.onSaved = onSaved
+        _name = State(initialValue: target.initialName)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    TextField("Group name", text: $name)
+                }
+            }
+            .navigationTitle(target.identity == nil ? "Add Group" : "Rename Group")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        save()
+                    } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(
+                                canSave
+                                    ? NwAppColors.positive
+                                    : Color.secondary.opacity(0.35)
+                            )
+                    }
+                    .disabled(!canSave)
+                    .accessibilityLabel("Save")
+                }
+            }
+        }
+    }
+
+    private var cleanedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSave: Bool { !cleanedName.isEmpty }
+
+    private func save() {
+        let context = container.modelContainer.mainContext
+        let rows = (try? context.fetch(
+            FetchDescriptor<DurableCategoryGroup>()
+        )) ?? []
+        if let identity = target.identity {
+            let matches = rows.filter { $0.groupIdentity == identity }
+            guard !matches.isEmpty else { return }
+            for row in matches {
+                row.name = cleanedName
+                row.updatedAt = .now
+            }
+            let categories = (try? context.fetch(
+                FetchDescriptor<DurableCanonicalCategory>()
+            )) ?? []
+            for category in categories
+            where category.categoryGroupIdentity == identity {
+                category.groupName = cleanedName
+                category.userEdited = true
+                category.updatedAt = .now
+            }
+        } else {
+            let nextOrder = (rows.map(\.displayOrder).max() ?? -1) + 1
+            context.insert(DurableCategoryGroup(
+                groupIdentity: SpendingGroupSetup.userGroupIdentityPrefix
+                    + UUID().uuidString.lowercased(),
+                name: cleanedName,
+                displayOrder: nextOrder,
+                reportingRole: .spending
+            ))
+        }
+        guard context.safeSave(source: "spending.groupManagement.edit") else {
+            return
+        }
+        onSaved()
+        dismiss()
+    }
+}
+
+private struct ManagedSpendingCategory: Identifiable {
+    let id: String
+    let name: String
+}
+
+private struct SpendingGroupCategoryList: View {
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query private var categories: [DurableCanonicalCategory]
+    @Query private var groupRows: [DurableCategoryGroup]
+    @Query private var transactionRows: [CachedFinancialTransaction]
+    @Query private var accountRows: [CachedFinancialAccount]
+    let group: ManagedSpendingGroup
+
+    @State private var categoryToMove: ManagedSpendingCategory?
+    @State private var isSelecting = false
+    @State private var selectedCategoryIDs: Set<String> = []
+
+    var body: some View {
+        List {
+            if assignedCategories.isEmpty {
+                NwEmptyState(
+                    title: "No Categories",
+                    message: group.identity == SpendingGroupSetup.unassignedIdentity
+                        ? "Every assignable category is already in one of your groups."
+                        : "Assign categories here from Unassigned Categories or another group.",
+                    icon: .empty
+                )
+            } else {
+                Section {
+                    ForEach(assignedCategories) { category in
+                        Button {
+                            if isSelecting {
+                                toggleSelection(category.id)
+                            } else {
+                                categoryToMove = category
+                            }
+                        } label: {
+                            HStack {
+                                if isSelecting {
+                                    Image(systemName: selectedCategoryIDs.contains(
+                                        category.id
+                                    ) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(
+                                        selectedCategoryIDs.contains(category.id)
+                                            ? NwAppColors.positive
+                                            : Color.secondary
+                                    )
+                                }
+                                Text(category.name)
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                                Spacer()
+                                if !isSelecting {
+                                    Image(systemName: "arrow.right.circle")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } footer: {
+                    Text(
+                        isSelecting
+                            ? "Select categories, then use Add to Group."
+                            : "Tap a category to move it to another Spending group."
+                    )
+                }
+            }
+        }
+        .navigationTitle(group.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if isUnassignedList {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(isSelecting ? "Done" : "Select") {
+                        isSelecting.toggle()
+                        if !isSelecting {
+                            selectedCategoryIDs.removeAll()
+                        }
+                    }
+                    .disabled(assignedCategories.isEmpty)
+                }
+                if isSelecting {
+                    ToolbarItem(placement: .bottomBar) {
+                        Menu {
+                            ForEach(destinationGroups) { destination in
+                                Button(destination.name) {
+                                    moveSelectedCategories(to: destination)
+                                }
+                            }
+                        } label: {
+                            Label(
+                                selectedCategoryIDs.isEmpty
+                                    ? "Add to Group"
+                                    : "Add \(selectedCategoryIDs.count) to Group",
+                                systemImage: "folder"
+                            )
+                        }
+                        .disabled(
+                            selectedCategoryIDs.isEmpty
+                                || destinationGroups.isEmpty
+                        )
+                    }
+                }
+            }
+        }
+        .sheet(item: $categoryToMove) { category in
+            CategoryGroupPickerSheet(
+                category: category,
+                groups: destinationGroups,
+                currentGroupIdentity: group.identity,
+                onMove: moveCategory
+            )
+        }
+    }
+
+    private var assignedCategories: [ManagedSpendingCategory] {
+        let latestGroupByIdentity = Dictionary(
+            grouping: groupRows,
+            by: \.groupIdentity
+        ).compactMapValues { rows in
+            rows.max(by: { $0.updatedAt < $1.updatedAt })
+        }
+        let userGroupIdentities = Set(latestGroupByIdentity.values.filter {
+            SpendingGroupSetup.isUserGroup($0)
+        }.map(\.groupIdentity))
+        let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
+            transactions: transactionRows,
+            accounts: accountRows
+        )
+        return categories
+            .filter {
+                guard categoryIDs.contains($0.canonicalId) else { return false }
+                guard SpendingGroupSetup.isAssignableCategory(
+                    $0,
+                    groupByIdentity: latestGroupByIdentity
+                ) else { return false }
+                if group.identity == SpendingGroupSetup.unassignedIdentity {
+                    return SpendingGroupSetup.isUnassignedCategory(
+                        $0,
+                        userGroupIdentities: userGroupIdentities
+                    )
+                }
+                return $0.categoryGroupIdentity == group.identity
+            }
+            .map { ManagedSpendingCategory(id: $0.canonicalId, name: $0.name) }
+            .sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name)
+                    == .orderedAscending
+            }
+    }
+
+    private var isUnassignedList: Bool {
+        group.identity == SpendingGroupSetup.unassignedIdentity
+    }
+
+    private var destinationGroups: [ManagedSpendingGroup] {
+        let rowsByIdentity = Dictionary(grouping: groupRows) {
+            $0.groupIdentity
+        }
+        return rowsByIdentity.compactMap { identity, rows in
+            guard let latest = rows.max(by: { $0.updatedAt < $1.updatedAt }),
+                  SpendingGroupSetup.isUserGroup(latest),
+                  !rows.contains(where: \.hidden) else {
+                return nil
+            }
+            return ManagedSpendingGroup(
+                identity: identity,
+                name: latest.name,
+                displayOrder: latest.displayOrder,
+                hidden: false
+            )
+        }
+        .sorted {
+            if $0.displayOrder != $1.displayOrder {
+                return $0.displayOrder < $1.displayOrder
+            }
+            return $0.name.localizedCaseInsensitiveCompare($1.name)
+                == .orderedAscending
+        }
+    }
+
+    private func moveCategory(
+        _ category: ManagedSpendingCategory,
+        to destination: ManagedSpendingGroup
+    ) -> Bool {
+        let matches = categories.filter { $0.canonicalId == category.id }
+        guard !matches.isEmpty else { return false }
+        for row in matches {
+            row.categoryGroupIdentity = destination.identity
+            row.groupName = destination.name
+            row.userEdited = true
+            row.updatedAt = .now
+        }
+        return container.modelContainer.mainContext.safeSave(
+            source: "spending.groupManagement.moveCategory"
+        )
+    }
+
+    private func toggleSelection(_ categoryID: String) {
+        if selectedCategoryIDs.contains(categoryID) {
+            selectedCategoryIDs.remove(categoryID)
+        } else {
+            selectedCategoryIDs.insert(categoryID)
+        }
+    }
+
+    private func moveSelectedCategories(to destination: ManagedSpendingGroup) {
+        let matches = categories.filter {
+            selectedCategoryIDs.contains($0.canonicalId)
+        }
+        guard !matches.isEmpty else { return }
+        for row in matches {
+            row.categoryGroupIdentity = destination.identity
+            row.groupName = destination.name
+            row.userEdited = true
+            row.updatedAt = .now
+        }
+        guard container.modelContainer.mainContext.safeSave(
+            source: "spending.groupManagement.moveSelectedCategories"
+        ) else { return }
+        selectedCategoryIDs.removeAll()
+        isSelecting = false
+    }
+}
+
+private struct CategoryGroupPickerSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    let category: ManagedSpendingCategory
+    let groups: [ManagedSpendingGroup]
+    let currentGroupIdentity: String
+    let onMove: (ManagedSpendingCategory, ManagedSpendingGroup) -> Bool
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(groups) { group in
+                    Button {
+                        guard onMove(category, group) else { return }
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text(group.name)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                            Spacer()
+                            if group.identity == currentGroupIdentity {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(NwAppColors.positive)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(group.identity == currentGroupIdentity)
+                }
+            }
+            .navigationTitle("Move \(category.name)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Cancel")
+                }
+            }
         }
     }
 }
@@ -657,15 +1534,25 @@ actor SpendingHistoryBuildActor {
         let groups = try modelContext.fetch(
             FetchDescriptor<DurableCategoryGroup>()
         )
+        let accounts = try modelContext.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        )
         let groupByIdentity = Dictionary(
-            groups.map { ($0.groupIdentity, $0) },
+            groups.sorted { $0.updatedAt > $1.updatedAt }
+                .map { ($0.groupIdentity, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         // CloudKit can duplicate group rows; hiding must win if ANY copy of
         // the identity is hidden, whichever copy other lookups picked.
         let hiddenIdentities = Set(
-            groups.filter { $0.reportingRole == .spending && $0.hidden }
+            groups.filter {
+                SpendingGroupSetup.isUserGroup($0) && $0.hidden
+            }
                 .map(\.groupIdentity)
+        )
+        let accountTypeByIdentity = Dictionary(
+            accounts.map { ($0.canonicalAccountId, $0.type) },
+            uniquingKeysWith: { first, _ in first }
         )
         let categoryByCanonicalID = Dictionary(
             categories.map { ($0.canonicalId, $0) },
@@ -674,19 +1561,69 @@ actor SpendingHistoryBuildActor {
 
         func resolvedGroup(
             categoryCanonicalId: String?
-        ) -> (identity: String, name: String, hidden: Bool)? {
+        ) -> (identity: String, name: String, hidden: Bool) {
             guard let categoryCanonicalId,
                   let category = categoryByCanonicalID[categoryCanonicalId],
                   let identity = category.categoryGroupIdentity,
                   let group = groupByIdentity[identity],
-                  group.reportingRole == .spending else {
-                return nil
+                  SpendingGroupSetup.isUserGroup(group) else {
+                return (
+                    SpendingGroupSetup.unassignedIdentity,
+                    SpendingGroupSetup.unassignedName,
+                    false
+                )
             }
             return (identity, group.name, hiddenIdentities.contains(identity))
         }
 
+        let savingsGroup = resolvedGroup(
+            categoryCanonicalId: SpendingGroupSetup.savingsCategoryIdentity
+        )
+        let investmentGroup = resolvedGroup(
+            categoryCanonicalId: SpendingGroupSetup.investmentCategoryIdentity
+        )
+
         var entries: [SpendingHistoryEntry] = []
         for row in rows {
+            if row.forecastTreatment == .internalTransfer {
+                // Count only the savings-account side. The corresponding
+                // checking row is ignored, preventing a transfer from being
+                // shown twice while preserving net deposits minus withdrawals.
+                guard accountTypeByIdentity[row.canonicalAccountId] == .savings,
+                      !savingsGroup.hidden else { continue }
+                entries.append(SpendingHistoryEntry(
+                    transactionId: row.id,
+                    date: row.postedDate,
+                    amountMilliunits: row.amountMilliunits,
+                    treatment: .internalTransfer,
+                    reportingRole: .transfer,
+                    groupIdentity: savingsGroup.identity,
+                    groupName: savingsGroup.name,
+                    categoryKey: SpendingGroupSetup.savingsCategoryIdentity,
+                    categoryName: "Savings Transfers"
+                ))
+                continue
+            }
+            if row.forecastTreatment == .investmentContribution {
+                // Count the linked cash-account side only. If a provider also
+                // exposes the investment-account counterpart, ignoring it
+                // prevents the contribution from cancelling itself out.
+                guard accountTypeByIdentity[row.canonicalAccountId]?.isCashLike
+                        == true,
+                      !investmentGroup.hidden else { continue }
+                entries.append(SpendingHistoryEntry(
+                    transactionId: row.id,
+                    date: row.postedDate,
+                    amountMilliunits: row.amountMilliunits,
+                    treatment: .investmentContribution,
+                    reportingRole: .investment,
+                    groupIdentity: investmentGroup.identity,
+                    groupName: investmentGroup.name,
+                    categoryKey: SpendingGroupSetup.investmentCategoryIdentity,
+                    categoryName: "Investment Contributions"
+                ))
+                continue
+            }
             let legs = row.subtransactions
             if legs.isEmpty {
                 let group = resolvedGroup(
@@ -694,14 +1631,15 @@ actor SpendingHistoryBuildActor {
                 )
                 // A hidden spending group is excluded from Spending History
                 // entirely — totals, columns, and chart.
-                if group?.hidden == true { continue }
+                if group.hidden { continue }
                 entries.append(SpendingHistoryEntry(
                     transactionId: row.id,
                     date: row.postedDate,
                     amountMilliunits: row.amountMilliunits,
                     treatment: row.forecastTreatment,
-                    groupIdentity: group?.identity,
-                    groupName: group?.name,
+                    reportingRole: .spending,
+                    groupIdentity: group.identity,
+                    groupName: group.name,
                     categoryKey: row.categoryCanonicalId
                         ?? "name:\(row.categoryName ?? "Uncategorized")",
                     categoryName: row.categoryName ?? "Uncategorized"
@@ -716,7 +1654,7 @@ actor SpendingHistoryBuildActor {
                     let group = resolvedGroup(
                         categoryCanonicalId: legCanonicalId
                     )
-                    if group?.hidden == true { continue }
+                    if group.hidden { continue }
                     entries.append(SpendingHistoryEntry(
                         transactionId: row.id,
                         date: row.postedDate,
@@ -729,8 +1667,9 @@ actor SpendingHistoryBuildActor {
                             ?? (row.amountMilliunits < 0
                                 ? row.forecastTreatment
                                 : nil),
-                        groupIdentity: group?.identity,
-                        groupName: group?.name,
+                        reportingRole: .spending,
+                        groupIdentity: group.identity,
+                        groupName: group.name,
                         categoryKey: legCanonicalId
                             ?? "name:\(leg.categoryName ?? "Uncategorized")",
                         categoryName: leg.categoryName ?? "Uncategorized"
@@ -739,8 +1678,30 @@ actor SpendingHistoryBuildActor {
             }
         }
 
+        var seenDefinitions = Set<String>()
+        let groupDefinitions = groups
+            .filter {
+                SpendingGroupSetup.isUserGroup($0)
+                    && !hiddenIdentities.contains($0.groupIdentity)
+            }
+            .sorted {
+                if $0.displayOrder != $1.displayOrder {
+                    return $0.displayOrder < $1.displayOrder
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name)
+                    == .orderedAscending
+            }
+            .filter { seenDefinitions.insert($0.groupIdentity).inserted }
+            .map {
+                SpendingHistoryGroupDefinition(
+                    id: $0.groupIdentity,
+                    name: $0.name
+                )
+            }
+
         let months = SpendingHistoryBuilder.build(
             entries: entries,
+            groups: groupDefinitions,
             monthsBack: monthsBack,
             now: now,
             calendar: calendar
@@ -752,7 +1713,7 @@ actor SpendingHistoryBuildActor {
         var seenIdentities = Set<String>()
         let spendingGroups = groups
             .filter {
-                $0.reportingRole == .spending
+                SpendingGroupSetup.isUserGroup($0)
                     && !hiddenIdentities.contains($0.groupIdentity)
             }
             .sorted {
@@ -774,7 +1735,7 @@ actor SpendingHistoryBuildActor {
         var seenHidden = Set<String>()
         let hiddenGroups = groups
             .filter {
-                $0.reportingRole == .spending
+                SpendingGroupSetup.isUserGroup($0)
                     && hiddenIdentities.contains($0.groupIdentity)
             }
             .filter { seenHidden.insert($0.groupIdentity).inserted }
@@ -858,20 +1819,22 @@ struct SpendingGroupDetailSheet: View {
     ) -> some View {
         List {
             ForEach(transactions(for: category), id: \.id) { row in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.displayName)
-                        Text(row.postedDate.formatted(
-                            date: .abbreviated, time: .omitted
-                        ))
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text(CurrencyFormatter.currency(
-                        displayAmount(for: row, category: category)
-                    ))
-                    .foregroundStyle(.secondary)
+                NavigationLink {
+                    PlaidTransactionReviewEditor(
+                        transaction: row,
+                        matchingTransactions: [row],
+                        dismissAfterSave: true,
+                        onSaved: loadRows
+                    )
+                } label: {
+                    NwTransactionRow(
+                        title: row.displayName,
+                        subtitle: row.postedDate.formatted(
+                            date: .abbreviated,
+                            time: .omitted
+                        ),
+                        amount: displayAmount(for: row, category: category)
+                    )
                 }
             }
         }

@@ -23,6 +23,7 @@ struct SpendingHistoryTests {
         date: Date,
         amount: Money,
         treatment: ForecastTreatment? = .ordinarySpending,
+        reportingRole: CategoryReportingRole? = nil,
         group: (identity: String, name: String)? = ("g:food", "Food"),
         category: (key: String, name: String) = ("c:dining", "Dining")
     ) -> SpendingHistoryEntry {
@@ -31,6 +32,7 @@ struct SpendingHistoryTests {
             date: date,
             amountMilliunits: amount.milliunits,
             treatment: treatment,
+            reportingRole: reportingRole,
             groupIdentity: group?.identity,
             groupName: group?.name,
             categoryKey: category.key,
@@ -70,7 +72,7 @@ struct SpendingHistoryTests {
         #expect(home?.spentMilliunits == Money.dollars(10).milliunits)
     }
 
-    @Test func excludesNonSpendingTreatmentsEverywhere() {
+    @Test func excludesNonReportedTreatmentsEverywhere() {
         let now = day(2026, 8, 4)
         let months = SpendingHistoryBuilder.build(
             entries: [
@@ -107,6 +109,83 @@ struct SpendingHistoryTests {
         )
         #expect(months.count == 1)
         #expect(months[0].totalMilliunits == Money.dollars(50).milliunits)
+    }
+
+    @Test func includesNetSavingsAndInvestmentAlongsideOrdinarySpending() {
+        let now = day(2026, 8, 4)
+        let months = SpendingHistoryBuilder.build(
+            entries: [
+                entry(date: day(2026, 8, 1), amount: Money.dollars(-50)),
+                // Savings deposits use the positive savings-account side;
+                // withdrawals reduce the month's net savings allocation.
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(400),
+                    treatment: .internalTransfer,
+                    reportingRole: .transfer,
+                    group: ("networth:savings", "Savings"),
+                    category: ("networth:savings-transfer", "Savings Transfers")
+                ),
+                entry(
+                    date: day(2026, 8, 2),
+                    amount: Money.dollars(-100),
+                    treatment: .internalTransfer,
+                    reportingRole: .transfer,
+                    group: ("networth:savings", "Savings"),
+                    category: ("networth:savings-transfer", "Savings Transfers")
+                ),
+                // Investment contributions use the negative funding side;
+                // positive withdrawals offset net contributions.
+                entry(
+                    date: day(2026, 8, 2),
+                    amount: Money.dollars(-600),
+                    treatment: .investmentContribution,
+                    reportingRole: .investment,
+                    group: ("networth:investment", "Investment"),
+                    category: ("networth:investment-contribution", "Contributions")
+                ),
+                entry(
+                    date: day(2026, 8, 3),
+                    amount: Money.dollars(75),
+                    treatment: .investmentContribution,
+                    reportingRole: .investment,
+                    group: ("networth:investment", "Investment"),
+                    category: ("networth:investment-contribution", "Contributions")
+                )
+            ],
+            monthsBack: 1,
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(months[0].totalMilliunits == Money.dollars(875).milliunits)
+        #expect(months[0].groups.first {
+            $0.id == "networth:savings"
+        }?.spentMilliunits == Money.dollars(300).milliunits)
+        #expect(months[0].groups.first {
+            $0.id == "networth:investment"
+        }?.spentMilliunits == Money.dollars(525).milliunits)
+    }
+
+    @Test func zeroActivityGroupDefinitionsKeepColumnsStable() {
+        let now = day(2026, 8, 4)
+        let months = SpendingHistoryBuilder.build(
+            entries: [],
+            groups: [
+                SpendingHistoryGroupDefinition(id: "fixed", name: "Fixed"),
+                SpendingHistoryGroupDefinition(id: "savings", name: "Savings")
+            ],
+            monthsBack: 2,
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(months.count == 2)
+        #expect(months.allSatisfy { month in
+            month.totalMilliunits == 0
+                && Set(month.groups.map(\.id)) == ["fixed", "savings"]
+                && month.groups.allSatisfy { $0.spentMilliunits == 0 }
+        })
     }
 
     @Test func monthBoundariesBucketByCivilDayInSuppliedCalendar() {
@@ -283,4 +362,5 @@ struct SpendingHistoryTests {
         #expect(group?.name == SpendingHistoryBuilder.ungroupedName)
         #expect(group?.spentMilliunits == Money.dollars(15).milliunits)
     }
+
 }

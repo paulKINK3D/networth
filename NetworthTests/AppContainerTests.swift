@@ -2624,6 +2624,296 @@ struct AppContainerTests {
         })
     }
 
+    @Test func spendingGroupSetupRetiresDefaultsAndKeepsYNABAsReference() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let settings = DurableUserSettings()
+        settings.spendingGroupSetupVersion = 2
+        context.insert(settings)
+        context.insert(DurableCategoryGroup(
+            groupIdentity: "networth:spending:fixed",
+            name: "Fixed",
+            displayOrder: 0,
+            reportingRole: .spending
+        ))
+        context.insert(DurableCategoryGroup(
+            groupIdentity: "networth:spending:surplus",
+            name: "Fun Money",
+            displayOrder: 1,
+            reportingRole: .spending
+        ))
+        let imported = DurableCategoryGroup(
+            groupIdentity: "ynab:household",
+            name: "Household",
+            displayOrder: 2,
+            reportingRole: .spending
+        )
+        context.insert(imported)
+        context.insert(DurableCanonicalCategory(
+            canonicalId: "ynab:rent",
+            name: "Rent",
+            groupName: "Fixed",
+            categoryGroupIdentity: "networth:spending:fixed"
+        ))
+        context.insert(DurableCanonicalCategory(
+            canonicalId: "ynab:groceries",
+            name: "Groceries",
+            groupName: "Household",
+            categoryGroupIdentity: "ynab:household"
+        ))
+        try context.save()
+
+        SpendingGroupSetup.ensure(in: context)
+
+        let groups = try context.fetch(
+            FetchDescriptor<DurableCategoryGroup>()
+        )
+        #expect(
+            settings.spendingGroupSetupVersion
+                == SpendingGroupSetup.userOwnedGroupsVersion
+        )
+        let retiredFixed = try #require(groups.first {
+            $0.groupIdentity == "networth:spending:fixed"
+        })
+        #expect(retiredFixed.hidden)
+        #expect(!SpendingGroupSetup.isUserGroup(retiredFixed))
+
+        let renamedGroup = try #require(groups.first {
+            $0.groupIdentity == "networth:spending:surplus"
+        })
+        #expect(!renamedGroup.hidden)
+        #expect(SpendingGroupSetup.isUserGroup(renamedGroup))
+        #expect(!SpendingGroupSetup.isUserGroup(imported))
+
+        let categories = try context.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )
+        let rent = try #require(categories.first {
+            $0.canonicalId == "ynab:rent"
+        })
+        #expect(rent.categoryGroupIdentity == nil)
+        let groceries = try #require(categories.first {
+            $0.canonicalId == "ynab:groceries"
+        })
+        #expect(groceries.categoryGroupIdentity == "ynab:household")
+        #expect(SpendingGroupSetup.isAssignableCategory(
+            groceries,
+            groupByIdentity: [imported.groupIdentity: imported]
+        ))
+        #expect(SpendingGroupSetup.isUnassignedCategory(
+            groceries,
+            userGroupIdentities: [renamedGroup.groupIdentity]
+        ))
+        #expect(!categories.contains {
+            SpendingGroupSetup.automaticCategoryIdentities.contains(
+                $0.canonicalId
+            )
+        })
+
+        SpendingGroupSetup.ensure(in: context)
+        let afterSecondRun = try context.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )
+        #expect(!afterSecondRun.contains {
+            SpendingGroupSetup.automaticCategoryIdentities.contains(
+                $0.canonicalId
+            )
+        })
+    }
+
+    @Test func completedPlaidReviewPrunesOnlyUnreferencedCategories() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let settings = DurableUserSettings()
+        settings.spendingGroupSetupVersion =
+            SpendingGroupSetup.userOwnedGroupsVersion
+        settings.firstPlaidSyncCompletedAt = .now
+        context.insert(settings)
+        for (id, name) in [
+            ("category:used", "Used"),
+            ("category:future", "Future"),
+            ("category:orphan", "Orphan")
+        ] {
+            context.insert(DurableCanonicalCategory(
+                canonicalId: id,
+                name: name
+            ))
+        }
+        context.insert(DurableRecurringExpectation(
+            accountCanonicalId: "checking",
+            categoryCanonicalId: "category:future",
+            categoryName: "Future"
+        ))
+        let summary = FinancialTransactionSummary(
+            id: "plaid:used",
+            externalId: "used",
+            source: .plaid,
+            accountId: "checking",
+            postedDate: .now,
+            authorizedDate: nil,
+            amount: Money(milliunits: -25_000),
+            pending: false,
+            pendingTransactionId: nil,
+            rawDescription: "Used",
+            originalDescription: nil,
+            providerMerchantName: "Used",
+            merchantEntityId: nil,
+            counterpartyName: nil,
+            counterpartyType: nil,
+            counterpartyEntityId: nil,
+            counterpartyConfidence: nil,
+            paymentChannel: nil,
+            providerCategoryPrimary: nil,
+            providerCategoryDetailed: nil,
+            providerCategoryConfidence: nil,
+            transactionCode: nil
+        )
+        let transaction = CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassification(
+                displayName: "Used",
+                category: .other,
+                categoryName: "Used",
+                treatment: .ordinarySpending,
+                confidence: .high,
+                provenance: .user,
+                requiresReview: false
+            ),
+            requiresNameReview: false
+        )
+        transaction.categoryCanonicalId = "category:used"
+        context.insert(transaction)
+        try context.save()
+
+        SpendingGroupSetup.ensure(in: context)
+
+        let categories = try context.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )
+        #expect(settings.spendingGroupSetupVersion == SpendingGroupSetup.currentVersion)
+        #expect(categories.contains { $0.canonicalId == "category:used" })
+        #expect(categories.contains { $0.canonicalId == "category:future" })
+        #expect(!categories.contains { $0.canonicalId == "category:orphan" })
+    }
+
+    @Test func spendingHistoryUsesOnlyUserGroupsAndMarksYNABAssignmentsUnassigned() async throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let importedGroup = DurableCategoryGroup(
+            groupIdentity: "ynab:living",
+            name: "Living",
+            reportingRole: .spending
+        )
+        let userGroup = DurableCategoryGroup(
+            groupIdentity: "networth:spending:user:daily",
+            name: "Daily Life",
+            reportingRole: .spending
+        )
+        context.insert(importedGroup)
+        context.insert(userGroup)
+        context.insert(DurableCanonicalCategory(
+            canonicalId: "ynab:groceries",
+            name: "Groceries",
+            groupName: "Living",
+            categoryGroupIdentity: importedGroup.groupIdentity
+        ))
+        context.insert(DurableCanonicalCategory(
+            canonicalId: "networth:dining",
+            name: "Dining",
+            groupName: userGroup.name,
+            categoryGroupIdentity: userGroup.groupIdentity
+        ))
+
+        let calendar = Calendar.current
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 5,
+            hour: 12
+        )))
+        func transaction(
+            id: String,
+            amount: Int64,
+            category: NativeTransactionCategory,
+            categoryName: String,
+            categoryCanonicalId: String
+        ) -> CachedFinancialTransaction {
+            let summary = FinancialTransactionSummary(
+                id: id,
+                externalId: id,
+                source: .plaid,
+                accountId: "checking",
+                postedDate: now,
+                authorizedDate: nil,
+                amount: Money(milliunits: amount),
+                pending: false,
+                pendingTransactionId: nil,
+                rawDescription: categoryName,
+                originalDescription: nil,
+                providerMerchantName: categoryName,
+                merchantEntityId: nil,
+                counterpartyName: nil,
+                counterpartyType: nil,
+                counterpartyEntityId: nil,
+                counterpartyConfidence: nil,
+                paymentChannel: nil,
+                providerCategoryPrimary: nil,
+                providerCategoryDetailed: nil,
+                providerCategoryConfidence: nil,
+                transactionCode: nil
+            )
+            let row = CachedFinancialTransaction(
+                summary: summary,
+                classification: TransactionClassification(
+                    displayName: categoryName,
+                    category: category,
+                    categoryName: categoryName,
+                    treatment: .ordinarySpending,
+                    confidence: .high,
+                    provenance: .user,
+                    requiresReview: false
+                ),
+                requiresNameReview: false
+            )
+            row.categoryCanonicalId = categoryCanonicalId
+            return row
+        }
+        context.insert(transaction(
+            id: "groceries",
+            amount: -100_000,
+            category: .groceries,
+            categoryName: "Groceries",
+            categoryCanonicalId: "ynab:groceries"
+        ))
+        context.insert(transaction(
+            id: "dining",
+            amount: -50_000,
+            category: .dining,
+            categoryName: "Dining",
+            categoryCanonicalId: "networth:dining"
+        ))
+        try context.save()
+
+        let actor = SpendingHistoryBuildActor(modelContainer: modelContainer)
+        let model = try await actor.build(now: now, monthsBack: 1)
+        let month = try #require(model.months.first)
+
+        #expect(month.groups.contains {
+            $0.id == userGroup.groupIdentity && $0.spentMilliunits == 50_000
+        })
+        #expect(month.groups.contains {
+            $0.id == "networth:spending:unassigned"
+                && $0.spentMilliunits == 100_000
+        })
+        #expect(!month.groups.contains { $0.id == importedGroup.groupIdentity })
+    }
+
     @Test func confirmRejectsIncompatibleTypeCategoryCombination() throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let ctx = modelContainer.mainContext

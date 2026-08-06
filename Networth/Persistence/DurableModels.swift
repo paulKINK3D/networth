@@ -267,6 +267,12 @@ public final class DurableUserSettings {
     /// new Net Worth snapshot: history starts on that date and is never
     /// reconstructed from YNAB.
     public var firstPlaidSyncCompletedAt: Date? = nil
+    /// One-time setup marker for the standard Spending destinations. This is
+    /// additive and defaulted, so legacy CloudKit rows hydrate at version 0;
+    /// Version 3 retires seeded destinations. Version 4 prunes true category
+    /// orphans only after Plaid sync and review completion while retaining
+    /// durable transaction, split, and recurring-expectation references.
+    public var spendingGroupSetupVersion: Int = 0
 
     public init(id: String = "singleton") { self.id = id }
 
