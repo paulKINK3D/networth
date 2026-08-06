@@ -194,9 +194,32 @@ struct SpendingHistoryTests {
             now: now,
             calendar: calendar
         )
-        #expect(months[0].totalMilliunits == Money.dollars(-60).milliunits)
+        // The group keeps its honest negative net for inspection, but the
+        // month headline clamps it to zero — refund inflow must never erase
+        // other groups' spending from the total.
+        #expect(months[0].totalMilliunits == 0)
         #expect(months[0].groups.first?.spentMilliunits
             == Money.dollars(-60).milliunits)
+    }
+
+    @Test func netNegativeGroupDoesNotEraseOtherGroupsFromTotal() {
+        let now = day(2026, 8, 4)
+        let months = SpendingHistoryBuilder.build(
+            entries: [
+                entry(date: day(2026, 8, 1), amount: Money.dollars(-500)),
+                entry(
+                    date: day(2026, 8, 2),
+                    amount: Money.dollars(900),
+                    treatment: .refund,
+                    group: ("g:reimb", "Reimbursement"),
+                    category: ("c:reimb", "Reimbursement")
+                )
+            ],
+            monthsBack: 1,
+            now: now,
+            calendar: calendar
+        )
+        #expect(months[0].totalMilliunits == Money.dollars(500).milliunits)
     }
 
     @Test func windowBoundariesAreInclusive() {

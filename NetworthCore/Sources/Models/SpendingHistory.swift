@@ -223,7 +223,13 @@ public enum SpendingHistoryBuilder {
             }
             return SpendingHistoryMonth(
                 month: month,
-                totalMilliunits: groups.reduce(0) { $0 + $1.spentMilliunits },
+                // A net-negative group is refund inflow exceeding spending
+                // (usually misclassified income/reimbursements) — it must not
+                // erase other groups' real spending from the headline. Clamp
+                // to zero so the total matches the visible group columns.
+                totalMilliunits: groups.reduce(0) {
+                    $0 + max(0, $1.spentMilliunits)
+                },
                 groups: groups
             )
         }

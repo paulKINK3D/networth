@@ -278,7 +278,11 @@ struct SpendingHistoryView: View {
             VStack(spacing: NwSpacing.xs) {
                 Text(CurrencyFormatter.currency(group.spent, showCents: false))
                     .font(NwTypography.caption)
-                    .foregroundStyle(NwAppColors.textPrimary)
+                    .foregroundStyle(
+                        group.spentMilliunits < 0
+                            ? NwAppColors.liability
+                            : NwAppColors.textPrimary
+                    )
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
