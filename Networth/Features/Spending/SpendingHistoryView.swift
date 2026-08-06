@@ -231,16 +231,24 @@ struct SpendingHistoryView: View {
                     }
                 }
                 if let model, !model.hiddenGroups.isEmpty {
-                    HStack(spacing: NwSpacing.sm) {
-                        Text("Hidden:")
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
-                        ForEach(model.hiddenGroups) { hidden in
-                            Button(hidden.name) {
-                                setGroupHidden(hidden.identity, hidden: false)
+                    HStack {
+                        Spacer()
+                        Menu {
+                            ForEach(model.hiddenGroups) { hidden in
+                                Button {
+                                    setGroupHidden(hidden.identity, hidden: false)
+                                } label: {
+                                    Label(hidden.name, systemImage: "eye")
+                                }
                             }
-                            .font(NwTypography.footnote)
+                        } label: {
+                            Image(systemName: "eye.slash")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, NwSpacing.xs)
+                                .contentShape(Rectangle())
                         }
+                        .accessibilityLabel("Hidden groups")
                     }
                 }
             }
@@ -299,7 +307,6 @@ struct SpendingHistoryView: View {
                     .font(NwTypography.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.5)
                     .frame(maxWidth: flexible ? .infinity : 72)
             }
             .frame(maxWidth: flexible ? .infinity : nil)
@@ -322,7 +329,8 @@ struct SpendingHistoryView: View {
     }
 
     /// Hiding removes the group from every Spending History total, column,
-    /// and chart stack until unhidden via the "Hidden:" row.
+    /// and chart stack until unhidden via the eye-slash menu on the columns
+    /// card.
     private func setGroupHidden(_ identity: String, hidden: Bool) {
         let ctx = container.modelContainer.mainContext
         let rows = (try? ctx.fetch(

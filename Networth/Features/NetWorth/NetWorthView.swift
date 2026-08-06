@@ -121,6 +121,9 @@ struct NetWorthView: View {
     /// Currently scrubbed date on the trend chart. `nil` when the user isn't
     /// touching the chart.
     @State private var scrubbedDate: Date? = nil
+    /// Trend chart disclosure. Deliberately not persisted — the chart starts
+    /// collapsed on every visit while post-clean-start history accrues.
+    @State private var isChartExpanded = false
 
     enum Range: String, CaseIterable, Identifiable {
         case threeMonths = "3M"
@@ -451,61 +454,83 @@ struct NetWorthView: View {
     }
 
     private var chartCard: some View {
-        let visible = filteredSnapshots()
-        return NwCard(style: .primary) {
+        NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
-                HStack {
-                    Text("Net Worth Trend")
-                        .font(NwTypography.headline)
-                    Spacer()
-                    Button {
-                        showingTrendDetail = true
-                    } label: {
-                        Image(systemName: "info.circle")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Net worth trend details")
-                }
-                Picker("Trend range", selection: $range) {
-                    ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-
-                if visible.count < 2 {
-                    Text("More history needed.")
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                        .font(NwTypography.footnote)
-                        .frame(height: 180, alignment: .center)
-                        .frame(maxWidth: .infinity)
-                } else {
-                    scrubReadout(visible: visible)
-                    Chart(visible) { snap in
-                        AreaMark(
-                            x: .value("Date", snap.date),
-                            y: .value("Net Worth", snap.netWorth.doubleValue)
-                        )
-                        .foregroundStyle(.linearGradient(
-                            colors: [NwAppColors.primary.opacity(0.5), NwAppColors.primary.opacity(0.05)],
-                            startPoint: .top, endPoint: .bottom
-                        ))
-                        LineMark(
-                            x: .value("Date", snap.date),
-                            y: .value("Net Worth", snap.netWorth.doubleValue)
-                        )
-                        .foregroundStyle(NwAppColors.primary)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5))
-                        if let scrubbed = scrubbedDate {
-                            RuleMark(x: .value("Scrubbed", scrubbed))
-                                .foregroundStyle(NwAppColors.primary.opacity(0.5))
-                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                        }
-                    }
-                    .chartXSelection(value: $scrubbedDate)
-                    .frame(height: 220)
+                chartHeader
+                if isChartExpanded {
+                    chartContent(visible: filteredSnapshots())
                 }
             }
+        }
+    }
+
+    private var chartHeader: some View {
+        HStack {
+            Text("Net Worth Trend")
+                .font(NwTypography.headline)
+            if isChartExpanded {
+                Button {
+                    showingTrendDetail = true
+                } label: {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Net worth trend details")
+            }
+            Spacer()
+            Image(systemName: isChartExpanded ? "chevron.up" : "chevron.down")
+                .font(NwTypography.footnoteEm)
+                .foregroundStyle(.secondary)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isChartExpanded.toggle()
+                if !isChartExpanded { scrubbedDate = nil }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func chartContent(visible: [NetWorthTrendPoint]) -> some View {
+        Picker("Trend range", selection: $range) {
+            ForEach(Range.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+
+        if visible.count < 2 {
+            Text("More history needed.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .font(NwTypography.footnote)
+                .frame(height: 180, alignment: .center)
+                .frame(maxWidth: .infinity)
+        } else {
+            scrubReadout(visible: visible)
+            Chart(visible) { snap in
+                AreaMark(
+                    x: .value("Date", snap.date),
+                    y: .value("Net Worth", snap.netWorth.doubleValue)
+                )
+                .foregroundStyle(.linearGradient(
+                    colors: [NwAppColors.primary.opacity(0.5), NwAppColors.primary.opacity(0.05)],
+                    startPoint: .top, endPoint: .bottom
+                ))
+                LineMark(
+                    x: .value("Date", snap.date),
+                    y: .value("Net Worth", snap.netWorth.doubleValue)
+                )
+                .foregroundStyle(NwAppColors.primary)
+                .lineStyle(StrokeStyle(lineWidth: 2.5))
+                if let scrubbed = scrubbedDate {
+                    RuleMark(x: .value("Scrubbed", scrubbed))
+                        .foregroundStyle(NwAppColors.primary.opacity(0.5))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                }
+            }
+            .chartXSelection(value: $scrubbedDate)
+            .frame(height: 220)
         }
     }
 
