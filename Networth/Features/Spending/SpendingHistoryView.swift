@@ -713,8 +713,14 @@ actor SpendingHistoryBuildActor {
                         transactionId: row.id,
                         date: row.postedDate,
                         amountMilliunits: leg.amount.milliunits,
+                        // An unmarked part of an INCOMING split must not
+                        // inherit the whole-transaction Reimbursement label
+                        // and offset spending; nil excludes it. Outgoing
+                        // splits are ordinary spending either way.
                         treatment: leg.forecastTreatment
-                            ?? row.forecastTreatment,
+                            ?? (row.amountMilliunits < 0
+                                ? row.forecastTreatment
+                                : nil),
                         groupIdentity: group?.identity,
                         groupName: group?.name,
                         categoryKey: legCanonicalId

@@ -3146,14 +3146,22 @@ struct PlaidTransactionReviewEditor: View {
         )
         _treatment = State(initialValue: transaction.forecastTreatment)
         let existingDrafts = transaction.subtransactions.map {
+            // Show exactly what's stored. A part with no explicit choice and
+            // no recognizable name stays UNSET — silently prefilling it as
+            // Reimbursement converted income on the next save.
             let splitTreatment: ForecastTreatment? =
                 if transaction.amountMilliunits > 0 {
-                    $0.forecastTreatment == .income
-                        || $0.categoryName?
-                            .localizedCaseInsensitiveContains("income")
-                            == true
-                        ? .income
-                        : .refund
+                    if let stored = $0.forecastTreatment {
+                        stored
+                    } else if $0.categoryName?
+                        .localizedCaseInsensitiveContains("income") == true {
+                        .income
+                    } else if $0.categoryName?
+                        .localizedCaseInsensitiveContains("reimburse") == true {
+                        .refund
+                    } else {
+                        nil
+                    }
                 } else {
                     nil
                 }
@@ -3424,25 +3432,19 @@ struct PlaidTransactionReviewEditor: View {
     private var typeControls: some View {
         NwCard(style: .primary, padding: 0) {
             VStack(spacing: 0) {
-                Picker("Transaction type", selection: $treatment) {
-                    ForEach(ForecastTreatment.allCases, id: \.self) {
-                        Text($0.displayName).tag($0)
+                if isSplit {
+                    // Per-part classifications rule a split; the stored
+                    // whole-transaction treatment (Reimbursement for any
+                    // mixed split) reads as data loss if shown here.
+                    HStack {
+                        Text("Transaction type")
+                        Spacer()
+                        Text("Split")
+                            .foregroundStyle(.secondary)
                     }
-                }
-                .pickerStyle(.menu)
-                .padding(NwSpacing.md)
-                .onChange(of: treatment) {
-                    // A type change invalidates a selected category whose
-                    // group role no longer fits the new type.
-                    if let id = categoryCanonicalId,
-                       let selected = activeCategoryByID[id],
-                       !TransactionTypeRules.isValidCombination(
-                           treatment: treatment,
-                           categoryRole: selected.role
-                       ) {
-                        categoryCanonicalId = nil
-                        categoryName = ""
-                    }
+                    .padding(NwSpacing.md)
+                } else {
+                    typePicker
                 }
 
                 Divider()
@@ -3451,6 +3453,29 @@ struct PlaidTransactionReviewEditor: View {
                         splitSaveError = nil
                     }
                     .padding(NwSpacing.md)
+            }
+        }
+    }
+
+    private var typePicker: some View {
+        Picker("Transaction type", selection: $treatment) {
+            ForEach(ForecastTreatment.allCases, id: \.self) {
+                Text($0.displayName).tag($0)
+            }
+        }
+        .pickerStyle(.menu)
+        .padding(NwSpacing.md)
+        .onChange(of: treatment) {
+            // A type change invalidates a selected category whose
+            // group role no longer fits the new type.
+            if let id = categoryCanonicalId,
+               let selected = activeCategoryByID[id],
+               !TransactionTypeRules.isValidCombination(
+                   treatment: treatment,
+                   categoryRole: selected.role
+               ) {
+                categoryCanonicalId = nil
+                categoryName = ""
             }
         }
     }
@@ -3580,6 +3605,8 @@ struct PlaidTransactionReviewEditor: View {
                                         "Classification",
                                         selection: $draft.treatment
                                     ) {
+                                        Text("Select")
+                                            .tag(ForecastTreatment?.none)
                                         Text("Income")
                                             .tag(
                                                 Optional(
