@@ -1126,6 +1126,8 @@ private struct FinancialAccountTransactionHistoryView: View {
     @State private var isLoading = false
     @State private var hasMore = true
     @State private var loadError: String?
+    @State private var searchText = ""
+    @State private var submittedQuery = ""
 
     private static let pageSize = 50
 
@@ -1133,8 +1135,10 @@ private struct FinancialAccountTransactionHistoryView: View {
         List {
             if transactions.isEmpty, !isLoading, loadError == nil {
                 NwEmptyState(
-                    title: "No transactions",
-                    message: "Posted transactions will appear here.",
+                    title: submittedQuery.isEmpty ? "No transactions" : "No matches",
+                    message: submittedQuery.isEmpty
+                        ? "Posted transactions will appear here."
+                        : "No transactions match “\(submittedQuery)”.",
                     icon: .empty
                 )
                 .listRowBackground(Color.clear)
@@ -1187,10 +1191,38 @@ private struct FinancialAccountTransactionHistoryView: View {
         }
         .navigationTitle("Transactions")
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(
+            text: $searchText,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Search transactions"
+        )
+        // Search runs only on the keyboard's Search key — filtering 3k rows
+        // per keystroke would stutter, and partial words match noise.
+        .onSubmit(of: .search) { applySearch() }
+        .onChange(of: searchText) {
+            if searchText.isEmpty, !submittedQuery.isEmpty {
+                submittedQuery = ""
+                restartLoad()
+            }
+        }
         .task {
             guard transactions.isEmpty else { return }
             loadNextPage()
         }
+    }
+
+    private func applySearch() {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != submittedQuery else { return }
+        submittedQuery = trimmed
+        restartLoad()
+    }
+
+    private func restartLoad() {
+        transactions = []
+        hasMore = true
+        loadError = nil
+        loadNextPage()
     }
 
     private func loadNextPage() {
@@ -1201,6 +1233,7 @@ private struct FinancialAccountTransactionHistoryView: View {
         do {
             let page = try FinancialTransactionPageFetcher.fetch(
                 accountID: account.canonicalAccountId,
+                query: submittedQuery,
                 offset: transactions.count,
                 limit: Self.pageSize,
                 context: modelContext
@@ -1239,21 +1272,40 @@ private func financialTransactionSubtitle(
 enum FinancialTransactionPageFetcher {
     static func fetch(
         accountID: String,
+        query: String = "",
         offset: Int,
         limit: Int = 50,
         context: ModelContext
     ) throws -> [CachedFinancialTransaction] {
-        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
-            predicate: #Predicate {
-                $0.canonicalAccountId == accountID
-                    && $0.deleted == false
-                    && $0.pending == false
-            },
-            sortBy: [
-                SortDescriptor(\.postedDate, order: .reverse),
-                SortDescriptor(\.id)
-            ]
-        )
+        let sort = [
+            SortDescriptor(\CachedFinancialTransaction.postedDate, order: .reverse),
+            SortDescriptor(\CachedFinancialTransaction.id)
+        ]
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var descriptor: FetchDescriptor<CachedFinancialTransaction>
+        if trimmed.isEmpty {
+            descriptor = FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    $0.canonicalAccountId == accountID
+                        && $0.deleted == false
+                        && $0.pending == false
+                },
+                sortBy: sort
+            )
+        } else {
+            descriptor = FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    $0.canonicalAccountId == accountID
+                        && $0.deleted == false
+                        && $0.pending == false
+                        && ($0.displayName.localizedStandardContains(trimmed)
+                            || $0.rawDescription.localizedStandardContains(trimmed)
+                            || $0.providerMerchantName?
+                                .localizedStandardContains(trimmed) == true)
+                },
+                sortBy: sort
+            )
+        }
         descriptor.fetchLimit = limit
         descriptor.fetchOffset = offset
         return try context.fetch(descriptor)
