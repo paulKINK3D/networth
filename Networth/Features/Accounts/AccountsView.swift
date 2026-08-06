@@ -1118,9 +1118,11 @@ private struct FinancialAccountDetailView: View {
     }
 }
 
-private struct FinancialAccountTransactionHistoryView: View {
+/// Paged posted-transaction history for one account, or for every account
+/// when `account` is nil (the Net Worth tab's "All Transactions" entry).
+struct FinancialAccountTransactionHistoryView: View {
     @Environment(\.modelContext) private var modelContext
-    let account: CachedFinancialAccount
+    var account: CachedFinancialAccount? = nil
 
     @State private var transactions: [CachedFinancialTransaction] = []
     @State private var isLoading = false
@@ -1189,7 +1191,7 @@ private struct FinancialAccountTransactionHistoryView: View {
                 }
             }
         }
-        .navigationTitle("Transactions")
+        .navigationTitle(account == nil ? "All Transactions" : "Transactions")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
             text: $searchText,
@@ -1232,7 +1234,7 @@ private struct FinancialAccountTransactionHistoryView: View {
 
         do {
             let page = try FinancialTransactionPageFetcher.fetch(
-                accountID: account.canonicalAccountId,
+                accountID: account?.canonicalAccountId,
                 query: submittedQuery,
                 offset: transactions.count,
                 limit: Self.pageSize,
@@ -1270,8 +1272,9 @@ private func financialTransactionSubtitle(
 
 @MainActor
 enum FinancialTransactionPageFetcher {
+    /// `accountID == nil` pages across every account.
     static func fetch(
-        accountID: String,
+        accountID: String?,
         query: String = "",
         offset: Int,
         limit: Int = 50,
@@ -1282,30 +1285,42 @@ enum FinancialTransactionPageFetcher {
             SortDescriptor(\CachedFinancialTransaction.id)
         ]
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        var descriptor: FetchDescriptor<CachedFinancialTransaction>
-        if trimmed.isEmpty {
-            descriptor = FetchDescriptor<CachedFinancialTransaction>(
-                predicate: #Predicate {
-                    $0.canonicalAccountId == accountID
-                        && $0.deleted == false
-                        && $0.pending == false
-                },
-                sortBy: sort
-            )
-        } else {
-            descriptor = FetchDescriptor<CachedFinancialTransaction>(
-                predicate: #Predicate {
-                    $0.canonicalAccountId == accountID
-                        && $0.deleted == false
-                        && $0.pending == false
-                        && ($0.displayName.localizedStandardContains(trimmed)
-                            || $0.rawDescription.localizedStandardContains(trimmed)
-                            || $0.providerMerchantName?
-                                .localizedStandardContains(trimmed) == true)
-                },
-                sortBy: sort
-            )
+        let predicate: Predicate<CachedFinancialTransaction>
+        switch (accountID, trimmed.isEmpty) {
+        case (let id?, true):
+            predicate = #Predicate {
+                $0.canonicalAccountId == id
+                    && $0.deleted == false
+                    && $0.pending == false
+            }
+        case (let id?, false):
+            predicate = #Predicate {
+                $0.canonicalAccountId == id
+                    && $0.deleted == false
+                    && $0.pending == false
+                    && ($0.displayName.localizedStandardContains(trimmed)
+                        || $0.rawDescription.localizedStandardContains(trimmed)
+                        || $0.providerMerchantName?
+                            .localizedStandardContains(trimmed) == true)
+            }
+        case (nil, true):
+            predicate = #Predicate {
+                $0.deleted == false && $0.pending == false
+            }
+        case (nil, false):
+            predicate = #Predicate {
+                $0.deleted == false
+                    && $0.pending == false
+                    && ($0.displayName.localizedStandardContains(trimmed)
+                        || $0.rawDescription.localizedStandardContains(trimmed)
+                        || $0.providerMerchantName?
+                            .localizedStandardContains(trimmed) == true)
+            }
         }
+        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: predicate,
+            sortBy: sort
+        )
         descriptor.fetchLimit = limit
         descriptor.fetchOffset = offset
         return try context.fetch(descriptor)
