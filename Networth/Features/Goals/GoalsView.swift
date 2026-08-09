@@ -428,7 +428,7 @@ actor GoalsBuildActor {
             let pipelineContext = SpendingEntryPipeline.Context(
                 groups: groups, categories: categories, accounts: accounts
             )
-            let entries = SpendingEntryPipeline.adjustedVisibleEntries(
+            let entries = SpendingEntryPipeline.adjustedEntries(
                 rows: rows, ledgerEntries: ledgerRows,
                 context: pipelineContext
             )

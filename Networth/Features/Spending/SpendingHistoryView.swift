@@ -37,7 +37,7 @@ struct SpendingHistoryView: View {
                         monthHeader(model)
                         if let month = displayedMonth(model) {
                             monthTotalCard(month, model: model)
-                            groupColumns(month)
+                            spendingBreakdown(month, model: model)
                         }
                         historyChartCard(model)
                     } else {
@@ -63,7 +63,6 @@ struct SpendingHistoryView: View {
             }
         }
         .task {
-            ensureSpendingGroupSetup()
             await rebuild()
         }
         .onReceive(
@@ -168,7 +167,21 @@ struct SpendingHistoryView: View {
                 Text("Spent")
                     .font(NwTypography.caption)
                     .foregroundStyle(.secondary)
-                NwAmountText(month.total, variant: .hero, showCents: false)
+                HStack(alignment: .firstTextBaseline, spacing: NwSpacing.sm) {
+                    NwAmountText(
+                        month.ordinaryTotal,
+                        variant: .hero,
+                        showCents: false
+                    )
+                    if let typical = typicalMonthlySpend(model) {
+                        Text("/ \(CurrencyFormatter.currency(typical, showCents: false))")
+                            .font(NwTypography.title)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -197,6 +210,21 @@ struct SpendingHistoryView: View {
         .accessibilityHint("Double-tap to show all spending history")
     }
 
+    /// A quiet reference point for the "Spent" headline: the median out-of-
+    /// pocket monthly total across complete (non-current) months, on the same
+    /// basis as the headline so the "$spent / $typical" pair is apples-to-
+    /// apples. Same helper Goals uses for its emergency median. Nil until there
+    /// are at least two complete months; the in-progress month is excluded so
+    /// it can't skew the anchor.
+    private func typicalMonthlySpend(_ model: SpendingHistoryModel) -> Money? {
+        let completeMonths = model.months
+            .filter { !isCurrentMonth($0.month) }
+            .sorted { $0.month < $1.month }
+            .suffix(12)
+            .map(\.ordinaryTotal)
+        return EmergencyFundMath.medianOfCompleteMonths(Array(completeMonths))
+    }
+
     private func moveDisplayedMonth(
         in model: SpendingHistoryModel,
         by offset: Int
@@ -210,65 +238,59 @@ struct SpendingHistoryView: View {
         selectedMonth = model.months[destination].month
     }
 
-    /// Vertical columns for the selected month's groups in the user's group
-    /// order; tapping a column selects that group's 24-month history. Few
-    /// groups share the full width; many scroll.
-    private func groupColumns(_ month: SpendingHistoryMonth) -> some View {
+    /// The month's out-of-pocket spending as a pie, sized against a normal
+    /// month. The gray disc is the typical monthly spend (the same "/typical"
+    /// figure shown beside the headline); the colored pie is this month, scaled
+    /// by *area* so a below-normal month nests visibly inside the gray and a
+    /// dashed ring always marks the typical level. The colored slices are the
+    /// ordinary spending groups, which together sum to the "Spent" headline —
+    /// there is no per-group budget, so the only reference is your own history.
+    /// The legend below carries selection and reorder, and marks
+    /// non-spending groups (transfers, savings, investing, unassigned) with a
+    /// hollow swatch since they sit outside the pie.
+    private func spendingBreakdown(
+        _ month: SpendingHistoryMonth,
+        model: SpendingHistoryModel
+    ) -> some View {
         let groups = orderedGroups(in: month)
-        let maxSpent = max(groups.map(\.spentMilliunits).max() ?? 1, 1)
-        return NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+        let currentTotal = Double(max(0, month.ordinaryTotalMilliunits))
+        let typical = typicalMonthlySpend(model)
+            .map { Double($0.milliunits) } ?? currentTotal
+        let slices: [SpendingSlice] = groups
+            .filter { $0.isOrdinarySpending && $0.spentMilliunits > 0 }
+            .map {
+                SpendingSlice(
+                    id: $0.id,
+                    value: Double($0.spentMilliunits),
+                    color: color(for: $0.id)
+                )
+            }
+        return NwCard(style: .primary, padding: 0) {
+            VStack(spacing: 0) {
                 if groups.isEmpty {
                     Text("No approved spending this month.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                } else if groups.count <= 5 {
-                    HStack(alignment: .bottom, spacing: NwSpacing.md) {
-                        ForEach(groups) { group in
-                            groupColumn(
-                                group,
-                                month: month,
-                                maxSpent: maxSpent,
-                                flexible: true
-                            )
-                        }
-                    }
-                    .padding(.top, NwSpacing.xs)
+                        .padding(NwSpacing.md)
                 } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .bottom, spacing: NwSpacing.md) {
-                            ForEach(groups) { group in
-                                groupColumn(
-                                    group,
-                                    month: month,
-                                    maxSpent: maxSpent,
-                                    flexible: false
-                                )
-                            }
+                    NestedSpendingPie(
+                        slices: slices,
+                        currentTotal: currentTotal,
+                        typicalTotal: max(0, typical)
+                    )
+                    .frame(height: 200)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, NwSpacing.lg)
+                    .padding(.bottom, NwSpacing.md)
+                    .accessibilityLabel("Spending versus a typical month")
+                    Divider().padding(.leading, NwSpacing.md)
+                    ForEach(Array(groups.enumerated()), id: \.element.id) {
+                        index, group in
+                        legendRow(group, month: month)
+                        if index < groups.count - 1 {
+                            Divider().padding(.leading, NwSpacing.md)
                         }
-                        .padding(.top, NwSpacing.xs)
-                    }
-                }
-                if let model, !model.hiddenGroups.isEmpty {
-                    HStack {
-                        Spacer()
-                        Menu {
-                            ForEach(model.hiddenGroups) { hidden in
-                                Button {
-                                    setGroupHidden(hidden.identity, hidden: false)
-                                } label: {
-                                    Label(hidden.name, systemImage: "eye")
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "eye.slash")
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(.secondary)
-                                .padding(.top, NwSpacing.xs)
-                                .contentShape(Rectangle())
-                        }
-                        .accessibilityLabel("Hidden groups")
                     }
                 }
             }
@@ -288,97 +310,92 @@ struct SpendingHistoryView: View {
         }
     }
 
-    private func groupColumn(
+    /// A legend row beneath the pie: color key, group name, and amount. A
+    /// filled swatch matches a pie slice; a hollow swatch marks a group that
+    /// sits outside the spending pie (transfers, savings, investing,
+    /// unassigned). Tapping opens the selected month's category and transaction
+    /// detail while also selecting the group's 24-month history. The context
+    /// menu keeps the quick reorder action available.
+    private func legendRow(
         _ group: SpendingHistoryGroupTotal,
-        month: SpendingHistoryMonth,
-        maxSpent: Int64,
-        flexible: Bool
+        month: SpendingHistoryMonth
     ) -> some View {
         let isSelected = selectedChartSeriesID == group.id
-        let height = max(
-            12,
-            CGFloat(group.spentMilliunits) / CGFloat(maxSpent) * 120
-        )
+        let isSpending = group.isOrdinarySpending
         return Button {
             selectedChartSeriesID = group.id
+            guard !group.categories.isEmpty else { return }
+            detailSelection = SpendingGroupDetailSelection(
+                month: month,
+                group: group
+            )
         } label: {
-            VStack(spacing: NwSpacing.xs) {
-                Text(CurrencyFormatter.currency(group.spent, showCents: false))
-                    .font(NwTypography.caption)
-                    .foregroundStyle(
-                        group.spentMilliunits < 0
-                            ? NwAppColors.liability
-                            : NwAppColors.textPrimary
-                    )
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(color(for: group.id))
-                    .frame(
-                        maxWidth: flexible ? .infinity : 44,
-                        alignment: .center
-                    )
-                    .frame(
-                        width: flexible ? nil : 44,
-                        height: height
-                    )
+            HStack(spacing: NwSpacing.sm) {
+                swatch(for: group, isSpending: isSpending)
                 Text(group.name)
                     .font(
                         isSelected
-                            ? NwTypography.caption.weight(.semibold)
-                            : NwTypography.caption
+                            ? NwTypography.bodyEmphasis
+                            : NwTypography.body
                     )
                     .foregroundStyle(
-                        isSelected ? NwAppColors.primary : .secondary
+                        isSelected
+                            ? NwAppColors.primary
+                            : NwAppColors.textPrimary
                     )
                     .lineLimit(1)
-                    .frame(maxWidth: flexible ? .infinity : 72)
+                Spacer(minLength: NwSpacing.sm)
+                NwAmountText(
+                    group.spent,
+                    variant: .body,
+                    showCents: false,
+                    color: group.spentMilliunits < 0
+                        ? NwAppColors.liability
+                        : NwAppColors.textPrimary
+                )
+                if !group.categories.isEmpty {
+                    Image(systemName: "chevron.right")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.tertiary)
+                }
             }
-            .frame(maxWidth: flexible ? .infinity : nil)
+            .padding(.horizontal, NwSpacing.md)
+            .padding(.vertical, NwSpacing.rowVertical)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityValue(isSelected ? "Selected" : "")
-        .accessibilityHint("Shows this group's spending history")
+        .accessibilityHint(
+            group.categories.isEmpty
+                ? "Shows this group's spending history"
+                : "Opens this month's transactions and categories"
+        )
         .contextMenu {
             if group.id != SpendingHistoryBuilder.ungroupedIdentity
                 && group.id != SpendingGroupSetup.unassignedIdentity {
                 Button {
                     moveGroupEarlier(group.id)
                 } label: {
-                    Label("Move Left", systemImage: "arrow.left")
-                }
-                Button(role: .destructive) {
-                    setGroupHidden(group.id, hidden: true)
-                } label: {
-                    Label("Hide from Spending", systemImage: "eye.slash")
+                    Label("Move Up", systemImage: "arrow.up")
                 }
             }
         }
     }
 
-    /// Hiding removes the group from every Spending History total, column,
-    /// and chart stack until unhidden via the eye-slash menu on the columns
-    /// card.
-    private func setGroupHidden(_ identity: String, hidden: Bool) {
-        let ctx = container.modelContainer.mainContext
-        let rows = (try? ctx.fetch(
-            FetchDescriptor<DurableCategoryGroup>(
-                predicate: #Predicate { $0.groupIdentity == identity }
-            )
-        )) ?? []
-        guard !rows.isEmpty else { return }
-        // Stamp every copy: CloudKit-duplicated rows must all agree.
-        for row in rows {
-            row.hidden = hidden
-            row.updatedAt = .now
+    @ViewBuilder
+    private func swatch(
+        for group: SpendingHistoryGroupTotal,
+        isSpending: Bool
+    ) -> some View {
+        if isSpending {
+            Circle()
+                .fill(color(for: group.id))
+                .frame(width: 11, height: 11)
+        } else {
+            Circle()
+                .strokeBorder(NwAppColors.chartOther, lineWidth: 1.5)
+                .frame(width: 11, height: 11)
         }
-        ctx.safeSave(source: "spending.groupHidden")
-    }
-
-    /// Prepare Networth's assignable automatic categories and migrate away
-    /// from the retired seeded-group experiment. Users own every real group.
-    private func ensureSpendingGroupSetup() {
-        SpendingGroupSetup.ensure(in: container.modelContainer.mainContext)
     }
 
     /// Column order is user-owned: swap the group one position earlier
@@ -388,7 +405,7 @@ struct SpendingHistoryView: View {
         let groups = ((try? ctx.fetch(
             FetchDescriptor<DurableCategoryGroup>()
         )) ?? [])
-            .filter { SpendingGroupSetup.isUserGroup($0) && !$0.hidden }
+            .filter { SpendingGroupSetup.isUserGroup($0) }
             .sorted {
                 if $0.displayOrder != $1.displayOrder {
                     return $0.displayOrder < $1.displayOrder
@@ -426,7 +443,9 @@ struct SpendingHistoryView: View {
         model.months.map { month in
             let milliunits: Int64
             if selectedChartSeriesID == Self.allSpendingSeriesID {
-                milliunits = month.totalMilliunits
+                // Out-of-pocket basis: matches the "Spent" headline, so
+                // investing and savings transfers don't inflate the series.
+                milliunits = month.ordinaryTotalMilliunits
             } else {
                 milliunits = max(
                     0,
@@ -579,200 +598,10 @@ struct SpendingHistoryView: View {
 
 // MARK: - Group management
 
-enum SpendingGroupSetup {
-    static let userOwnedGroupsVersion = 3
-    static let currentVersion = 4
-    static let userGroupIdentityPrefix = "networth:spending:user:"
-    static let unassignedIdentity = "networth:spending:unassigned"
-    static let unassignedName = "Unassigned"
-    /// Investment contribution is a transaction type, not a canonical
-    /// category. Its report group is derived directly from that type.
-    static let investmentReportingIdentity =
-        "networth:investment-contributions"
-    static let investmentReportingName = "Investment Contributions"
-
-    private struct RetiredDefault {
-        let identity: String
-        let name: String
-    }
-
-    private static let retiredDefaults = [
-        RetiredDefault(identity: "networth:spending:fixed", name: "Fixed"),
-        RetiredDefault(
-            identity: "networth:spending:necessities",
-            name: "Necessities"
-        ),
-        RetiredDefault(identity: "networth:spending:surplus", name: "Surplus"),
-        RetiredDefault(identity: "networth:spending:savings", name: "Savings"),
-        RetiredDefault(
-            identity: "networth:spending:investment",
-            name: "Investment"
-        )
-    ]
-
-    static func isUserGroup(_ group: DurableCategoryGroup) -> Bool {
-        group.reportingRole == .spending
-            && !group.groupIdentity.hasPrefix("ynab:")
-            && group.groupIdentity != unassignedIdentity
-            && !retiredDefaults.contains {
-                $0.identity == group.groupIdentity && $0.name == group.name
-            }
-    }
-
-    static func isAssignableCategory(
-        _ category: DurableCanonicalCategory,
-        groupByIdentity: [String: DurableCategoryGroup]
-    ) -> Bool {
-        guard !category.deletedAtSource else { return false }
-        guard let identity = category.categoryGroupIdentity,
-              let sourceGroup = groupByIdentity[identity] else {
-            return true
-        }
-        return sourceGroup.reportingRole == .spending
-    }
-
-    static func isUnassignedCategory(
-        _ category: DurableCanonicalCategory,
-        userGroupIdentities: Set<String>
-    ) -> Bool {
-        guard let identity = category.categoryGroupIdentity else { return true }
-        return !userGroupIdentities.contains(identity)
-    }
-
-    static func categoryIdentitiesWithTransactions(
-        transactions: [CachedFinancialTransaction]
-    ) -> Set<String> {
-        var identities = Set<String>()
-        for transaction in transactions where !transaction.deleted {
-            let legs = transaction.subtransactions.filter { !$0.deleted }
-            if legs.isEmpty {
-                if let categoryID = transaction.categoryCanonicalId {
-                    identities.insert(categoryID)
-                }
-            } else {
-                for leg in legs {
-                    if let categoryID = leg.categoryCanonicalId ?? leg.categoryId {
-                        identities.insert(categoryID)
-                    }
-                }
-            }
-        }
-        return identities
-    }
-
-    /// User-created groups are the only Spending structure. YNAB grouping is
-    /// retained solely as reference metadata and is never surfaced here.
-    @MainActor
-    static func ensure(in context: ModelContext) {
-        let settings = (try? context.fetch(
-            FetchDescriptor<DurableUserSettings>()
-        ))?.first
-        let existing = (try? context.fetch(
-            FetchDescriptor<DurableCategoryGroup>()
-        )) ?? []
-        let categories = (try? context.fetch(
-            FetchDescriptor<DurableCanonicalCategory>()
-        )) ?? []
-        let transactions = (try? context.fetch(
-            FetchDescriptor<CachedFinancialTransaction>()
-        )) ?? []
-        var changed = false
-
-        if (settings?.spendingGroupSetupVersion ?? 0) < userOwnedGroupsVersion {
-            // Retire only untouched defaults. A renamed row represents a group
-            // the user chose to keep and remains fully editable.
-            for retired in retiredDefaults {
-                let matchingRows = existing.filter {
-                    $0.groupIdentity == retired.identity
-                }
-                guard !matchingRows.isEmpty,
-                      matchingRows.allSatisfy({ $0.name == retired.name }) else {
-                    continue
-                }
-                for category in categories
-                where category.categoryGroupIdentity == retired.identity {
-                    category.categoryGroupIdentity = nil
-                    category.groupName = ""
-                    category.updatedAt = .now
-                }
-                for row in matchingRows {
-                    row.hidden = true
-                    row.updatedAt = .now
-                }
-                changed = true
-            }
-        }
-
-        let transactionCategoryIDs = categoryIdentitiesWithTransactions(
-            transactions: transactions
-        )
-
-        if let settings,
-           settings.spendingGroupSetupVersion < userOwnedGroupsVersion {
-            settings.spendingGroupSetupVersion = userOwnedGroupsVersion
-            changed = true
-        }
-
-        let activeTransactions = transactions.filter { !$0.deleted }
-        let canPruneUnusedCategories = (settings?.spendingGroupSetupVersion
-                ?? 0) < currentVersion
-            && settings?.firstPlaidSyncCompletedAt != nil
-            && !activeTransactions.isEmpty
-            && !activeTransactions.contains {
-                !$0.pending && $0.requiresReview
-            }
-        if canPruneUnusedCategories {
-            var retainedCategoryIDs = transactionCategoryIDs
-            let decisions = (try? context.fetch(
-                FetchDescriptor<DurableCanonicalTransactionDecision>()
-            )) ?? []
-            for decision in decisions {
-                if let categoryID = decision.categoryCanonicalId {
-                    retainedCategoryIDs.insert(categoryID)
-                }
-                for leg in decision.subtransactions where !leg.deleted {
-                    if let categoryID = leg.categoryCanonicalId ?? leg.categoryId {
-                        retainedCategoryIDs.insert(categoryID)
-                    }
-                }
-            }
-            let overrides = (try? context.fetch(
-                FetchDescriptor<DurableTransactionOverride>()
-            )) ?? []
-            for override in overrides {
-                for leg in override.subtransactions where !leg.deleted {
-                    if let categoryID = leg.categoryCanonicalId ?? leg.categoryId {
-                        retainedCategoryIDs.insert(categoryID)
-                    }
-                }
-            }
-            let expectations = (try? context.fetch(
-                FetchDescriptor<DurableRecurringExpectation>()
-            )) ?? []
-            for expectation in expectations {
-                if let categoryID = expectation.categoryCanonicalId {
-                    retainedCategoryIDs.insert(categoryID)
-                }
-            }
-            for category in categories
-            where !retainedCategoryIDs.contains(category.canonicalId) {
-                context.delete(category)
-                changed = true
-            }
-            settings?.spendingGroupSetupVersion = currentVersion
-            changed = true
-        }
-        if changed {
-            context.safeSave(source: "spending.groupSetup")
-        }
-    }
-}
-
 private struct ManagedSpendingGroup: Identifiable, Hashable {
     let identity: String
     let name: String
     let displayOrder: Int
-    let hidden: Bool
 
     var id: String { identity }
 
@@ -787,12 +616,23 @@ private struct SpendingGroupEditorTarget: Identifiable {
     var id: String { identity ?? "new" }
 }
 
+private enum SpendingGroupEditorAlert: Identifiable {
+    case deletion(CanonicalGroupDeletionImpact)
+    case error(String)
+
+    var id: String {
+        switch self {
+        case .deletion: "deletion"
+        case .error: "error"
+        }
+    }
+}
+
 struct SpendingGroupManagementSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query private var groupRows: [DurableCategoryGroup]
     @Query private var categoryRows: [DurableCanonicalCategory]
-    @Query private var transactionRows: [CachedFinancialTransaction]
 
     @State private var editorTarget: SpendingGroupEditorTarget?
 
@@ -813,11 +653,11 @@ struct SpendingGroupManagementSheet: View {
                 }
 
                 Section {
-                    if visibleGroups.isEmpty {
+                    if groups.isEmpty {
                         Text("No groups yet")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(visibleGroups) { group in
+                        ForEach(groups) { group in
                             managedGroupRow(group)
                         }
                         .onMove(perform: moveGroups)
@@ -846,25 +686,6 @@ struct SpendingGroupManagementSheet: View {
                         }
                     }
                 }
-
-                if !hiddenGroups.isEmpty {
-                    Section("Hidden") {
-                        ForEach(hiddenGroups) { group in
-                            Button {
-                                setHidden(group.identity, hidden: false)
-                            } label: {
-                                HStack {
-                                    groupLabel(group)
-                                    Spacer()
-                                    Image(systemName: "eye")
-                                        .foregroundStyle(NwAppColors.primary)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
             }
             .navigationTitle("Spending Groups")
             .navigationBarTitleDisplayMode(.inline)
@@ -882,11 +703,6 @@ struct SpendingGroupManagementSheet: View {
                     EditButton()
                 }
             }
-        }
-        .onAppear {
-            SpendingGroupSetup.ensure(
-                in: container.modelContainer.mainContext
-            )
         }
         .sheet(item: $editorTarget) { target in
             SpendingGroupEditorSheet(target: target) {
@@ -908,27 +724,17 @@ struct SpendingGroupManagementSheet: View {
             return ManagedSpendingGroup(
                 identity: identity,
                 name: latest.name,
-                displayOrder: latest.displayOrder,
-                hidden: rows.contains(where: \.hidden)
+                displayOrder: latest.displayOrder
             )
         }
         .sorted(by: groupSort)
-    }
-
-    private var visibleGroups: [ManagedSpendingGroup] {
-        groups.filter { !$0.hidden }
-    }
-
-    private var hiddenGroups: [ManagedSpendingGroup] {
-        groups.filter(\.hidden)
     }
 
     private var unassignedGroup: ManagedSpendingGroup {
         ManagedSpendingGroup(
             identity: SpendingGroupSetup.unassignedIdentity,
             name: SpendingGroupSetup.unassignedName,
-            displayOrder: Int.max,
-            hidden: false
+            displayOrder: Int.max
         )
     }
 
@@ -943,15 +749,11 @@ struct SpendingGroupManagementSheet: View {
         ).compactMapValues { rows in
             rows.max(by: { $0.updatedAt < $1.updatedAt })
         }
-        let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
-            transactions: transactionRows
-        )
-        return categoryRows.filter {
-            categoryIDs.contains($0.canonicalId)
-                && SpendingGroupSetup.isAssignableCategory(
-                    $0,
-                    groupByIdentity: latestGroupByIdentity
-                )
+        return SpendingGroupSetup.latestCategories(categoryRows).filter {
+            SpendingGroupSetup.isAssignableCategory(
+                $0,
+                groupByIdentity: latestGroupByIdentity
+            )
         }
     }
 
@@ -1005,11 +807,6 @@ struct SpendingGroupManagementSheet: View {
                 } label: {
                     Label("Rename", systemImage: "pencil")
                 }
-                Button(role: .destructive) {
-                    setHidden(group.identity, hidden: true)
-                } label: {
-                    Label("Hide", systemImage: "eye.slash")
-                }
             }
             .font(NwTypography.footnote)
             .buttonStyle(.borderless)
@@ -1018,13 +815,9 @@ struct SpendingGroupManagementSheet: View {
     }
 
     private func categoryCount(for identity: String) -> Int {
-        let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
-            transactions: transactionRows
-        )
-        return Set(categoryRows.lazy.filter {
+        return Set(SpendingGroupSetup.latestCategories(categoryRows).lazy.filter {
             $0.categoryGroupIdentity == identity
                 && !$0.deletedAtSource
-                && categoryIDs.contains($0.canonicalId)
         }.map(\.canonicalId)).count
     }
 
@@ -1035,20 +828,8 @@ struct SpendingGroupManagementSheet: View {
         )
     }
 
-    private func setHidden(_ identity: String, hidden: Bool) {
-        let matches = groupRows.filter { $0.groupIdentity == identity }
-        guard !matches.isEmpty else { return }
-        for row in matches {
-            row.hidden = hidden
-            row.updatedAt = .now
-        }
-        container.modelContainer.mainContext.safeSave(
-            source: "spending.groupManagement.visibility"
-        )
-    }
-
     private func moveGroups(from offsets: IndexSet, to destination: Int) {
-        var reordered = visibleGroups
+        var reordered = groups
         reordered.move(fromOffsets: offsets, toOffset: destination)
         let orderByIdentity = Dictionary(
             uniqueKeysWithValues: reordered.enumerated().map {
@@ -1074,6 +855,7 @@ private struct SpendingGroupEditorSheet: View {
     let onSaved: () -> Void
 
     @State private var name: String
+    @State private var activeAlert: SpendingGroupEditorAlert?
 
     init(target: SpendingGroupEditorTarget, onSaved: @escaping () -> Void) {
         self.target = target
@@ -1087,9 +869,37 @@ private struct SpendingGroupEditorSheet: View {
                 Section("Name") {
                     TextField("Group name", text: $name)
                 }
+                if target.identity != nil {
+                    Section {
+                        Button("Delete Group", role: .destructive) {
+                            prepareDeletion()
+                        }
+                    } footer: {
+                        Text("Its categories will remain available in Unassigned.")
+                    }
+                }
             }
             .navigationTitle(target.identity == nil ? "Add Group" : "Rename Group")
             .navigationBarTitleDisplayMode(.inline)
+            .alert(item: $activeAlert) { alert in
+                switch alert {
+                case .deletion(let impact):
+                    Alert(
+                        title: Text("Delete Group?"),
+                        message: Text(deleteConfirmationMessage(impact)),
+                        primaryButton: .destructive(Text("Delete")) {
+                            deleteGroup()
+                        },
+                        secondaryButton: .cancel()
+                    )
+                case .error(let message):
+                    Alert(
+                        title: Text("Couldn’t Delete Group"),
+                        message: Text(message),
+                        dismissButton: .cancel(Text("OK"))
+                    )
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button {
@@ -1123,6 +933,14 @@ private struct SpendingGroupEditorSheet: View {
     }
 
     private var canSave: Bool { !cleanedName.isEmpty }
+
+    private func deleteConfirmationMessage(
+        _ impact: CanonicalGroupDeletionImpact
+    ) -> String {
+        let count = impact.categoryCount
+        let categoryText = count == 1 ? "1 category" : "\(count) categories"
+        return "This permanently removes the group and moves \(categoryText) to Unassigned."
+    }
 
     private func save() {
         let context = container.modelContainer.mainContext
@@ -1161,6 +979,31 @@ private struct SpendingGroupEditorSheet: View {
         onSaved()
         dismiss()
     }
+
+    private func deleteGroup() {
+        guard let identity = target.identity else { return }
+        do {
+            try CanonicalDirectoryService(
+                context: container.modelContainer.mainContext
+            ).deleteGroup(groupIdentity: identity)
+            onSaved()
+            dismiss()
+        } catch {
+            activeAlert = .error(error.localizedDescription)
+        }
+    }
+
+    private func prepareDeletion() {
+        guard let identity = target.identity else { return }
+        do {
+            let impact = try CanonicalDirectoryService(
+                context: container.modelContainer.mainContext
+            ).groupDeletionImpact(groupIdentity: identity)
+            activeAlert = .deletion(impact)
+        } catch {
+            activeAlert = .error(error.localizedDescription)
+        }
+    }
 }
 
 private struct ManagedSpendingCategory: Identifiable {
@@ -1172,7 +1015,6 @@ private struct SpendingGroupCategoryList: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query private var categories: [DurableCanonicalCategory]
     @Query private var groupRows: [DurableCategoryGroup]
-    @Query private var transactionRows: [CachedFinancialTransaction]
     let group: ManagedSpendingGroup
 
     @State private var categoryToMove: ManagedSpendingCategory?
@@ -1288,12 +1130,8 @@ private struct SpendingGroupCategoryList: View {
         let userGroupIdentities = Set(latestGroupByIdentity.values.filter {
             SpendingGroupSetup.isUserGroup($0)
         }.map(\.groupIdentity))
-        let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
-            transactions: transactionRows
-        )
-        return categories
+        return SpendingGroupSetup.latestCategories(categories)
             .filter {
-                guard categoryIDs.contains($0.canonicalId) else { return false }
                 guard SpendingGroupSetup.isAssignableCategory(
                     $0,
                     groupByIdentity: latestGroupByIdentity
@@ -1323,15 +1161,13 @@ private struct SpendingGroupCategoryList: View {
         }
         return rowsByIdentity.compactMap { identity, rows in
             guard let latest = rows.max(by: { $0.updatedAt < $1.updatedAt }),
-                  SpendingGroupSetup.isUserGroup(latest),
-                  !rows.contains(where: \.hidden) else {
+                  SpendingGroupSetup.isUserGroup(latest) else {
                 return nil
             }
             return ManagedSpendingGroup(
                 identity: identity,
                 name: latest.name,
-                displayOrder: latest.displayOrder,
-                hidden: false
+                displayOrder: latest.displayOrder
             )
         }
         .sorted {
@@ -1434,13 +1270,97 @@ private struct CategoryGroupPickerSheet: View {
     }
 }
 
-// MARK: - Model
+// MARK: - Pie
 
-struct HiddenSpendingGroup: Sendable, Identifiable {
-    let identity: String
-    let name: String
-    var id: String { identity }
+/// One colored wedge of the spending pie. `value` is milliunits spent.
+private struct SpendingSlice: Identifiable {
+    let id: String
+    let value: Double
+    let color: Color
 }
+
+/// This month's spending as a pie nested inside a gray disc that represents a
+/// typical month. Both are sized by *area* against the larger of the two, so:
+/// when this month is below normal the colored pie sits visibly inside the gray
+/// (the empty gray ring is what's left of a normal month); when it's above,
+/// the colored pie fills the frame. A dashed ring always marks the typical
+/// level, so the reference stays legible either way. There is no per-group
+/// budget — the only benchmark is the user's own history.
+private struct NestedSpendingPie: View {
+    let slices: [SpendingSlice]
+    let currentTotal: Double
+    let typicalTotal: Double
+
+    var body: some View {
+        Canvas { context, size in
+            let side = min(size.width, size.height)
+            guard side > 0 else { return }
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let frameR = side / 2
+            let maxVal = max(currentTotal, typicalTotal, 1)
+            let typicalR = frameR * (typicalTotal / maxVal).squareRoot()
+            let currentR = frameR * (currentTotal / maxVal).squareRoot()
+
+            // Gray disc: a normal month's spend.
+            context.fill(
+                disc(center: center, radius: typicalR),
+                with: .color(NwAppColors.chartOther.opacity(0.16))
+            )
+
+            // Colored pie: this month, wedge per group.
+            if currentTotal > 0 && currentR > 0 {
+                var start = Angle.degrees(-90)
+                let separator = GraphicsContext.Shading.color(
+                    NwAppColors.cardSurface
+                )
+                for slice in slices where slice.value > 0 {
+                    let sweep = Angle.degrees(360 * slice.value / currentTotal)
+                    let end = start + sweep
+                    var wedge = Path()
+                    wedge.move(to: center)
+                    wedge.addArc(
+                        center: center,
+                        radius: currentR,
+                        startAngle: start,
+                        endAngle: end,
+                        clockwise: false
+                    )
+                    wedge.closeSubpath()
+                    context.fill(wedge, with: .color(slice.color))
+                    if slices.count > 1 {
+                        context.stroke(wedge, with: separator, lineWidth: 1.5)
+                    }
+                    start = end
+                }
+            }
+
+            // Dashed ring: the typical level, always visible.
+            if typicalR > 0 {
+                context.stroke(
+                    Path(ellipseIn: CGRect(
+                        x: center.x - typicalR,
+                        y: center.y - typicalR,
+                        width: typicalR * 2,
+                        height: typicalR * 2
+                    )),
+                    with: .color(NwAppColors.chartOther.opacity(0.7)),
+                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                )
+            }
+        }
+    }
+
+    private func disc(center: CGPoint, radius: CGFloat) -> Path {
+        Path(ellipseIn: CGRect(
+            x: center.x - radius,
+            y: center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        ))
+    }
+}
+
+// MARK: - Model
 
 struct SpendingHistoryModel: Sendable {
     let months: [SpendingHistoryMonth]
@@ -1451,9 +1371,6 @@ struct SpendingHistoryModel: Sendable {
     /// groupIdentity -> display position: columns and chart stacks follow
     /// the user's group order, never the month's spend ranking.
     let orderIndexByGroupID: [String: Int]
-    /// Spending groups the user hid from Spending History entirely.
-    let hiddenGroups: [HiddenSpendingGroup]
-
     func paletteIndex(for groupID: String) -> Int? {
         paletteIndexByGroupID[groupID]
     }
@@ -1497,12 +1414,9 @@ actor SpendingHistoryBuildActor {
         let pipelineContext = SpendingEntryPipeline.Context(
             groups: groups, categories: categories, accounts: accounts
         )
-        let hiddenIdentities = pipelineContext.hiddenIdentities
-
-        // The shared pipeline assembles entries, resolves goal-purchase
-        // assignments, adjusts BEFORE hidden-group filtering, then applies
-        // visibility — so Goals and Spending always agree.
-        let entries = SpendingEntryPipeline.adjustedVisibleEntries(
+        // The shared pipeline assembles entries and resolves goal-purchase
+        // assignments so Goals and Spending always agree.
+        let entries = SpendingEntryPipeline.adjustedEntries(
             rows: rows,
             ledgerEntries: ledgerEntries,
             context: pipelineContext
@@ -1510,10 +1424,7 @@ actor SpendingHistoryBuildActor {
 
         var seenDefinitions = Set<String>()
         let groupDefinitions = groups
-            .filter {
-                SpendingGroupSetup.isUserGroup($0)
-                    && !hiddenIdentities.contains($0.groupIdentity)
-            }
+            .filter { SpendingGroupSetup.isUserGroup($0) }
             .sorted {
                 if $0.displayOrder != $1.displayOrder {
                     return $0.displayOrder < $1.displayOrder
@@ -1542,10 +1453,7 @@ actor SpendingHistoryBuildActor {
         // Deduped by identity so CloudKit copies can't occupy two slots.
         var seenIdentities = Set<String>()
         let spendingGroups = groups
-            .filter {
-                SpendingGroupSetup.isUserGroup($0)
-                    && !hiddenIdentities.contains($0.groupIdentity)
-            }
+            .filter { SpendingGroupSetup.isUserGroup($0) }
             .sorted {
                 if $0.displayOrder != $1.displayOrder {
                     return $0.displayOrder < $1.displayOrder
@@ -1566,25 +1474,10 @@ actor SpendingHistoryBuildActor {
         // and never participate in category-group management or palette order.
         orderIndex[SpendingGroupSetup.investmentReportingIdentity] =
             spendingGroups.count
-        var seenHidden = Set<String>()
-        let hiddenGroups = groups
-            .filter {
-                SpendingGroupSetup.isUserGroup($0)
-                    && hiddenIdentities.contains($0.groupIdentity)
-            }
-            .filter { seenHidden.insert($0.groupIdentity).inserted }
-            .sorted {
-                $0.name.localizedCaseInsensitiveCompare($1.name)
-                    == .orderedAscending
-            }
-            .map {
-                HiddenSpendingGroup(identity: $0.groupIdentity, name: $0.name)
-            }
         return SpendingHistoryModel(
             months: months,
             paletteIndexByGroupID: paletteIndex,
-            orderIndexByGroupID: orderIndex,
-            hiddenGroups: hiddenGroups
+            orderIndexByGroupID: orderIndex
         )
     }
 }

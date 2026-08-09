@@ -471,7 +471,7 @@ struct GoalLedgerServiceTests {
             pipelineContext: try pipelineContext(context)
         )
 
-        let entries = SpendingEntryPipeline.adjustedVisibleEntries(
+        let entries = SpendingEntryPipeline.adjustedEntries(
             rows: try context.fetch(
                 FetchDescriptor<CachedFinancialTransaction>()
             ),

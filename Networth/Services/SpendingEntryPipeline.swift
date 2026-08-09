@@ -3,21 +3,16 @@ import SwiftData
 import NetworthCore
 
 /// The one shared spending pipeline: raw approved rows → entries →
-/// goal-assignment resolution → purchase/refund adjustment → hidden-group
-/// visibility. Both `SpendingHistoryBuildActor` and `GoalsBuildActor` consume
+/// goal-assignment resolution → purchase/refund adjustment. Both
+/// `SpendingHistoryBuildActor` and `GoalsBuildActor` consume
 /// this, so the Spending display and the Goals emergency input are always the
 /// same numbers.
-///
-/// Ordering is load-bearing: adjustment runs BEFORE hidden-group filtering so
-/// a goal purchase inside a hidden group (or a hidden split leg) still
-/// surrenders its assigned amount to the Goal Purchases column.
 enum SpendingEntryPipeline {
 
     /// Prebuilt lookups shared by every stage. Build once per pipeline run
     /// from already-fetched rows.
     struct Context {
         let groupByIdentity: [String: DurableCategoryGroup]
-        let hiddenIdentities: Set<String>
         let accountTypeByIdentity: [String: FinancialAccountType]
         let categoryByCanonicalID: [String: DurableCanonicalCategory]
 
@@ -30,14 +25,6 @@ enum SpendingEntryPipeline {
                 groups.sorted { $0.updatedAt > $1.updatedAt }
                     .map { ($0.groupIdentity, $0) },
                 uniquingKeysWith: { first, _ in first }
-            )
-            // CloudKit can duplicate group rows; hiding must win if ANY copy
-            // of the identity is hidden, whichever copy other lookups picked.
-            hiddenIdentities = Set(
-                groups.filter {
-                    SpendingGroupSetup.isUserGroup($0) && $0.hidden
-                }
-                .map(\.groupIdentity)
             )
             accountTypeByIdentity = Dictionary(
                 accounts.map { ($0.canonicalAccountId, $0.type) },
@@ -66,11 +53,10 @@ enum SpendingEntryPipeline {
         }
     }
 
-    // MARK: Stage 1 — assembly (no visibility decisions)
+    // MARK: Stage 1 — assembly
 
-    /// Maps approved rows to entries, including entries belonging to hidden
-    /// groups — visibility is a later stage. Split legs map one entry each;
-    /// internal transfers are omitted; investment rows use the cash side.
+    /// Maps approved rows to entries. Split legs map one entry each; internal
+    /// transfers are omitted; investment rows use the cash side.
     static func assembleEntries(
         rows: [CachedFinancialTransaction],
         context: Context
@@ -195,35 +181,20 @@ enum SpendingEntryPipeline {
         )
     }
 
-    // MARK: Stage 3+4 — adjustment, then visibility
-
-    /// A hidden spending group is excluded from Spending History entirely —
-    /// totals, columns, and chart. Applied AFTER adjustment.
-    static func filterVisible(
-        _ entries: [SpendingHistoryEntry],
-        context: Context
-    ) -> [SpendingHistoryEntry] {
-        entries.filter { entry in
-            guard let identity = entry.groupIdentity else { return true }
-            return !context.hiddenIdentities.contains(identity)
-        }
-    }
-
     /// The full pipeline. `ledgerEntries` may be empty (no goals yet) — the
     /// result is then identical to the pre-Goals behavior.
-    static func adjustedVisibleEntries(
+    static func adjustedEntries(
         rows: [CachedFinancialTransaction],
         ledgerEntries: [DurableGoalLedgerEntry],
         context: Context
     ) -> [SpendingHistoryEntry] {
         let assembled = assembleEntries(rows: rows, context: context)
-        let adjusted = GoalPurchaseAdjuster.apply(
+        return GoalPurchaseAdjuster.apply(
             entries: assembled,
             assignments: resolveAssignments(
                 ledgerEntries: ledgerEntries, rows: rows
             )
         )
-        return filterVisible(adjusted, context: context)
     }
 
     /// The assignable ceiling for one transaction, for entry validation and

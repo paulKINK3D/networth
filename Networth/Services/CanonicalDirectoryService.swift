@@ -9,6 +9,80 @@ struct CanonicalCategoryDeletionImpact: Equatable {
     let referenceRecordCount: Int
 }
 
+struct CanonicalGroupDeletionImpact: Equatable {
+    let groupRecordCount: Int
+    let categoryCount: Int
+    let categoryRecordCount: Int
+}
+
+/// Shared identities and eligibility rules for the user-owned Spending
+/// directory. Persisted legacy fields remain readable, but this type performs
+/// no launch-time migrations or cleanup.
+enum SpendingGroupSetup {
+    static let userGroupIdentityPrefix = "networth:spending:user:"
+    static let unassignedIdentity = "networth:spending:unassigned"
+    static let unassignedName = "Unassigned"
+    static let investmentReportingIdentity =
+        "networth:investment-contributions"
+    static let investmentReportingName = "Investment Contributions"
+
+    private struct RetiredDefault {
+        let identity: String
+        let name: String
+    }
+
+    private static let retiredDefaults = [
+        RetiredDefault(identity: "networth:spending:fixed", name: "Fixed"),
+        RetiredDefault(
+            identity: "networth:spending:necessities",
+            name: "Necessities"
+        ),
+        RetiredDefault(identity: "networth:spending:surplus", name: "Surplus"),
+        RetiredDefault(identity: "networth:spending:savings", name: "Savings"),
+        RetiredDefault(
+            identity: "networth:spending:investment",
+            name: "Investment"
+        ),
+    ]
+
+    static func isUserGroup(_ group: DurableCategoryGroup) -> Bool {
+        group.reportingRole == .spending
+            && !group.groupIdentity.hasPrefix("ynab:")
+            && group.groupIdentity != unassignedIdentity
+            && !retiredDefaults.contains {
+                $0.identity == group.groupIdentity && $0.name == group.name
+            }
+    }
+
+    static func isAssignableCategory(
+        _ category: DurableCanonicalCategory,
+        groupByIdentity: [String: DurableCategoryGroup]
+    ) -> Bool {
+        guard !category.deletedAtSource else { return false }
+        guard let identity = category.categoryGroupIdentity,
+              let sourceGroup = groupByIdentity[identity] else {
+            return true
+        }
+        return sourceGroup.reportingRole == .spending
+    }
+
+    static func isUnassignedCategory(
+        _ category: DurableCanonicalCategory,
+        userGroupIdentities: Set<String>
+    ) -> Bool {
+        guard let identity = category.categoryGroupIdentity else { return true }
+        return !userGroupIdentities.contains(identity)
+    }
+
+    static func latestCategories(
+        _ rows: [DurableCanonicalCategory]
+    ) -> [DurableCanonicalCategory] {
+        Dictionary(grouping: rows, by: \.canonicalId).compactMap { _, copies in
+            copies.max(by: { $0.updatedAt < $1.updatedAt })
+        }
+    }
+}
+
 /// Owns destructive category-directory mutations so the impact preview and
 /// the write use the same complete, fail-closed reference scan.
 @MainActor
@@ -17,6 +91,8 @@ struct CanonicalDirectoryService {
 
     enum Failure: LocalizedError, Equatable {
         case categoryNotFound
+        case groupNotFound
+        case groupNotDeletable
         case invalidSplitData
         case saveFailed
 
@@ -24,11 +100,50 @@ struct CanonicalDirectoryService {
             switch self {
             case .categoryNotFound:
                 "This category no longer exists."
+            case .groupNotFound:
+                "This group no longer exists."
+            case .groupNotDeletable:
+                "This group is managed by Networth and cannot be deleted."
             case .invalidSplitData:
                 "A saved split transaction could not be read. The category was not deleted."
             case .saveFailed:
-                "The category could not be deleted. Nothing was changed."
+                "The change could not be saved. Nothing was changed."
             }
+        }
+    }
+
+    func groupDeletionImpact(
+        groupIdentity: String
+    ) throws -> CanonicalGroupDeletionImpact {
+        try scanGroup(groupIdentity: groupIdentity).impact
+    }
+
+    @discardableResult
+    func deleteGroup(
+        groupIdentity: String
+    ) throws -> CanonicalGroupDeletionImpact {
+        // Re-scan at confirmation time so a category assigned after the
+        // preview is still moved safely instead of being orphaned.
+        let scan = try scanGroup(groupIdentity: groupIdentity)
+        let now = Date.now
+
+        do {
+            for category in scan.categories {
+                category.categoryGroupIdentity = nil
+                category.groupName = ""
+                category.userEdited = true
+                category.updatedAt = now
+            }
+            for group in scan.groups {
+                context.delete(group)
+            }
+            guard context.safeSave(source: "canonicalGroups.delete") else {
+                throw Failure.saveFailed
+            }
+            return scan.impact
+        } catch {
+            context.rollback()
+            throw error
         }
     }
 
@@ -156,6 +271,37 @@ struct CanonicalDirectoryService {
             )]
         let recurringExpectations: [DurableRecurringExpectation]
         let impact: CanonicalCategoryDeletionImpact
+    }
+
+    private struct GroupScan {
+        let groups: [DurableCategoryGroup]
+        let categories: [DurableCanonicalCategory]
+        let impact: CanonicalGroupDeletionImpact
+    }
+
+    private func scanGroup(groupIdentity: String) throws -> GroupScan {
+        let groups = try context.fetch(
+            FetchDescriptor<DurableCategoryGroup>()
+        ).filter { $0.groupIdentity == groupIdentity }
+        guard let latest = groups.max(by: { $0.updatedAt < $1.updatedAt }) else {
+            throw Failure.groupNotFound
+        }
+        guard SpendingGroupSetup.isUserGroup(latest) else {
+            throw Failure.groupNotDeletable
+        }
+        let categories = try context.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        ).filter { $0.categoryGroupIdentity == groupIdentity }
+
+        return GroupScan(
+            groups: groups,
+            categories: categories,
+            impact: CanonicalGroupDeletionImpact(
+                groupRecordCount: groups.count,
+                categoryCount: Set(categories.map(\.canonicalId)).count,
+                categoryRecordCount: categories.count
+            )
+        )
     }
 
     private func scan(canonicalId: String) throws -> Scan {

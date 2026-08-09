@@ -8,6 +8,95 @@ import Testing
 @MainActor
 @Suite("Canonical category directory")
 struct CanonicalDirectoryServiceTests {
+    @Test func groupDeletionMovesEveryCategoryCopyToUnassigned() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let groupID = "networth:spending:user:travel"
+
+        context.insert(DurableCategoryGroup(
+            groupIdentity: groupID,
+            name: "Travel",
+            reportingRole: .spending
+        ))
+        context.insert(DurableCategoryGroup(
+            groupIdentity: groupID,
+            name: "Travel",
+            reportingRole: .spending
+        ))
+        let category = DurableCanonicalCategory(
+            canonicalId: "category:flights",
+            name: "Flights",
+            groupName: "Travel",
+            categoryGroupIdentity: groupID
+        )
+        let duplicate = DurableCanonicalCategory(
+            canonicalId: "category:flights",
+            name: "Flights",
+            groupName: "Travel",
+            categoryGroupIdentity: groupID
+        )
+        let hotel = DurableCanonicalCategory(
+            canonicalId: "category:hotels",
+            name: "Hotels",
+            groupName: "Travel",
+            categoryGroupIdentity: groupID
+        )
+        context.insert(category)
+        context.insert(duplicate)
+        context.insert(hotel)
+        try context.save()
+
+        let service = CanonicalDirectoryService(context: context)
+        let preview = try service.groupDeletionImpact(groupIdentity: groupID)
+        #expect(preview.groupRecordCount == 2)
+        #expect(preview.categoryCount == 2)
+        #expect(preview.categoryRecordCount == 3)
+
+        let deleted = try service.deleteGroup(groupIdentity: groupID)
+        #expect(deleted == preview)
+        #expect(try context.fetch(FetchDescriptor<DurableCategoryGroup>())
+            .allSatisfy { $0.groupIdentity != groupID })
+
+        let categories = try context.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )
+        #expect(categories.count == 3)
+        #expect(categories.allSatisfy { $0.categoryGroupIdentity == nil })
+        #expect(categories.allSatisfy { $0.groupName.isEmpty })
+        #expect(categories.allSatisfy { $0.userEdited })
+    }
+
+    @Test func groupDeletionRejectsReferenceGroupsWithoutMutation() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let groupID = "ynab:travel"
+        context.insert(DurableCategoryGroup(
+            groupIdentity: groupID,
+            name: "Travel",
+            reportingRole: .spending
+        ))
+        let category = DurableCanonicalCategory(
+            canonicalId: "category:flights",
+            name: "Flights",
+            groupName: "Travel",
+            categoryGroupIdentity: groupID
+        )
+        context.insert(category)
+        try context.save()
+
+        do {
+            try CanonicalDirectoryService(context: context)
+                .deleteGroup(groupIdentity: groupID)
+            Issue.record("Expected a reference group deletion to fail")
+        } catch let error as CanonicalDirectoryService.Failure {
+            #expect(error == .groupNotDeletable)
+        }
+
+        #expect(category.categoryGroupIdentity == groupID)
+        #expect(try context.fetch(FetchDescriptor<DurableCategoryGroup>())
+            .contains { $0.groupIdentity == groupID })
+    }
+
     @Test func deletionRemovesDuplicatesAndMovesEveryReferenceToUnassigned()
         throws
     {
