@@ -202,6 +202,7 @@ public actor RecordedYNABClient: YNABClient {
     public var scheduledResult: YNABScheduledTransactionsResponse
     private var token: String?
     public private(set) var budgetsCallCount: Int = 0
+    public private(set) var categoriesCallCount: Int = 0
 
     public init(
         budgets: [YNABBudgetSummary] = [],
@@ -227,7 +228,10 @@ public actor RecordedYNABClient: YNABClient {
     }
     public func accounts(budgetId: String, lastKnowledge: Int64?) async throws -> YNABAccountsResponse { accountsResult }
     public func payees(budgetId: String, lastKnowledge: Int64?) async throws -> YNABPayeesResponse { payeesResult }
-    public func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse { categoriesResult }
+    public func categories(budgetId: String, lastKnowledge: Int64?) async throws -> YNABCategoriesResponse {
+        categoriesCallCount += 1
+        return categoriesResult
+    }
     public func transactions(budgetId: String, accountId: String?, sinceDate: Date?, lastKnowledge: Int64?) async throws -> YNABTransactionsResponse { transactionsResult }
     public func scheduledTransactions(budgetId: String, lastKnowledge: Int64?) async throws -> YNABScheduledTransactionsResponse { scheduledResult }
     public func monthDetail(budgetId: String, month: String) async throws -> YNABMonthDetailDTO {

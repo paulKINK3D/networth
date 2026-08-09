@@ -542,15 +542,8 @@ public final class SyncCoordinator {
     }
 
     private func upsertCategories(_ groups: [YNABCategoryGroupDTO], budgetId: String) {
-        let canonicalRows = (try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalCategory>()
-        )) ?? []
-        var canonicalByID: [String: DurableCanonicalCategory] = [:]
-        for row in canonicalRows.sorted(by: {
-            $0.updatedAt < $1.updatedAt
-        }) {
-            canonicalByID[row.canonicalId] = row
-        }
+        // YNAB categories are disposable reference data only. They must never
+        // create or mutate Networth's durable category directory.
         for group in groups {
             for cat in group.categories {
                 let targetId = cat.id
@@ -568,34 +561,6 @@ public final class SyncCoordinator {
                         name: cat.name,
                         hidden: cat.hidden || group.hidden,
                         deleted: cat.deleted || group.deleted
-                    ))
-                }
-                let canonicalId = "ynab:\(cat.id)"
-                let sourceHidden = cat.hidden || group.hidden
-                let sourceDeleted = cat.deleted || group.deleted
-                if let canonical = canonicalByID[canonicalId] {
-                    canonical.ynabCategoryId = cat.id
-                    canonical.ynabGroupId = group.id
-                    canonical.sourceName = cat.name
-                    canonical.sourceGroupName = group.name
-                    canonical.deletedAtSource = sourceDeleted
-                    if !canonical.userEdited {
-                        canonical.name = cat.name
-                        canonical.groupName = group.name
-                        canonical.hidden = sourceHidden
-                    }
-                    canonical.updatedAt = .now
-                } else {
-                    mainContext.insert(DurableCanonicalCategory(
-                        canonicalId: canonicalId,
-                        ynabCategoryId: cat.id,
-                        ynabGroupId: group.id,
-                        name: cat.name,
-                        groupName: group.name,
-                        sourceName: cat.name,
-                        sourceGroupName: group.name,
-                        hidden: sourceHidden,
-                        deletedAtSource: sourceDeleted
                     ))
                 }
             }

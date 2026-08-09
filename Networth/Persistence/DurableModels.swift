@@ -385,8 +385,9 @@ public final class DurablePayeeAlias {
     }
 }
 
-/// Editable category catalog seeded from YNAB. Stable category identity and
-/// group identity remain intact even when the user changes their local names.
+/// Networth-owned category catalog. Legacy YNAB identity/source fields remain
+/// readable for persisted compatibility, but reference imports never write or
+/// update category rows.
 @Model
 public final class DurableCanonicalCategory {
     public var id: UUID = UUID()
@@ -442,8 +443,8 @@ public final class DurableCanonicalCategory {
 /// Networth-owned category-group directory. A group's reporting role decides
 /// how its categories' activity is treated in reports: spending groups feed
 /// Spending History; income, investment, and transfer groups stay outside
-/// spending totals. YNAB may seed initial rows, but names, ordering, color,
-/// and visibility belong to Networth afterward. All fields have defaults for
+/// spending totals. YNAB never seeds these rows; names, ordering, color, and
+/// visibility belong exclusively to Networth. All fields have defaults for
 /// additive CloudKit schema compatibility.
 @Model
 public final class DurableCategoryGroup {

@@ -8,9 +8,10 @@ import os
 /// Fetches YNAB data with the retained token — never during normal launch or
 /// sync — scoped per reconciled account to that account's imported Plaid
 /// coverage window, matches YNAB history against cached Plaid transactions,
-/// and writes `YNABReferenceSuggestion` rows plus Networth-owned canonical
-/// payees, category groups, and categories. Every match is a suggestion, not
-/// a reviewed decision; confirmed user decisions are never overwritten.
+/// and writes `YNABReferenceSuggestion` rows plus canonical contacts. YNAB
+/// category names remain suggestion evidence only: they never create or
+/// mutate Networth categories or groups. Every match is a suggestion, not a
+/// reviewed decision; confirmed user decisions are never overwritten.
 ///
 /// Raw YNAB responses are processed in memory and discarded: no
 /// `CachedTransaction`, `CachedCategory`, or other YNAB cache rows are
@@ -99,13 +100,6 @@ public final class YNABReferenceImportCoordinator {
                 phase = .error("No YNAB budget is available for this token.")
                 return false
             }
-
-            phase = .running("Importing categories")
-            let categoriesResponse = try await client.categories(
-                budgetId: budgetId, lastKnowledge: nil
-            )
-            seedCategoryGroupsAndCategories(categoriesResponse.category_groups)
-            ensureRoleGroupsExist()
 
             phase = .running("Importing contacts")
             let payeesResponse = try await client.payees(
@@ -252,7 +246,7 @@ public final class YNABReferenceImportCoordinator {
         return candidate.id
     }
 
-    // MARK: - Directory seeding (Networth-owned after import)
+    // MARK: - Contact seeding (Networth-owned after import)
 
     private func seedCanonicalPayees(_ payees: [YNABPayeeDTO]) {
         let existing = (try? mainContext.fetch(
@@ -280,123 +274,6 @@ public final class YNABReferenceImportCoordinator {
         }
     }
 
-    private func seedCategoryGroupsAndCategories(
-        _ groups: [YNABCategoryGroupDTO]
-    ) {
-        let existingGroups = (try? mainContext.fetch(
-            FetchDescriptor<DurableCategoryGroup>()
-        )) ?? []
-        let groupByIdentity = Dictionary(
-            uniqueKeysWithValues: existingGroups.map { ($0.groupIdentity, $0) }
-        )
-        let existingCategories = (try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalCategory>()
-        )) ?? []
-        let categoryByYNABID = Dictionary(
-            uniqueKeysWithValues: existingCategories.compactMap { row in
-                row.ynabCategoryId.map { ($0, row) }
-            }
-        )
-
-        for (index, group) in groups.enumerated() where !group.deleted {
-            let identity = "ynab:\(group.id)"
-            if groupByIdentity[identity] == nil {
-                // Seed only; names, ordering, roles, and visibility belong
-                // to Networth afterward — existing rows are never rewritten.
-                mainContext.insert(DurableCategoryGroup(
-                    groupIdentity: identity,
-                    name: group.name,
-                    displayOrder: index,
-                    reportingRole: Self.inferredRole(forGroupName: group.name),
-                    hidden: group.hidden
-                ))
-            }
-            for category in group.categories where !category.deleted {
-                if let row = categoryByYNABID[category.id] {
-                    row.sourceName = category.name
-                    row.sourceGroupName = group.name
-                    // Grouping belongs to Networth after import: fill only a
-                    // missing assignment, never move a category the user (or
-                    // a prior import) already placed.
-                    if row.categoryGroupIdentity == nil {
-                        row.categoryGroupIdentity = identity
-                    }
-                    if !row.userEdited {
-                        row.name = category.name
-                        row.groupName = group.name
-                        row.hidden = category.hidden || group.hidden
-                    }
-                    row.updatedAt = .now
-                } else {
-                    mainContext.insert(DurableCanonicalCategory(
-                        canonicalId: "ynab:\(category.id)",
-                        ynabCategoryId: category.id,
-                        ynabGroupId: group.id,
-                        name: category.name,
-                        groupName: group.name,
-                        sourceName: category.name,
-                        sourceGroupName: group.name,
-                        categoryGroupIdentity: identity,
-                        hidden: category.hidden || group.hidden
-                    ))
-                }
-            }
-        }
-    }
-
-    static func inferredRole(forGroupName name: String) -> CategoryReportingRole {
-        let lowered = name.lowercased()
-        if lowered.contains("income") { return .income }
-        if lowered.contains("invest") { return .investment }
-        return .spending
-    }
-
-    /// YNAB budgets often have no explicit income or investment group (YNAB
-    /// tracks inflows internally), yet the type-first contract needs a
-    /// category of the matching role for income and investment activity.
-    /// Guarantee one Networth-owned group + starter category per missing
-    /// role. Additive: never touches existing rows.
-    private func ensureRoleGroupsExist() {
-        let groups = (try? mainContext.fetch(
-            FetchDescriptor<DurableCategoryGroup>()
-        )) ?? []
-        let categories = (try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalCategory>()
-        )) ?? []
-        let fallbacks: [(role: CategoryReportingRole, identity: String,
-                         groupName: String, categoryName: String)] = [
-            (.income, "networth:income", "Income", "Income"),
-            (.investment, "networth:investments", "Investments",
-             "Investment Contributions")
-        ]
-        for fallback in fallbacks {
-            guard !groups.contains(where: {
-                $0.reportingRole == fallback.role && !$0.hidden
-            }) else { continue }
-            if !groups.contains(where: {
-                $0.groupIdentity == fallback.identity
-            }) {
-                mainContext.insert(DurableCategoryGroup(
-                    groupIdentity: fallback.identity,
-                    name: fallback.groupName,
-                    displayOrder: groups.count,
-                    reportingRole: fallback.role
-                ))
-            }
-            let categoryCanonicalId = "networth:\(fallback.identity)-default"
-            if !categories.contains(where: {
-                $0.canonicalId == categoryCanonicalId
-            }) {
-                mainContext.insert(DurableCanonicalCategory(
-                    canonicalId: categoryCanonicalId,
-                    name: fallback.categoryName,
-                    groupName: fallback.groupName,
-                    categoryGroupIdentity: fallback.identity
-                ))
-            }
-        }
-    }
-
     // MARK: - Suggestions
 
     private func rebuildSuggestions(
@@ -405,9 +282,9 @@ public final class YNABReferenceImportCoordinator {
         creditCardYNABIds: Set<String>
     ) throws -> Int {
         // The reference table is rebuildable evidence: delete and rebuild.
-        for row in (try? mainContext.fetch(
+        for row in try mainContext.fetch(
             FetchDescriptor<YNABReferenceSuggestion>()
-        )) ?? [] {
+        ) {
             mainContext.delete(row)
         }
 
@@ -419,30 +296,20 @@ public final class YNABReferenceImportCoordinator {
                 row.ynabPayeeId.map { ($0, row) }
             }
         )
-        let categories = (try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalCategory>()
-        )) ?? []
-        let categoryByYNABID = Dictionary(
-            uniqueKeysWithValues: categories.compactMap { row in
-                row.ynabCategoryId.map { ($0, row) }
-            }
-        )
-
         var written = 0
         for match in matches {
             guard let dto = dtoByID[match.legacyTransactionId],
                   let summary = dto.toSummary() else { continue }
             let payee = dto.payee_id.flatMap { payeeByYNABID[$0] }
-            let category = dto.category_id.flatMap { categoryByYNABID[$0] }
             let splitData: Data?
             if summary.isSplit {
                 let legs = summary.subtransactions.map { leg in
                     SubTransactionSummary(
                         id: leg.id,
                         amount: leg.amount,
-                        categoryId: leg.categoryId,
+                        categoryId: nil,
                         categoryName: leg.categoryName,
-                        categoryCanonicalId: leg.categoryId.map { "ynab:\($0)" },
+                        categoryCanonicalId: nil,
                         forecastTreatment: leg.forecastTreatment,
                         transferAccountId: leg.transferAccountId,
                         payeeName: leg.payeeName,
@@ -450,7 +317,7 @@ public final class YNABReferenceImportCoordinator {
                         deleted: leg.deleted
                     )
                 }
-                splitData = try? JSONEncoder().encode(legs)
+                splitData = try JSONEncoder().encode(legs)
             } else {
                 splitData = nil
             }
@@ -462,8 +329,8 @@ public final class YNABReferenceImportCoordinator {
                     ?? summary.payeeName?.trimmingCharacters(
                         in: .whitespacesAndNewlines
                     ) ?? "",
-                categoryCanonicalId: category?.canonicalId,
-                categoryNameSnapshot: category?.name ?? summary.categoryName,
+                categoryCanonicalId: nil,
+                categoryNameSnapshot: summary.categoryName,
                 forecastTreatment: Self.treatment(
                     for: summary, creditCardYNABIds: creditCardYNABIds
                 ),

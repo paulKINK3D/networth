@@ -2353,7 +2353,7 @@ struct AppContainerTests {
 
     // MARK: - YNAB reference import (step 2)
 
-    @Test func ynabReferenceImportBuildsSuggestionsAndSeedsDirectory() async throws {
+    @Test func ynabReferenceImportKeepsCategoriesAsEvidenceOnly() async throws {
         func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
             try JSONDecoder().decode(T.self, from: Data(json.utf8))
         }
@@ -2374,17 +2374,18 @@ struct AppContainerTests {
             #"{"transactions":[{"id":"y-1","date":"2026-07-24","amount":-42500,"cleared":"cleared","approved":true,"account_id":"ynab-checking","payee_id":"payee-1","payee_name":"Cafe","category_id":"cat-dining","category_name":"Dining","transfer_account_id":null,"transfer_transaction_id":null,"import_id":null,"memo":null,"deleted":false,"subtransactions":[]}],"server_knowledge":0}"#
         )
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let ynabClient = RecordedYNABClient(
+            budgets: budgets,
+            payees: payees,
+            categories: categories,
+            transactions: transactions
+        )
         let container = AppContainerController(
             secretStore: InMemorySecretStore(seed: [
                 .ynabPersonalAccessToken: "token"
             ]),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(
-                budgets: budgets,
-                payees: payees,
-                categories: categories,
-                transactions: transactions
-            ),
+            ynabClient: ynabClient,
             plaidClient: RecordedPlaidClient(),
             modelContainer: modelContainer
         )
@@ -2456,22 +2457,22 @@ struct AppContainerTests {
         #expect(suggestions.count == 1)
         #expect(suggestion.ynabTransactionId == "y-1")
         #expect(suggestion.payeeCanonicalId == "ynab:payee-1")
-        #expect(suggestion.categoryCanonicalId == "ynab:cat-dining")
+        #expect(suggestion.categoryCanonicalId == nil)
+        #expect(suggestion.categoryNameSnapshot == "Dining")
         #expect(suggestion.forecastTreatment == .ordinarySpending)
 
-        // Directory seeded with roles; raw YNAB rows never persisted.
+        // Category names remain evidence only. The import neither calls the
+        // categories endpoint nor creates durable categories or groups.
+        let categoriesCallCount = await ynabClient.categoriesCallCount
+        #expect(categoriesCallCount == 0)
         let groups = try ctx.fetch(FetchDescriptor<DurableCategoryGroup>())
-        #expect(groups.first {
-            $0.groupIdentity == "ynab:grp-inc"
-        }?.reportingRole == .income)
-        #expect(groups.first {
-            $0.groupIdentity == "ynab:grp-food"
-        }?.reportingRole == .spending)
-        let seededCategory = try #require(
-            try ctx.fetch(FetchDescriptor<DurableCanonicalCategory>())
-                .first { $0.canonicalId == "ynab:cat-dining" }
+        #expect(!groups.contains { $0.groupIdentity.hasPrefix("ynab:") })
+        let canonicalCategories = try ctx.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
         )
-        #expect(seededCategory.categoryGroupIdentity == "ynab:grp-food")
+        #expect(!canonicalCategories.contains {
+            $0.canonicalId.hasPrefix("ynab:") || $0.ynabCategoryId != nil
+        })
         #expect(try ctx.fetch(FetchDescriptor<CachedTransaction>()).isEmpty)
         #expect(try ctx.fetch(FetchDescriptor<CachedCategory>()).isEmpty)
         #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).isEmpty)
@@ -2482,11 +2483,67 @@ struct AppContainerTests {
         )
         #expect(row.displayName == "Cafe")
         #expect(row.categoryName == "Dining")
+        #expect(row.categoryCanonicalId == nil)
         #expect(row.requiresReview == true)
         let userDecisions = try ctx.fetch(
             FetchDescriptor<DurableCanonicalTransactionDecision>()
         ).filter { $0.provenanceRaw == ClassificationProvenance.user.rawValue }
         #expect(userDecisions.isEmpty)
+    }
+
+    @Test func legacyYNABSyncCachesCategoriesWithoutMutatingDirectory()
+        async throws {
+        let budgets = try JSONDecoder().decode(
+            [YNABBudgetSummary].self,
+            from: Data(
+                #"[{"id":"budget-1","name":"Main","last_modified_on":null,"currency_format":null}]"#.utf8
+            )
+        )
+        let categories = try JSONDecoder().decode(
+            YNABCategoriesResponse.self,
+            from: Data(
+                #"{"category_groups":[{"id":"group-1","name":"YNAB Group","hidden":false,"deleted":false,"categories":[{"id":"cat-existing","category_group_id":"group-1","name":"Renamed by YNAB","hidden":false,"deleted":false},{"id":"cat-new","category_group_id":"group-1","name":"New from YNAB","hidden":false,"deleted":false}]}],"server_knowledge":1}"#.utf8
+            )
+        )
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let manualCategory = DurableCanonicalCategory(
+            canonicalId: "networth:manual",
+            ynabCategoryId: "cat-existing",
+            name: "My Category",
+            groupName: "My Group",
+            sourceName: "Old reference name",
+            sourceGroupName: "Old reference group",
+            userEdited: true
+        )
+        context.insert(manualCategory)
+        try context.save()
+
+        let coordinator = SyncCoordinator(
+            client: RecordedYNABClient(
+                budgets: budgets,
+                categories: categories
+            ),
+            mainContext: context
+        )
+        await coordinator.syncAll(budgetId: "budget-1")
+
+        let durableCategories = try context.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        )
+        #expect(durableCategories.count == 1)
+        #expect(durableCategories.first?.canonicalId == "networth:manual")
+        #expect(durableCategories.first?.name == "My Category")
+        #expect(durableCategories.first?.groupName == "My Group")
+        #expect(durableCategories.first?.sourceName == "Old reference name")
+        #expect(durableCategories.first?.sourceGroupName == "Old reference group")
+
+        let cachedCategories = try context.fetch(
+            FetchDescriptor<CachedCategory>()
+        )
+        #expect(Set(cachedCategories.map(\.id)) == ["cat-existing", "cat-new"])
     }
 
     @Test func approveClusterWritesAuthoritativeDecisionsInOneSave() throws {
