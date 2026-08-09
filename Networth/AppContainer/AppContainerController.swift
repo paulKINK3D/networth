@@ -429,6 +429,21 @@ public final class AppContainerController {
         )
     }
 
+    func canonicalCategoryDeletionImpact(
+        canonicalId: String
+    ) throws -> CanonicalCategoryDeletionImpact {
+        try CanonicalDirectoryService(context: modelContainer.mainContext)
+            .deletionImpact(canonicalId: canonicalId)
+    }
+
+    @discardableResult
+    func deleteCanonicalCategory(
+        canonicalId: String
+    ) throws -> CanonicalCategoryDeletionImpact {
+        try CanonicalDirectoryService(context: modelContainer.mainContext)
+            .deleteCategory(canonicalId: canonicalId)
+    }
+
     public func setClaudeFallbackEnabled(_ enabled: Bool) {
         let descriptor = FetchDescriptor<DurableUserSettings>()
         guard let settings = try? modelContainer.mainContext.fetch(descriptor).first else {

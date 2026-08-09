@@ -2005,6 +2005,9 @@ private struct CanonicalCategoryEditor: View {
     @State private var name: String
     @State private var groupName: String
     @State private var hidden: Bool
+    @State private var showingDeleteConfirm = false
+    @State private var deletionImpact: CanonicalCategoryDeletionImpact?
+    @State private var deletionErrorMessage: String?
 
     init(category: DurableCanonicalCategory?) {
         self.category = category
@@ -2035,11 +2038,41 @@ private struct CanonicalCategoryEditor: View {
                     )
                 }
             }
+            if category != nil {
+                Section {
+                    Button(role: .destructive) {
+                        prepareDeletion()
+                    } label: {
+                        Text("Delete Category")
+                    }
+                    if let deletionErrorMessage {
+                        Text(deletionErrorMessage)
+                            .font(NwTypography.caption)
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                }
+            }
         }
         .navigationTitle(
             category == nil ? "New Category" : "Edit Category"
         )
         .navigationBarTitleDisplayMode(.inline)
+        .alert("Delete Category?", isPresented: $showingDeleteConfirm) {
+            Button("Delete", role: .destructive) {
+                guard let category else { return }
+                do {
+                    try container.deleteCanonicalCategory(
+                        canonicalId: category.canonicalId
+                    )
+                    dismiss()
+                } catch {
+                    deletionErrorMessage = error.localizedDescription
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(deletionMessage)
+        }
         .toolbar {
             if category == nil {
                 ToolbarItem(placement: .cancellationAction) {
@@ -2080,5 +2113,35 @@ private struct CanonicalCategoryEditor: View {
                 )
             }
         }
+    }
+
+    private func prepareDeletion() {
+        guard let category else { return }
+        do {
+            deletionImpact = try container.canonicalCategoryDeletionImpact(
+                canonicalId: category.canonicalId
+            )
+            deletionErrorMessage = nil
+            showingDeleteConfirm = true
+        } catch {
+            deletionImpact = nil
+            deletionErrorMessage = error.localizedDescription
+        }
+    }
+
+    private var deletionMessage: String {
+        guard let deletionImpact else {
+            return "This can't be undone."
+        }
+        let transactions = deletionImpact.transactionCount == 1
+            ? "1 transaction"
+            : "\(deletionImpact.transactionCount) transactions"
+        let expectations = deletionImpact.recurringExpectationCount == 1
+            ? "1 recurring expectation"
+            : "\(deletionImpact.recurringExpectationCount) recurring expectations"
+        let duplicateNote = deletionImpact.categoryRecordCount > 1
+            ? " \(deletionImpact.categoryRecordCount) duplicate category records will be removed."
+            : ""
+        return "\(transactions) and \(expectations) will move to Unassigned.\(duplicateNote) This can't be undone."
     }
 }

@@ -16,6 +16,8 @@
 		1D78662F7FBF2D8D0135391C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ADDCB9332B061DD3B3B6475D /* Assets.xcassets */; };
 		2C94630AAC492D7D989576C3 /* SecretStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46AEE1E8769FD0365DCFDACD /* SecretStore.swift */; };
 		30AC8227EB22FED248375033 /* SafeSave.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8E0B6EEBCB472F8B2AF50EF /* SafeSave.swift */; };
+		35CD0B8D2A7E4D60A18E0004 /* CanonicalDirectoryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35CD0B8D2A7E4D60A18E0003 /* CanonicalDirectoryServiceTests.swift */; };
+		35CD0B8D2A7E4D60A18E0002 /* CanonicalDirectoryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35CD0B8D2A7E4D60A18E0001 /* CanonicalDirectoryService.swift */; };
 		7A11FE5C0DDA24D225030003 /* YNABReferenceImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A11FE5C0DDA24D225030004 /* YNABReferenceImport.swift */; };
 		31AE6D2EF3AA233A76DA534F /* NetWorthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06108EDF4711FC37956304D8 /* NetWorthView.swift */; };
 		3AA51D5A42B05D90E193DFA7 /* NwModalLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B66EA7CEF2BC6F62A7993567 /* NwModalLayout.swift */; };
@@ -93,6 +95,8 @@
 		31B61BCD772811EAD2BE147F /* NwLoadingState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwLoadingState.swift; sourceTree = "<group>"; };
 		31B717C7AC171203E3E7B365 /* NwCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwCard.swift; sourceTree = "<group>"; };
 		341C0448EBF9D1C9337844CE /* CardSettingsForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardSettingsForm.swift; sourceTree = "<group>"; };
+		35CD0B8D2A7E4D60A18E0001 /* CanonicalDirectoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalDirectoryService.swift; sourceTree = "<group>"; };
+		35CD0B8D2A7E4D60A18E0003 /* CanonicalDirectoryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalDirectoryServiceTests.swift; sourceTree = "<group>"; };
 		3A988782B660CD247AC4D6D5 /* ManualAssetForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualAssetForm.swift; sourceTree = "<group>"; };
 		42FB5FDDDD46ED86502D6E77 /* AppContainerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainerController.swift; sourceTree = "<group>"; };
 		45A47DBE9CC8F8A78C358517 /* BiometricGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricGate.swift; sourceTree = "<group>"; };
@@ -273,6 +277,7 @@
 			isa = PBXGroup;
 			children = (
 				E9085A745F14DDD4FBA55039 /* AppContainerTests.swift */,
+				35CD0B8D2A7E4D60A18E0003 /* CanonicalDirectoryServiceTests.swift */,
 				D7170A1E000000000000F00A /* GoalLedgerServiceTests.swift */,
 			);
 			path = NetworthTests;
@@ -333,6 +338,7 @@
 			isa = PBXGroup;
 			children = (
 				45A47DBE9CC8F8A78C358517 /* BiometricGate.swift */,
+				35CD0B8D2A7E4D60A18E0001 /* CanonicalDirectoryService.swift */,
 				E3C821A49A8355A2751B47DC /* ConnectivityMonitor.swift */,
 				D7170A1E000000000000F008 /* GoalLedgerService.swift */,
 				46AEE1E8769FD0365DCFDACD /* SecretStore.swift */,
@@ -461,6 +467,7 @@
 				1A234079B2796F4093178A28 /* AccountsView.swift in Sources */,
 				8614121B6B87ABFFECC4F72E /* AppContainerController.swift in Sources */,
 				905A9CF8744CAACA046F3E4A /* BiometricGate.swift in Sources */,
+				35CD0B8D2A7E4D60A18E0002 /* CanonicalDirectoryService.swift in Sources */,
 				59DC4BA6A3F6BF7CF6CB39C6 /* CachedYNABModels.swift in Sources */,
 				5B9406B5529A3ADDF1C837C8 /* CardSettingsForm.swift in Sources */,
 				D5DBF9EEF402C738AA9257FB /* ConnectivityMonitor.swift in Sources */,
@@ -518,6 +525,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EAC39DDB209373670EAE5F28 /* AppContainerTests.swift in Sources */,
+				35CD0B8D2A7E4D60A18E0004 /* CanonicalDirectoryServiceTests.swift in Sources */,
 				D7170A1E000000000000F00B /* GoalLedgerServiceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
