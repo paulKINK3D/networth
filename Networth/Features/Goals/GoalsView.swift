@@ -369,6 +369,14 @@ actor GoalsBuildActor {
         let plaidAccounts = try modelContext.fetch(
             FetchDescriptor<CachedPlaidAccount>()
         )
+        let allTransactionRows = try modelContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate { !$0.deleted }
+            )
+        )
+        let transactionRows = allTransactionRows.filter {
+            !$0.pending && !$0.requiresReview
+        }
 
         let financialById = Dictionary(
             accounts.map { ($0.canonicalAccountId, $0) },
@@ -412,13 +420,6 @@ actor GoalsBuildActor {
                 && $0.targetMode == .emergencyMonths
         }
         if needsMedian {
-            let rows = try modelContext.fetch(
-                FetchDescriptor<CachedFinancialTransaction>(
-                    predicate: #Predicate {
-                        !$0.deleted && !$0.pending && !$0.requiresReview
-                    }
-                )
-            )
             let groups = try modelContext.fetch(
                 FetchDescriptor<DurableCategoryGroup>()
             )
@@ -429,7 +430,7 @@ actor GoalsBuildActor {
                 groups: groups, categories: categories, accounts: accounts
             )
             let entries = SpendingEntryPipeline.adjustedEntries(
-                rows: rows, ledgerEntries: ledgerRows,
+                rows: transactionRows, ledgerEntries: ledgerRows,
                 context: pipelineContext
             )
             let months = SpendingHistoryBuilder.build(
@@ -452,16 +453,49 @@ actor GoalsBuildActor {
         let entriesByGoal = Dictionary(
             grouping: ledgerRows, by: \.goalId
         )
+        var transactionDeltaByGoal: [UUID: Int64] = [:]
+        var directlyAttributedExternalIds = Set<String>()
+        for transaction in transactionRows
+        where !transaction.subtransactionsDecodeFailed {
+            let legs = transaction.subtransactions.filter { !$0.deleted }
+            if !legs.isEmpty {
+                for leg in legs {
+                    guard let goalId = leg.goalId else { continue }
+                    switch leg.forecastTreatment {
+                    case .goalSpend, .goalRefund:
+                        transactionDeltaByGoal[goalId, default: 0] +=
+                            leg.amount.milliunits
+                        directlyAttributedExternalIds.insert(
+                            transaction.externalId
+                        )
+                    default:
+                        continue
+                    }
+                }
+            } else if let goalId = transaction.goalId {
+                switch transaction.forecastTreatment {
+                case .goalSpend, .goalRefund:
+                    transactionDeltaByGoal[goalId, default: 0] +=
+                        transaction.amountMilliunits
+                    directlyAttributedExternalIds.insert(transaction.externalId)
+                default:
+                    continue
+                }
+            }
+        }
         let nonDeletedExternalIds = Set(
-            try modelContext.fetch(
-                FetchDescriptor<CachedFinancialTransaction>(
-                    predicate: #Predicate { !$0.deleted }
-                )
-            ).map(\.externalId)
+            allTransactionRows.map(\.externalId)
         )
         func item(for row: DurableGoal) -> GoalsModel.GoalItem {
-            let entries = (entriesByGoal[row.id] ?? []).map { $0.toCore() }
+            let storedRows = (entriesByGoal[row.id] ?? []).filter { entry in
+                guard let externalId = entry.linkedTransactionExternalId else {
+                    return true
+                }
+                return !directlyAttributedExternalIds.contains(externalId)
+            }
+            let entries = storedRows.map { $0.toCore() }
             let balance = GoalMath.balance(entries: entries)
+                + Money(milliunits: transactionDeltaByGoal[row.id] ?? 0)
             let goal = row.toCore()
             var derived: Money?
             if goal.targetMode == .emergencyMonths, goal.isActive,

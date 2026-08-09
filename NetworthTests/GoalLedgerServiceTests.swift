@@ -444,6 +444,44 @@ struct GoalLedgerServiceTests {
 
     // MARK: - Pipeline external-id resolution
 
+    @Test func goalBalanceDerivesSpendAndRefundFromTransactionTypes() async throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let service = GoalLedgerService(context: context)
+        let goal = try service.createGoal(name: "Travel", kind: .refillable)
+        try service.addManualEntry(
+            goal: goal,
+            amount: Money(milliunits: 10_000_000),
+            date: .now,
+            note: nil
+        )
+        let spend = insertTransaction(
+            context,
+            id: "goal-spend",
+            externalId: "goal-spend",
+            amountMilliunits: -3_000_000,
+            treatment: .goalSpend
+        )
+        spend.goalId = goal.id
+        let refund = insertTransaction(
+            context,
+            id: "goal-refund",
+            externalId: "goal-refund",
+            amountMilliunits: 1_000_000,
+            treatment: .goalRefund
+        )
+        refund.goalId = goal.id
+        try context.save()
+
+        let model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        let item = try #require(model.activeGoals.first {
+            $0.goalUUID == goal.id
+        })
+        #expect(item.balance == Money(milliunits: 8_000_000))
+    }
+
     @Test func pipelineResolvesExternalIdsToCachedRowIds() throws {
         let context = try makeContext()
         _ = insertSavingsAccount(context, balance: 10_000_000)

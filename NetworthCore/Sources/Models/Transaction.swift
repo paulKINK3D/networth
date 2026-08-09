@@ -16,6 +16,9 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
     /// persisted payloads compatible.
     public let payeeCanonicalId: String?
     public let categoryCanonicalId: String?
+    /// Goal attribution is explicit transaction data, never inferred from an
+    /// account, category, or transfer.
+    public let goalId: UUID?
     public let forecastTreatment: ForecastTreatment?
     public let transferAccountId: String?
     public let memo: String?
@@ -34,6 +37,7 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
         categoryName: String?,
         payeeCanonicalId: String? = nil,
         categoryCanonicalId: String? = nil,
+        goalId: UUID? = nil,
         forecastTreatment: ForecastTreatment? = nil,
         transferAccountId: String? = nil,
         memo: String?,
@@ -51,6 +55,7 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
         self.categoryName = categoryName
         self.payeeCanonicalId = payeeCanonicalId
         self.categoryCanonicalId = categoryCanonicalId
+        self.goalId = goalId
         self.forecastTreatment = forecastTreatment
         self.transferAccountId = transferAccountId
         self.memo = memo
@@ -70,6 +75,8 @@ public struct SubTransactionSummary: Sendable, Hashable, Codable, Identifiable {
     /// Stable canonical category identity for the leg. Nil keeps YNAB-sourced
     /// and older persisted split payloads compatible.
     public let categoryCanonicalId: String?
+    /// Explicit goal attribution for Goal Spend / Goal Refund split legs.
+    public let goalId: UUID?
     /// Local Plaid reviews can classify each incoming split leg separately.
     /// Nil keeps YNAB-sourced and older persisted split payloads compatible.
     public let forecastTreatment: ForecastTreatment?
@@ -84,6 +91,7 @@ public struct SubTransactionSummary: Sendable, Hashable, Codable, Identifiable {
         categoryId: String?,
         categoryName: String?,
         categoryCanonicalId: String? = nil,
+        goalId: UUID? = nil,
         forecastTreatment: ForecastTreatment? = nil,
         transferAccountId: String? = nil,
         payeeName: String?,
@@ -95,6 +103,7 @@ public struct SubTransactionSummary: Sendable, Hashable, Codable, Identifiable {
         self.categoryId = categoryId
         self.categoryName = categoryName
         self.categoryCanonicalId = categoryCanonicalId
+        self.goalId = goalId
         self.forecastTreatment = forecastTreatment
         self.transferAccountId = transferAccountId
         self.payeeName = payeeName
@@ -487,8 +496,9 @@ public struct DiscretionaryBudgetCalculator: Sendable {
         _ treatment: ForecastTreatment?
     ) -> Bool {
         switch treatment {
-        case .income, .internalTransfer, .cardPayment,
-             .investmentContribution, .excluded:
+        case .income, .internalTransfer, .cardPayment, .reimbursement,
+             .goalSpend, .goalRefund, .investmentContribution, .excluded,
+             .unknown:
             return false
         case .ordinarySpending, .refund, nil:
             return true

@@ -446,6 +446,7 @@ struct CanonicalDirectoryService {
                 categoryId: nil,
                 categoryName: nil,
                 categoryCanonicalId: nil,
+                goalId: leg.goalId,
                 forecastTreatment: leg.forecastTreatment,
                 transferAccountId: leg.transferAccountId,
                 payeeName: leg.payeeName,

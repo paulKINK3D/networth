@@ -63,11 +63,17 @@ enum SpendingEntryPipeline {
     ) -> [SpendingHistoryEntry] {
         var entries: [SpendingHistoryEntry] = []
         for row in rows {
-            // Reimbursements are their own high-level classification and stay
-            // outside Spending History entirely. They are not purchase
-            // refunds and must never fall through category routing into
-            // Unassigned.
-            if row.category == .reimbursements { continue }
+            // Corrupt split JSON and unknown future raw types fail closed:
+            // neither can be reinterpreted as a normal unsplit expense.
+            if row.subtransactionsDecodeFailed
+                || (!row.isSplit && row.forecastTreatment == .unknown) {
+                continue
+            }
+            if row.forecastTreatment == .reimbursement
+                || row.forecastTreatment == .goalSpend
+                || row.forecastTreatment == .goalRefund {
+                continue
+            }
             if row.forecastTreatment == .internalTransfer {
                 // Moving money between owned accounts is not spending or
                 // savings activity. Goal funding comes from explicit reserve

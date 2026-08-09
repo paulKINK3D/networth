@@ -1951,6 +1951,7 @@ private struct PlaidSplitDraft: Identifiable {
     var categoryID: String?
     var categoryName: String
     var treatment: ForecastTreatment?
+    var goalId: UUID?
     var amountText: String
 
     init(
@@ -1959,6 +1960,7 @@ private struct PlaidSplitDraft: Identifiable {
         categoryID: String? = nil,
         categoryName: String = "",
         treatment: ForecastTreatment? = nil,
+        goalId: UUID? = nil,
         amountText: String = ""
     ) {
         self.id = id
@@ -1966,6 +1968,7 @@ private struct PlaidSplitDraft: Identifiable {
         self.categoryID = categoryID
         self.categoryName = categoryName
         self.treatment = treatment
+        self.goalId = goalId
         self.amountText = amountText
     }
 }
@@ -2722,7 +2725,16 @@ struct ClusterBatchEditSheet: View {
                 }
                 Section {
                     Picker("Transaction type", selection: $treatment) {
-                        ForEach(ForecastTreatment.allCases, id: \.self) {
+                        ForEach(
+                            TransactionType.allCases.filter {
+                                !TransactionTypeRules.requiresGoal($0)
+                                    && TransactionTypeRules.isValidAmountSign(
+                                        $0,
+                                        amountMilliunits: cluster.totalMilliunits
+                                    )
+                            },
+                            id: \.self
+                        ) {
                             Text($0.displayName).tag($0)
                         }
                     }
@@ -2817,6 +2829,8 @@ struct ClusterBatchEditSheet: View {
 
     private var canApprove: Bool {
         !displayName.trimmed.isEmpty
+            && treatment != .unknown
+            && !TransactionTypeRules.requiresGoal(treatment)
             && (!treatment.requiresCategory
                 || !categoryName.trimmed.isEmpty)
     }
@@ -2915,6 +2929,8 @@ struct PlaidTransactionReviewEditor: View {
     @Query private var durableCategoryGroups: [DurableCategoryGroup]
     @Query(sort: \CachedFinancialAccount.name)
     private var financialAccounts: [CachedFinancialAccount]
+    @Query(sort: \DurableGoal.name)
+    private var goalRows: [DurableGoal]
     let transaction: CachedFinancialTransaction
     let matchingTransactions: [CachedFinancialTransaction]
     let dismissAfterSave: Bool
@@ -2929,6 +2945,7 @@ struct PlaidTransactionReviewEditor: View {
     @State private var categoryName: String
     @State private var categoryCanonicalId: String?
     @State private var treatment: ForecastTreatment
+    @State private var goalId: UUID?
     @State private var cachedCategoryGroups: [PlaidCategoryGroup] = []
     @State private var payeeNameByID: [String: String] = [:]
     @State private var categoryNameByID: [String: String] = [:]
@@ -2970,50 +2987,47 @@ struct PlaidTransactionReviewEditor: View {
             initialValue: transaction.categoryCanonicalId
         )
         _treatment = State(initialValue: transaction.forecastTreatment)
+        _goalId = State(initialValue: transaction.goalId)
         let existingDrafts = transaction.subtransactions.map {
             // Show exactly what's stored. A part with no explicit choice and
             // no recognizable name stays UNSET — silently prefilling it as
             // Reimbursement converted income on the next save.
-            let splitTreatment: ForecastTreatment? =
-                if transaction.amountMilliunits > 0 {
-                    if let stored = $0.forecastTreatment {
-                        stored
-                    } else if $0.categoryName?
-                        .localizedCaseInsensitiveContains("income") == true {
-                        .income
-                    } else if $0.categoryName?
-                        .localizedCaseInsensitiveContains("reimburse") == true {
-                        .refund
-                    } else {
-                        nil
-                    }
-                } else {
-                    nil
-                }
+            let splitTreatment = $0.forecastTreatment
             return PlaidSplitDraft(
                 persistedID: $0.id,
                 categoryID: $0.categoryId,
                 categoryName: $0.categoryName ?? "",
                 treatment: splitTreatment,
+                goalId: $0.goalId,
                 amountText: CurrencyInputFormatter.text(
                     for: $0.amount.absolute
                 )
             )
         }
         let initialDrafts: [PlaidSplitDraft]
-        if existingDrafts.isEmpty {
+        if transaction.subtransactionsDecodeFailed {
+            initialDrafts = []
+        } else if existingDrafts.isEmpty {
             initialDrafts = transaction.amountMilliunits > 0
                 ? [
                     PlaidSplitDraft(treatment: .income),
-                    PlaidSplitDraft(treatment: .refund)
+                    PlaidSplitDraft(treatment: .reimbursement)
                 ]
-                : [PlaidSplitDraft(), PlaidSplitDraft()]
+                : [
+                    PlaidSplitDraft(treatment: .ordinarySpending),
+                    PlaidSplitDraft(treatment: .ordinarySpending),
+                ]
         } else {
             initialDrafts = existingDrafts
         }
-        _isSplit = State(initialValue: !existingDrafts.isEmpty)
+        _isSplit = State(initialValue: transaction.isSplit)
         _splitDrafts = State(initialValue: initialDrafts)
         _splitTransactionID = State(initialValue: transaction.id)
+        _splitSaveError = State(
+            initialValue: transaction.subtransactionsDecodeFailed
+                ? "The saved split data could not be read. Rebuild every split before saving."
+                : nil
+        )
     }
 
     var body: some View {
@@ -3284,7 +3298,12 @@ struct PlaidTransactionReviewEditor: View {
 
     private var typePicker: some View {
         Picker("Transaction type", selection: $treatment) {
-            ForEach(ForecastTreatment.allCases, id: \.self) {
+            ForEach(TransactionType.allCases.filter {
+                TransactionTypeRules.isValidAmountSign(
+                    $0,
+                    amountMilliunits: transaction.amountMilliunits
+                )
+            }, id: \.self) {
                 Text($0.displayName).tag($0)
             }
         }
@@ -3301,6 +3320,9 @@ struct PlaidTransactionReviewEditor: View {
                ) {
                 categoryCanonicalId = nil
                 categoryName = ""
+            }
+            if !TransactionTypeRules.requiresGoal(treatment) {
+                goalId = nil
             }
         }
     }
@@ -3338,7 +3360,15 @@ struct PlaidTransactionReviewEditor: View {
     private var categoryControls: some View {
         NwCard(style: .primary, padding: 0) {
             VStack(spacing: 0) {
-                if treatment.requiresCategory {
+                if TransactionTypeRules.requiresGoal(treatment) {
+                    Picker("Goal", selection: $goalId) {
+                        Text("Select goal").tag(UUID?.none)
+                        ForEach(activeGoals) { goal in
+                            Text(goal.name).tag(Optional(goal.id))
+                        }
+                    }
+                    .padding(NwSpacing.md)
+                } else if treatment.requiresCategory {
                     NavigationLink {
                         PlaidCategoryPicker(
                             selection: $categoryName,
@@ -3391,6 +3421,10 @@ struct PlaidTransactionReviewEditor: View {
         return "This historical transaction did not have one unique exact YNAB match. This confirmation improves future suggestions."
     }
 
+    private var activeGoals: [DurableGoal] {
+        goalRows.filter { !$0.archived && $0.completedAt == nil }
+    }
+
     private var reviewNavigationControls: some View {
         HStack(spacing: NwSpacing.md) {
             Button {
@@ -3421,68 +3455,63 @@ struct PlaidTransactionReviewEditor: View {
                 VStack(spacing: 0) {
                     ForEach($splitDrafts) { $draft in
                         HStack(spacing: NwSpacing.md) {
-                            if isIncomingSplit {
-                                VStack(alignment: .leading, spacing: NwSpacing.xs) {
-                                    Text("Classification")
-                                        .font(NwTypography.caption)
-                                        .foregroundStyle(.secondary)
-                                    Picker(
-                                        "Classification",
-                                        selection: $draft.treatment
-                                    ) {
-                                        Text("Select")
-                                            .tag(ForecastTreatment?.none)
-                                        Text("Income")
-                                            .tag(
-                                                Optional(
-                                                    ForecastTreatment.income
-                                                )
-                                            )
-                                        Text("Reimbursement")
-                                            .tag(
-                                                Optional(
-                                                    ForecastTreatment.refund
-                                                )
-                                            )
+                            VStack(
+                                alignment: .leading,
+                                spacing: NwSpacing.xs
+                            ) {
+                                Text("Type")
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(.secondary)
+                                Picker(
+                                    "Type",
+                                    selection: $draft.treatment
+                                ) {
+                                    Text("Select")
+                                        .tag(ForecastTreatment?.none)
+                                    ForEach(splitTypeChoices, id: \.self) {
+                                        Text($0.displayName)
+                                            .tag(Optional($0))
                                     }
-                                    .labelsHidden()
-                                    .pickerStyle(.menu)
-                                    .tint(NwAppColors.primary)
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            } else {
-                                NavigationLink {
-                                    PlaidCategoryPicker(
-                                        selection: $draft.categoryName,
-                                        groups: splitLegCategoryGroups,
-                                        onSelect: { option in
-                                            draft.categoryID =
-                                                option.categoryID
-                                        }
-                                    )
-                                } label: {
-                                    VStack(
-                                        alignment: .leading,
-                                        spacing: NwSpacing.xs
-                                    ) {
-                                        Text("Category")
-                                            .font(NwTypography.caption)
-                                            .foregroundStyle(.secondary)
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .tint(NwAppColors.primary)
+
+                                if draft.treatment?.requiresCategory == true {
+                                    NavigationLink {
+                                        PlaidCategoryPicker(
+                                            selection: $draft.categoryName,
+                                            groups: splitLegCategoryGroups,
+                                            onSelect: { option in
+                                                draft.categoryID = option.categoryID
+                                            }
+                                        )
+                                    } label: {
                                         Text(
                                             draft.categoryName.isEmpty
-                                                ? "Select"
+                                                ? "Select category"
                                                 : draft.categoryName
                                         )
                                         .lineLimit(1)
+                                        .contentShape(Rectangle())
                                     }
-                                    .frame(
-                                        maxWidth: .infinity,
-                                        alignment: .leading
-                                    )
-                                    .contentShape(Rectangle())
+                                    .buttonStyle(.plain)
+                                } else if let splitType = draft.treatment,
+                                          TransactionTypeRules.requiresGoal(
+                                            splitType
+                                          ) {
+                                    Picker("Goal", selection: $draft.goalId) {
+                                        Text("Select goal").tag(UUID?.none)
+                                        ForEach(activeGoals) { goal in
+                                            Text(goal.name)
+                                                .tag(Optional(goal.id))
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
                                 }
-                                .buttonStyle(.plain)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
 
                             NwAccessoryCurrencyTextField(
                                     text: $draft.amountText,
@@ -3522,7 +3551,11 @@ struct PlaidTransactionReviewEditor: View {
 
                     Divider()
                     Button {
-                        splitDrafts.append(PlaidSplitDraft())
+                        splitDrafts.append(PlaidSplitDraft(
+                            treatment: isIncomingSplit
+                                ? .income
+                                : .ordinarySpending
+                        ))
                     } label: {
                         Label("Add Split", systemImage: "plus.circle.fill")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -3574,6 +3607,14 @@ struct PlaidTransactionReviewEditor: View {
         selectedSplitTransaction.amountMilliunits > 0
     }
 
+    private var splitTypeChoices: [TransactionType] {
+        if isIncomingSplit {
+            [.income, .refund, .reimbursement, .goalRefund]
+        } else {
+            [.ordinarySpending, .reimbursement, .goalSpend]
+        }
+    }
+
     private var enteredSplitTotal: Money {
         Money(milliunits: splitDrafts.reduce(Int64(0)) { total, draft in
             total + (parsedSplitAmount(draft)?.milliunits ?? 0)
@@ -3598,38 +3639,37 @@ struct PlaidTransactionReviewEditor: View {
         let sign: Int64 = selected.amountMilliunits < 0 ? -1 : 1
         var result: [SubTransactionSummary] = []
         for draft in splitDrafts {
-            guard let amount = parsedSplitAmount(draft) else { return nil }
-            if isIncomingSplit {
-                guard let treatment = draft.treatment,
-                      treatment == .income || treatment == .refund else {
+            guard let amount = parsedSplitAmount(draft),
+                  let treatment = draft.treatment,
+                  splitTypeChoices.contains(treatment) else { return nil }
+            let category: (id: String, name: String)?
+            if treatment.requiresCategory {
+                guard let resolved = activeCategory(for: draft) else {
                     return nil
                 }
-                result.append(SubTransactionSummary(
-                    id: draft.persistedID
-                        ?? "plaid-split:\(selected.externalId):\(draft.id.uuidString)",
-                    amount: Money(
-                        milliunits: amount.milliunits * sign
-                    ),
-                    categoryId: nil,
-                    categoryName: treatment == .income
-                        ? "Income"
-                        : "Reimbursement",
-                    forecastTreatment: treatment,
-                    payeeName: nil,
-                    memo: nil,
-                    deleted: false
-                ))
-                continue
+                category = resolved
+            } else {
+                category = nil
             }
-            guard let category = activeCategory(for: draft) else {
-                return nil
+            let resolvedGoalId: UUID?
+            if TransactionTypeRules.requiresGoal(treatment) {
+                guard let goalId = draft.goalId,
+                      activeGoals.contains(where: { $0.id == goalId }) else {
+                    return nil
+                }
+                resolvedGoalId = goalId
+            } else {
+                resolvedGoalId = nil
             }
             result.append(SubTransactionSummary(
                 id: draft.persistedID
                     ?? "plaid-split:\(selected.externalId):\(draft.id.uuidString)",
                 amount: Money(milliunits: amount.milliunits * sign),
-                categoryId: category.id,
-                categoryName: category.name,
+                categoryId: category?.id,
+                categoryName: category?.name,
+                categoryCanonicalId: category?.id,
+                goalId: resolvedGoalId,
+                forecastTreatment: treatment,
                 payeeName: nil,
                 memo: nil,
                 deleted: false
@@ -3648,6 +3688,9 @@ struct PlaidTransactionReviewEditor: View {
                 && reviewedSplitTransactions != nil
         }
         return payeeCanonicalId != nil
+            && (treatment != .unknown)
+            && (!TransactionTypeRules.requiresGoal(treatment)
+                || goalId != nil)
             && (!treatment.requiresCategory
                 || (categoryCanonicalId != nil
                     && !categoryName.trimmed.isEmpty))
@@ -3727,6 +3770,9 @@ struct PlaidTransactionReviewEditor: View {
                 treatment: treatment,
                 categoryCanonicalId: treatment.requiresCategory
                     ? categoryCanonicalId
+                    : nil,
+                goalId: TransactionTypeRules.requiresGoal(treatment)
+                    ? goalId
                     : nil
             ) else {
                 splitSaveError =
@@ -4262,6 +4308,12 @@ func typeConsequenceFootnote(for treatment: ForecastTreatment) -> String {
         "Reduces spending in its category."
     case .income:
         "Money in. Never counts as spending."
+    case .reimbursement:
+        "Money paid or received for reimbursement. Excluded from spending."
+    case .goalSpend:
+        "Paid from the selected goal. Excluded from regular monthly spending."
+    case .goalRefund:
+        "Returned to the selected goal. Excluded from regular monthly spending."
     case .internalTransfer:
         "Money moving between your own accounts. Excluded from spending."
     case .cardPayment:
@@ -4270,6 +4322,8 @@ func typeConsequenceFootnote(for treatment: ForecastTreatment) -> String {
         "Money into investments. Excluded from spending; appears in cash projections."
     case .excluded:
         "Ignored by spending totals and projections."
+    case .unknown:
+        "This saved type is not recognized and must be reviewed."
     }
 }
 
@@ -4285,8 +4339,12 @@ extension ForecastTreatment {
         case .internalTransfer: "Internal transfer"
         case .cardPayment: "Credit-card payment"
         case .refund: "Refund"
+        case .reimbursement: "Reimbursement"
+        case .goalSpend: "Goal spend"
+        case .goalRefund: "Goal refund"
         case .investmentContribution: "Investment contribution"
         case .excluded: "Exclude from forecast"
+        case .unknown: "Needs review"
         }
     }
 }

@@ -66,12 +66,15 @@ public struct RecurringExpectation: Sendable, Hashable, Identifiable {
     /// - Investment contributions are cash outflows here while staying
     ///   outside every spending total.
     public func toScheduledSummary() -> ScheduledTransactionSummary {
-        ScheduledTransactionSummary(
+        let projectedAmount = RecurringExpectations.allowedTreatments.contains(
+            treatment
+        ) ? amount : Money.zero
+        return ScheduledTransactionSummary(
             id: "expectation:\(id)",
             accountId: accountId,
             nextDate: nextOccurrence,
             frequency: cadence.scheduleFrequency,
-            amount: amount,
+            amount: projectedAmount,
             payeeName: payeeName,
             categoryId: categoryCanonicalId,
             transferAccountId: treatment == .internalTransfer
@@ -164,7 +167,8 @@ public enum RecurringExpectations {
         _ transaction: TransactionSummary,
         expectation: RecurringExpectation
     ) -> Bool {
-        guard !transaction.deleted,
+        guard allowedTreatments.contains(expectation.treatment),
+              !transaction.deleted,
               transaction.amount.milliunits.signum()
                 == expectation.amount.milliunits.signum() else {
             return false

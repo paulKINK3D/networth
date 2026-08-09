@@ -610,6 +610,9 @@ public final class DurableCanonicalTransactionDecision {
     public var payeeNameSnapshot: String = ""
     public var categoryCanonicalId: String? = nil
     public var categoryNameSnapshot: String? = nil
+    /// Explicit attribution for Goal Spend / Goal Refund. The persisted raw
+    /// transaction-type field keeps its legacy name for CloudKit stability.
+    public var goalId: UUID? = nil
     public var amountSign: Int = 0
     public var forecastTreatmentRaw: String = ForecastTreatment.ordinarySpending.rawValue
     public var subtransactionsData: Data? = nil
@@ -626,6 +629,7 @@ public final class DurableCanonicalTransactionDecision {
         payeeNameSnapshot: String = "",
         categoryCanonicalId: String? = nil,
         categoryNameSnapshot: String? = nil,
+        goalId: UUID? = nil,
         amountSign: Int = 0,
         forecastTreatment: ForecastTreatment = .ordinarySpending,
         subtransactionsData: Data? = nil,
@@ -641,6 +645,7 @@ public final class DurableCanonicalTransactionDecision {
         self.payeeNameSnapshot = payeeNameSnapshot
         self.categoryCanonicalId = categoryCanonicalId
         self.categoryNameSnapshot = categoryNameSnapshot
+        self.goalId = goalId
         self.amountSign = amountSign
         self.forecastTreatmentRaw = forecastTreatment.rawValue
         self.subtransactionsData = subtransactionsData
@@ -652,8 +657,7 @@ public final class DurableCanonicalTransactionDecision {
 
     public var forecastTreatment: ForecastTreatment {
         get {
-            ForecastTreatment(rawValue: forecastTreatmentRaw)
-                ?? .ordinarySpending
+            TransactionType(rawValue: forecastTreatmentRaw) ?? .unknown
         }
         set { forecastTreatmentRaw = newValue.rawValue }
     }
@@ -851,7 +855,7 @@ public final class DurableMerchantRule {
             preferredName: preferredName,
             category: NativeTransactionCategory(rawValue: categoryRaw) ?? .other,
             categoryName: categoryName,
-            treatment: ForecastTreatment(rawValue: forecastTreatmentRaw) ?? .ordinarySpending,
+            treatment: TransactionType(rawValue: forecastTreatmentRaw) ?? .unknown,
             categoryReusable: categoryReusable,
             provenance: ClassificationProvenance(rawValue: provenanceRaw) ?? .user,
             confirmed: confirmed
@@ -1486,7 +1490,7 @@ public final class DurableRecurringExpectation {
     }
 
     public var forecastTreatment: ForecastTreatment {
-        get { ForecastTreatment(rawValue: forecastTreatmentRaw) ?? .ordinarySpending }
+        get { TransactionType(rawValue: forecastTreatmentRaw) ?? .unknown }
         set { forecastTreatmentRaw = newValue.rawValue }
     }
 

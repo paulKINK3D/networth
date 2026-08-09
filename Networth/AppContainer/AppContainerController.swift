@@ -310,7 +310,8 @@ public final class AppContainerController {
         payeeCanonicalId: String? = nil,
         categoryName: String?,
         treatment: ForecastTreatment,
-        categoryCanonicalId: String? = nil
+        categoryCanonicalId: String? = nil,
+        goalId: UUID? = nil
     ) -> Bool {
         plaidTransactionSyncCoordinator.confirmTransaction(
             id: id,
@@ -318,7 +319,8 @@ public final class AppContainerController {
             payeeCanonicalId: payeeCanonicalId,
             categoryName: categoryName,
             treatment: treatment,
-            categoryCanonicalId: categoryCanonicalId
+            categoryCanonicalId: categoryCanonicalId,
+            goalId: goalId
         )
     }
 

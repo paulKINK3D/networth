@@ -58,7 +58,8 @@ struct BudgetLeg {
 enum BudgetLegExtractor {
     /// Treatments that never contribute to the budget in any direction.
     private static let skippedTreatments: Set<ForecastTreatment> = [
-        .internalTransfer, .cardPayment, .investmentContribution, .excluded
+        .internalTransfer, .cardPayment, .investmentContribution,
+        .reimbursement, .goalSpend, .goalRefund, .excluded, .unknown
     ]
 
     private static let nonSpendPayees: Set<String> = [

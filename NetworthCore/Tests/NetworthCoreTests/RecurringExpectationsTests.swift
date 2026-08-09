@@ -72,6 +72,25 @@ struct RecurringExpectationsTests {
 
     // MARK: - Occurrence math
 
+    @Test func unsupportedTransactionTypesFailClosed() {
+        let unknown = expectation(
+            treatment: .unknown,
+            next: date(2026, 8, 15)
+        )
+        let transaction = historical(
+            id: "rent-actual",
+            date: date(2026, 8, 15),
+            amount: Money.dollars(-1_500),
+            payee: "Landlord"
+        )
+
+        #expect(unknown.toScheduledSummary().amount == .zero)
+        #expect(!RecurringExpectations.matchesIdentity(
+            transaction,
+            expectation: unknown
+        ))
+    }
+
     @Test func advanceCoversEveryCadence() {
         let anchor = date(2026, 1, 31)
         #expect(RecurringExpectations.advance(anchor, cadence: .weekly, calendar: utc)

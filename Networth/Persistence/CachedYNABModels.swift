@@ -605,6 +605,9 @@ public final class CachedFinancialTransaction {
     public var nativeCategoryRaw: String
     public var categoryCanonicalId: String? = nil
     public var categoryName: String? = nil
+    /// Explicit attribution for Goal Spend / Goal Refund. Cached locally;
+    /// the durable decision stores the authoritative copy.
+    public var goalId: UUID? = nil
     public var forecastTreatmentRaw: String
     public var subtransactionsData: Data? = nil
     public var classificationConfidenceRaw: String
@@ -692,7 +695,17 @@ public final class CachedFinancialTransaction {
     }
 
     public var forecastTreatment: ForecastTreatment {
-        ForecastTreatment(rawValue: forecastTreatmentRaw) ?? .ordinarySpending
+        TransactionType(rawValue: forecastTreatmentRaw) ?? .unknown
+    }
+
+    public var subtransactionsDecodeFailed: Bool {
+        guard let subtransactionsData, !subtransactionsData.isEmpty else {
+            return false
+        }
+        return (try? JSONDecoder().decode(
+            [SubTransactionSummary].self,
+            from: subtransactionsData
+        )) == nil
     }
 
     public var subtransactions: [SubTransactionSummary] {
@@ -705,18 +718,22 @@ public final class CachedFinancialTransaction {
         )) ?? []
     }
 
-    public var isSplit: Bool { !subtransactions.isEmpty }
+    public var isSplit: Bool {
+        guard let subtransactionsData else { return false }
+        return !subtransactionsData.isEmpty
+    }
 
     public var classificationDecisionKey: String {
         if isSplit {
             let legs = subtransactions.map {
                 "\(($0.categoryName ?? "").lowercased()):"
                     + "\($0.forecastTreatment?.rawValue ?? ""):"
+                    + "\($0.goalId?.uuidString ?? ""):"
                     + "\($0.amount.milliunits)"
             }.joined(separator: ",")
             return "split|\(legs)"
         }
-        return "\(categoryDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())|\(forecastTreatment.rawValue)"
+        return "\(categoryDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())|\(forecastTreatment.rawValue)|\(goalId?.uuidString ?? "")"
     }
 
     public var reviewDecisionKey: String {
@@ -755,9 +772,14 @@ public final class CachedFinancialTransaction {
         // estimate; their dated cash-outflow modeling arrives with recurring
         // expectations (Phase 1 step 4).
         guard !deleted, !pending, !requiresReview,
+              !subtransactionsDecodeFailed,
               forecastTreatment != .excluded,
               forecastTreatment != .internalTransfer,
               forecastTreatment != .investmentContribution,
+              forecastTreatment != .reimbursement,
+              forecastTreatment != .goalSpend,
+              forecastTreatment != .goalRefund,
+              forecastTreatment != .unknown,
               forecastTreatment != .cardPayment else {
             return nil
         }
@@ -775,6 +797,7 @@ public final class CachedFinancialTransaction {
             categoryName: isSplit ? nil : categoryDisplayName,
             payeeCanonicalId: payeeCanonicalId,
             categoryCanonicalId: isSplit ? nil : categoryCanonicalId,
+            goalId: isSplit ? nil : goalId,
             forecastTreatment: forecastTreatment,
             transferAccountId: nil,
             memo: nil,
@@ -904,7 +927,7 @@ public final class YNABReferenceSuggestion {
     }
 
     public var forecastTreatment: ForecastTreatment {
-        ForecastTreatment(rawValue: forecastTreatmentRaw) ?? .ordinarySpending
+        TransactionType(rawValue: forecastTreatmentRaw) ?? .unknown
     }
 
     public var confidence: ClassificationConfidence {

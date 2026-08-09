@@ -1797,6 +1797,7 @@ public final class PlaidTransactionSyncCoordinator {
                     decision.categoryCanonicalId = category?.canonicalId
                     decision.categoryNameSnapshot =
                         category?.name ?? legacy.categoryName
+                    decision.goalId = nil
                     decision.amountSign =
                         Int(financial.amountMilliunits.signum())
                     decision.forecastTreatment = treatment
@@ -2147,6 +2148,7 @@ public final class PlaidTransactionSyncCoordinator {
         }
         row.categoryCanonicalId = suggestion.categoryCanonicalId
         row.categoryName = suggestion.categoryNameSnapshot
+        row.goalId = nil
         row.forecastTreatmentRaw = suggestion.forecastTreatmentRaw
         row.subtransactionsData = suggestion.subtransactionsData
         if let name = suggestion.categoryNameSnapshot {
@@ -2171,6 +2173,7 @@ public final class PlaidTransactionSyncCoordinator {
             : decision.payeeNameSnapshot
         row.categoryCanonicalId = decision.categoryCanonicalId
         row.categoryName = decision.categoryNameSnapshot
+        row.goalId = decision.goalId
         row.forecastTreatmentRaw = decision.forecastTreatmentRaw
         row.subtransactionsData = decision.subtransactionsData
         if let categoryName = decision.categoryNameSnapshot {
@@ -2328,14 +2331,19 @@ public final class PlaidTransactionSyncCoordinator {
         payeeCanonicalId: String?,
         categoryName: String?,
         treatment: ForecastTreatment,
-        categoryCanonicalId: String?
+        categoryCanonicalId: String?,
+        goalId: UUID?
     ) -> Bool {
         var descriptor = FetchDescriptor<CachedFinancialTransaction>(
             predicate: #Predicate { $0.id == id }
         )
         descriptor.fetchLimit = 1
         guard let row = try? mainContext.fetch(descriptor).first,
-              !row.pending else {
+              !row.pending,
+              TransactionTypeRules.isValidAmountSign(
+                treatment,
+                amountMilliunits: row.amountMilliunits
+              ) else {
             return false
         }
         let cleanedName = displayName.trimmingCharacters(
@@ -2366,6 +2374,21 @@ public final class PlaidTransactionSyncCoordinator {
         } else {
             category = nil
         }
+        let resolvedGoalId: UUID?
+        if TransactionTypeRules.requiresGoal(treatment) {
+            guard let goalId,
+                  let goals = try? mainContext.fetch(
+                    FetchDescriptor<DurableGoal>()
+                  ),
+                  goals.contains(where: {
+                    $0.id == goalId && !$0.archived && $0.completedAt == nil
+                  }) else {
+                return false
+            }
+            resolvedGoalId = goalId
+        } else {
+            resolvedGoalId = nil
+        }
         guard let payee = resolveOrCreateCanonicalPayee(
             named: cleanedName,
             preferredCanonicalId:
@@ -2388,6 +2411,7 @@ public final class PlaidTransactionSyncCoordinator {
             decision.payeeNameSnapshot = payee.name
             decision.categoryCanonicalId = category?.canonicalId
             decision.categoryNameSnapshot = category?.name
+            decision.goalId = resolvedGoalId
             decision.amountSign = Int(row.amountMilliunits.signum())
             decision.forecastTreatment = treatment
             decision.subtransactionsData = nil
@@ -2402,6 +2426,7 @@ public final class PlaidTransactionSyncCoordinator {
                 payeeNameSnapshot: payee.name,
                 categoryCanonicalId: category?.canonicalId,
                 categoryNameSnapshot: category?.name,
+                goalId: resolvedGoalId,
                 amountSign: Int(row.amountMilliunits.signum()),
                 forecastTreatment: treatment,
                 reviewed: true,
@@ -2455,51 +2480,54 @@ public final class PlaidTransactionSyncCoordinator {
             return false
         }
         let isIncoming = row.amountMilliunits > 0
+        guard let goals = try? mainContext.fetch(
+            FetchDescriptor<DurableGoal>()
+        ) else { return false }
+        let activeGoalIDs = Set(goals.filter {
+            !$0.archived && $0.completedAt == nil
+        }.map(\.id))
+        let allowedTypes: Set<TransactionType> = isIncoming
+            ? [.income, .refund, .reimbursement, .goalRefund]
+            : [.ordinarySpending, .reimbursement, .goalSpend]
         var canonicalSplits: [SubTransactionSummary] = []
         for split in subtransactions {
-            if isIncoming {
-                guard let treatment = split.forecastTreatment,
-                      treatment == .income || treatment == .refund else {
-                    return false
-                }
-                canonicalSplits.append(SubTransactionSummary(
-                    id: split.id,
-                    amount: split.amount,
-                    categoryId: nil,
-                    categoryName: treatment == .income
-                        ? "Income"
-                        : "Reimbursement",
-                    forecastTreatment: treatment,
-                    transferAccountId: nil,
-                    payeeName: split.payeeName,
-                    memo: split.memo,
-                    deleted: split.deleted
-                ))
-                continue
+            guard let treatment = split.forecastTreatment,
+                  allowedTypes.contains(treatment) else { return false }
+            let category: DurableCanonicalCategory?
+            if TransactionTypeRules.requiresCategory(treatment) {
+                let rawCategoryID = split.categoryCanonicalId
+                    ?? split.categoryId
+                guard let resolved = resolveCanonicalCategory(
+                    canonicalId: rawCategoryID.map {
+                        $0.hasPrefix("ynab:") || $0.hasPrefix("networth:")
+                            ? $0
+                            : "ynab:\($0)"
+                    },
+                    name: split.categoryName
+                ), TransactionTypeRules.isValidCombination(
+                    treatment: treatment,
+                    categoryRole: reportingRole(for: resolved)
+                ) else { return false }
+                category = resolved
+            } else {
+                category = nil
             }
-            guard let category = resolveCanonicalCategory(
-                canonicalId: split.categoryId.map {
-                    $0.hasPrefix("ynab:") || $0.hasPrefix("networth:")
-                        ? $0
-                        : "ynab:\($0)"
-                },
-                name: split.categoryName
-            ) else {
-                return false
-            }
-            // Outgoing split legs are ordinary spending: an income- or
-            // investment-group category must not slip in through a split.
-            guard TransactionTypeRules.isValidCombination(
-                treatment: .ordinarySpending,
-                categoryRole: reportingRole(for: category)
-            ) else {
-                return false
+            let resolvedGoalId: UUID?
+            if TransactionTypeRules.requiresGoal(treatment) {
+                guard let goalId = split.goalId,
+                      activeGoalIDs.contains(goalId) else { return false }
+                resolvedGoalId = goalId
+            } else {
+                resolvedGoalId = nil
             }
             canonicalSplits.append(SubTransactionSummary(
                 id: split.id,
                 amount: split.amount,
-                categoryId: category.canonicalId,
-                categoryName: category.name,
+                categoryId: category?.canonicalId,
+                categoryName: category?.name,
+                categoryCanonicalId: category?.canonicalId,
+                goalId: resolvedGoalId,
+                forecastTreatment: treatment,
                 transferAccountId: split.transferAccountId,
                 payeeName: split.payeeName,
                 memo: split.memo,
@@ -2511,16 +2539,10 @@ public final class PlaidTransactionSyncCoordinator {
         ) else {
             return false
         }
-        let treatment: ForecastTreatment
-        if row.amountMilliunits < 0 {
-            treatment = .ordinarySpending
-        } else if canonicalSplits.allSatisfy({
-            $0.forecastTreatment == .income
-        }) {
-            treatment = .income
-        } else {
-            treatment = .refund
-        }
+        let distinctTypes = Set(canonicalSplits.compactMap(\.forecastTreatment))
+        let treatment = distinctTypes.count == 1
+            ? distinctTypes.first ?? .unknown
+            : .unknown
         assignAliases(for: [row], to: payee)
         let decisions = (try? mainContext.fetch(
             FetchDescriptor<DurableCanonicalTransactionDecision>()
@@ -2539,6 +2561,7 @@ public final class PlaidTransactionSyncCoordinator {
         decision.payeeNameSnapshot = payee.name
         decision.categoryCanonicalId = nil
         decision.categoryNameSnapshot = "Split"
+        decision.goalId = nil
         decision.amountSign = Int(row.amountMilliunits.signum())
         decision.forecastTreatment = treatment
         decision.subtransactionsData = splitData
@@ -2757,6 +2780,7 @@ public final class PlaidTransactionSyncCoordinator {
                     amount: leg.amount,
                     categoryId: category.canonicalId,
                     categoryName: category.name,
+                    forecastTreatment: .ordinarySpending,
                     transferAccountId: leg.transferAccountId,
                     payeeName: leg.payeeName,
                     memo: leg.memo,
@@ -2782,6 +2806,7 @@ public final class PlaidTransactionSyncCoordinator {
             decision.payeeNameSnapshot = payee.name
             decision.categoryCanonicalId = nil
             decision.categoryNameSnapshot = "Split"
+            decision.goalId = nil
             decision.amountSign = Int(row.amountMilliunits.signum())
             if row.amountMilliunits < 0 {
                 decision.forecastTreatment = .ordinarySpending
@@ -2856,7 +2881,14 @@ public final class PlaidTransactionSyncCoordinator {
             }
         )
         guard let rows = try? mainContext.fetch(descriptor),
-              !rows.isEmpty else {
+              !rows.isEmpty,
+              !TransactionTypeRules.requiresGoal(treatment),
+              rows.allSatisfy({
+                TransactionTypeRules.isValidAmountSign(
+                    treatment,
+                    amountMilliunits: $0.amountMilliunits
+                )
+              }) else {
             return 0
         }
         let cleanedName = displayName.trimmingCharacters(
@@ -2909,6 +2941,7 @@ public final class PlaidTransactionSyncCoordinator {
             decision.payeeNameSnapshot = payee.name
             decision.categoryCanonicalId = category?.canonicalId
             decision.categoryNameSnapshot = category?.name
+            decision.goalId = nil
             decision.amountSign = Int(row.amountMilliunits.signum())
             decision.forecastTreatment = treatment
             decision.subtransactionsData = nil
@@ -3306,7 +3339,8 @@ public final class PlaidTransactionSyncCoordinator {
         payeeCanonicalId: String? = nil,
         categoryName: String?,
         treatment: ForecastTreatment,
-        categoryCanonicalId: String? = nil
+        categoryCanonicalId: String? = nil,
+        goalId: UUID? = nil
     ) -> Bool {
         return confirmCanonicalTransaction(
             id: id,
@@ -3314,7 +3348,8 @@ public final class PlaidTransactionSyncCoordinator {
             payeeCanonicalId: payeeCanonicalId,
             categoryName: categoryName,
             treatment: treatment,
-            categoryCanonicalId: categoryCanonicalId
+            categoryCanonicalId: categoryCanonicalId,
+            goalId: goalId
         )
     }
 

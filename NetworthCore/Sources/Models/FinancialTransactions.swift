@@ -91,19 +91,46 @@ public enum NativeTransactionCategory: String, Codable, Sendable, CaseIterable, 
     }
 }
 
-public enum ForecastTreatment: String, Codable, Sendable, CaseIterable {
+public enum TransactionType: String, Codable, Sendable, CaseIterable {
     case income
     case ordinarySpending
     case internalTransfer
     case cardPayment
     case refund
+    /// Money paid on someone else's behalf and expected back. Both the
+    /// outflow and its eventual repayment stay outside ordinary Spending.
+    case reimbursement
+    /// A purchase paid from one explicitly selected goal.
+    case goalSpend
+    /// Money returned to one explicitly selected goal.
+    case goalRefund
     /// Money moved into an investment account. Stays outside every spending
     /// total while remaining distinguishable from generic exclusions.
     /// Additive raw value; persisted fields default elsewhere, so this case
     /// is CloudKit-safe.
     case investmentContribution
     case excluded
+    /// An unreadable future/legacy raw value. Unknown values never inherit
+    /// ordinary-spending behavior and must be reviewed before use.
+    case unknown
+
+    public static let allCases: [TransactionType] = [
+        .ordinarySpending,
+        .income,
+        .refund,
+        .reimbursement,
+        .goalSpend,
+        .goalRefund,
+        .internalTransfer,
+        .cardPayment,
+        .investmentContribution,
+        .excluded,
+    ]
 }
+
+/// Source compatibility while call sites move to the product term. Persisted
+/// field names intentionally remain `forecastTreatmentRaw` for CloudKit.
+public typealias ForecastTreatment = TransactionType
 
 /// The type-first review contract: which category roles are valid for each
 /// transaction type, and which types take no ordinary category at all.
@@ -119,12 +146,34 @@ public enum TransactionTypeRules {
         switch treatment {
         case .ordinarySpending, .refund: [.spending]
         case .income, .investmentContribution,
-             .internalTransfer, .cardPayment, .excluded: nil
+             .internalTransfer, .cardPayment, .reimbursement,
+             .goalSpend, .goalRefund, .excluded, .unknown: nil
         }
     }
 
     public static func requiresCategory(_ treatment: ForecastTreatment) -> Bool {
         allowedCategoryRoles(for: treatment) != nil
+    }
+
+    public static func requiresGoal(_ treatment: TransactionType) -> Bool {
+        treatment == .goalSpend || treatment == .goalRefund
+    }
+
+    public static func isValidAmountSign(
+        _ treatment: TransactionType,
+        amountMilliunits: Int64
+    ) -> Bool {
+        switch treatment {
+        case .ordinarySpending, .goalSpend:
+            amountMilliunits < 0
+        case .income, .refund, .goalRefund:
+            amountMilliunits > 0
+        case .reimbursement, .internalTransfer, .cardPayment,
+             .investmentContribution, .excluded:
+            amountMilliunits != 0
+        case .unknown:
+            false
+        }
     }
 
     /// A nil role (category not yet assigned to a Networth-owned group) is

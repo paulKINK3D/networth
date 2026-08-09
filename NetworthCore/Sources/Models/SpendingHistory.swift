@@ -164,7 +164,8 @@ public enum SpendingHistoryBuilder {
         case .ordinarySpending, .refund, nil: true
         case .internalTransfer: reportingRole == .transfer
         case .investmentContribution: reportingRole == .investment
-        case .income, .cardPayment, .excluded: false
+        case .income, .cardPayment, .reimbursement, .goalSpend, .goalRefund,
+             .excluded, .unknown: false
         }
     }
 
@@ -236,7 +237,8 @@ public enum SpendingHistoryBuilder {
                 // The app supplies only the savings-account side: deposits
                 // are positive and withdrawals are negative.
                 reportedAmount = entry.amountMilliunits
-            case .income, .cardPayment, .excluded:
+            case .income, .cardPayment, .reimbursement, .goalSpend,
+                 .goalRefund, .excluded, .unknown:
                 continue
             }
             guard entry.date >= windowStart, entry.date <= now,

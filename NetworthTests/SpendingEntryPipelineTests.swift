@@ -88,14 +88,22 @@ struct SpendingEntryPipelineTests {
                 transaction(
                     id: "reimbursable-purchase",
                     accountID: "checking",
-                    treatment: .ordinarySpending,
-                    category: .reimbursements
+                    treatment: .reimbursement
                 ),
                 transaction(
                     id: "reimbursement",
                     accountID: "checking",
-                    treatment: .refund,
-                    category: .reimbursements
+                    treatment: .reimbursement
+                ),
+                transaction(
+                    id: "goal-spend",
+                    accountID: "checking",
+                    treatment: .goalSpend
+                ),
+                transaction(
+                    id: "goal-refund",
+                    accountID: "checking",
+                    treatment: .goalRefund
                 ),
                 transaction(
                     id: "ordinary",
@@ -107,6 +115,33 @@ struct SpendingEntryPipelineTests {
         )
 
         #expect(entries.map(\.transactionId) == ["ordinary"])
+    }
+
+    @Test func unknownTypesAndUnreadableSplitsFailClosed() {
+        let context = SpendingEntryPipeline.Context(
+            groups: [],
+            categories: [],
+            accounts: [account(id: "checking", type: .checking)]
+        )
+        let unknown = transaction(
+            id: "unknown",
+            accountID: "checking",
+            treatment: .ordinarySpending
+        )
+        unknown.forecastTreatmentRaw = "future-type"
+        let corrupt = transaction(
+            id: "corrupt-split",
+            accountID: "checking",
+            treatment: .ordinarySpending
+        )
+        corrupt.subtransactionsData = Data([0xFF])
+
+        #expect(unknown.forecastTreatment == .unknown)
+        #expect(corrupt.subtransactionsDecodeFailed)
+        #expect(SpendingEntryPipeline.assembleEntries(
+            rows: [unknown, corrupt],
+            context: context
+        ).isEmpty)
     }
 
     private func account(

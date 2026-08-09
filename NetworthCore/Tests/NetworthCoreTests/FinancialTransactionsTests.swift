@@ -805,11 +805,13 @@ struct FinancialTransactionsTests {
     }
 
     @Test func splitLegTreatmentPersistsAndOlderPayloadsRemainReadable() throws {
+        let goalId = UUID()
         let leg = SubTransactionSummary(
             id: "split-income",
             amount: Money.dollars(80),
             categoryId: nil,
             categoryName: "Income",
+            goalId: goalId,
             forecastTreatment: .income,
             payeeName: nil,
             memo: nil,
@@ -823,6 +825,7 @@ struct FinancialTransactionsTests {
             from: encoder.encode(leg)
         )
         #expect(roundTrip.forecastTreatment == .income)
+        #expect(roundTrip.goalId == goalId)
 
         var legacyObject = try #require(
             JSONSerialization.jsonObject(
@@ -830,6 +833,7 @@ struct FinancialTransactionsTests {
             ) as? [String: Any]
         )
         legacyObject.removeValue(forKey: "forecastTreatment")
+        legacyObject.removeValue(forKey: "goalId")
         let legacyData = try JSONSerialization.data(
             withJSONObject: legacyObject
         )
@@ -838,6 +842,7 @@ struct FinancialTransactionsTests {
             from: legacyData
         )
         #expect(legacy.forecastTreatment == nil)
+        #expect(legacy.goalId == nil)
     }
 
     @Test func canonicalContactLookupAcceptsOnlyTokenBoundaryVariants() {
@@ -1003,8 +1008,9 @@ struct FinancialTransactionsTests {
     @Test func onlySpendingAndRefundsTakeACategory() {
         // Income, investment contributions, transfers, card payments, and
         // exclusions are fully described without an ordinary category.
-        for treatment in [ForecastTreatment.income, .investmentContribution,
-                          .internalTransfer, .cardPayment, .excluded] {
+        for treatment in [TransactionType.income, .investmentContribution,
+                          .internalTransfer, .cardPayment, .reimbursement,
+                          .goalSpend, .goalRefund, .excluded, .unknown] {
             #expect(!TransactionTypeRules.requiresCategory(treatment))
             #expect(TransactionTypeRules.isValidCombination(
                 treatment: treatment, categoryRole: nil
@@ -1016,6 +1022,9 @@ struct FinancialTransactionsTests {
         }
         #expect(TransactionTypeRules.requiresCategory(.ordinarySpending))
         #expect(TransactionTypeRules.requiresCategory(.refund))
+        #expect(TransactionTypeRules.requiresGoal(.goalSpend))
+        #expect(TransactionTypeRules.requiresGoal(.goalRefund))
+        #expect(!TransactionTypeRules.requiresGoal(.ordinarySpending))
     }
 
     @Test func typeRulesAcceptUngroupedCategoriesLeniently() {
@@ -1026,6 +1035,28 @@ struct FinancialTransactionsTests {
                 treatment: treatment, categoryRole: nil
             ))
         }
+    }
+
+    @Test func transactionTypesEnforceDirectionAndUnknownFailsClosed() {
+        #expect(TransactionTypeRules.isValidAmountSign(
+            .goalSpend, amountMilliunits: -1
+        ))
+        #expect(!TransactionTypeRules.isValidAmountSign(
+            .goalSpend, amountMilliunits: 1
+        ))
+        #expect(TransactionTypeRules.isValidAmountSign(
+            .goalRefund, amountMilliunits: 1
+        ))
+        #expect(TransactionTypeRules.isValidAmountSign(
+            .reimbursement, amountMilliunits: -1
+        ))
+        #expect(TransactionTypeRules.isValidAmountSign(
+            .reimbursement, amountMilliunits: 1
+        ))
+        #expect(!TransactionTypeRules.isValidAmountSign(
+            .unknown, amountMilliunits: -1
+        ))
+        #expect(!TransactionType.allCases.contains(.unknown))
     }
 
 }
