@@ -169,8 +169,7 @@ struct SpendingEntryPipelineTests {
     private func transaction(
         id: String,
         accountID: String,
-        treatment: ForecastTreatment,
-        category: NativeTransactionCategory = .other
+        treatment: ForecastTreatment
     ) -> CachedFinancialTransaction {
         let summary = FinancialTransactionSummary(
             id: id,
@@ -200,7 +199,6 @@ struct SpendingEntryPipelineTests {
             summary: summary,
             classification: TransactionClassification(
                 displayName: id,
-                category: category,
                 categoryName: treatment == .ordinarySpending
                     ? "Other" : nil,
                 treatment: treatment,

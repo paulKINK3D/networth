@@ -12,12 +12,10 @@ export interface TransactionInferenceInput {
   plaidCategoryDetailed: string | null;
   plaidCategoryConfidence: string | null;
   direction: "inflow" | "outflow";
-  allowedCategoryCodes: string[];
 }
 
 export interface TransactionInferenceResult {
   displayName: string;
-  categoryCode: string;
   confidence: "high" | "medium" | "low";
 }
 
@@ -44,16 +42,12 @@ export async function inferTransaction(
         type: "string",
         description: "Short human-readable merchant or counterparty name.",
       },
-      categoryCode: {
-        type: "string",
-        enum: input.allowedCategoryCodes,
-      },
       confidence: {
         type: "string",
         enum: ["high", "medium", "low"],
       },
     },
-    required: ["displayName", "categoryCode", "confidence"],
+    required: ["displayName", "confidence"],
     additionalProperties: false,
   };
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -67,7 +61,7 @@ export async function inferTransaction(
       model: env.ANTHROPIC_MODEL?.trim() || "claude-haiku-4-5-20251001",
       max_tokens: 160,
       system:
-        "Classify one personal-finance transaction. Use only the supplied evidence. Do not infer identity, account ownership, location, or other facts. Return the cleanest defensible display name and exactly one allowed category.",
+        "Normalize one personal-finance transaction. Use only the supplied evidence. Do not infer identity, account ownership, location, category, or other facts. Return the cleanest defensible display name.",
       messages: [
         {
           role: "user",
@@ -113,19 +107,15 @@ export async function inferTransaction(
     throw new InferenceRequestError(502, "Claude returned invalid classification JSON");
   }
   const displayName = trimmedString(result.displayName, 120);
-  const categoryCode = trimmedString(result.categoryCode, 64);
   const confidence = trimmedString(result.confidence, 16);
   if (
     !displayName ||
-    !categoryCode ||
-    !input.allowedCategoryCodes.includes(categoryCode) ||
     !["high", "medium", "low"].includes(confidence)
   ) {
     throw new InferenceRequestError(502, "Claude returned an invalid classification");
   }
   return {
     displayName,
-    categoryCode,
     confidence: confidence as TransactionInferenceResult["confidence"],
   };
 }
@@ -137,19 +127,6 @@ export function parseInferenceInput(
   const direction = requiredTrimmedString(body.direction, 16);
   if (direction !== "inflow" && direction !== "outflow") {
     throw new InferenceRequestError(400, "direction must be inflow or outflow");
-  }
-  if (!Array.isArray(body.allowedCategoryCodes)) {
-    throw new InferenceRequestError(400, "allowedCategoryCodes is required");
-  }
-  const allowedCategoryCodes = [
-    ...new Set(
-      body.allowedCategoryCodes.map((value) =>
-        requiredTrimmedString(value, 64),
-      ),
-    ),
-  ];
-  if (allowedCategoryCodes.length === 0 || allowedCategoryCodes.length > 32) {
-    throw new InferenceRequestError(400, "allowedCategoryCodes is invalid");
   }
   return {
     rawDescription,
@@ -170,7 +147,6 @@ export function parseInferenceInput(
       32,
     ),
     direction,
-    allowedCategoryCodes,
   };
 }
 

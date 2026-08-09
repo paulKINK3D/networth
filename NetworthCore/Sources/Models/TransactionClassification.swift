@@ -324,25 +324,15 @@ public struct TransactionClassifier: Sendable {
         let rule = rules.first(where: {
             $0.confirmed && $0.fingerprint == transaction.merchantFingerprint
         })
-        let plaidCategory = nativeCategory(
-            primary: transaction.providerCategoryPrimary,
-            detailed: transaction.providerCategoryDetailed
-        )
-        let providerHighConfidence = ["HIGH", "VERY_HIGH"].contains(
-            transaction.providerCategoryConfidence?.uppercased() ?? ""
-        )
         let defaultTreatment = forecastTreatment(for: transaction)
         let providerContradictsRule = rule.map {
             $0.categoryReusable
-                && providerHighConfidence
-                && ((plaidCategory != nil && plaidCategory != $0.category)
-                    || defaultTreatment != $0.treatment)
+                && defaultTreatment != $0.treatment
         } ?? false
 
         if let rule, rule.categoryReusable, !providerContradictsRule {
             return TransactionClassification(
                 displayName: rule.preferredName,
-                category: rule.category,
                 categoryName: rule.categoryName,
                 treatment: rule.treatment,
                 confidence: .high,
@@ -354,65 +344,22 @@ public struct TransactionClassifier: Sendable {
         let preferredName = rule?.preferredName
 
         if let modelSuggestion {
-            let agrees = plaidCategory == modelSuggestion.category
-            let highConfidence = providerHighConfidence
-                && agrees
-                && modelSuggestion.confidence == .high
             return TransactionClassification(
                 displayName: preferredName ?? modelSuggestion.displayName,
-                category: modelSuggestion.category,
                 treatment: defaultTreatment,
-                confidence: highConfidence ? .high : modelSuggestion.confidence,
+                confidence: modelSuggestion.confidence,
                 provenance: modelSuggestion.provenance,
-                requiresReview: rule != nil || !highConfidence
+                requiresReview: true
             )
         }
 
         return TransactionClassification(
             displayName: preferredName ?? transaction.fallbackDisplayName,
-            category: plaidCategory
-                ?? (defaultTreatment == .income ? .income : .other),
             treatment: defaultTreatment,
-            confidence: providerHighConfidence ? .medium : .low,
+            confidence: .low,
             provenance: .plaidEnrichment,
             requiresReview: true
         )
-    }
-
-    public func nativeCategory(
-        primary: String?,
-        detailed: String?
-    ) -> NativeTransactionCategory? {
-        let primary = primary?.uppercased() ?? ""
-        let detailed = detailed?.uppercased() ?? ""
-        if primary.contains("REIMBURSE") || detailed.contains("REIMBURSE") {
-            return .reimbursements
-        }
-        if primary.contains("INCOME") { return .income }
-        if primary.contains("RENT") || primary.contains("HOME") { return .housing }
-        if primary.contains("UTILIT") { return .utilities }
-        if detailed.contains("GROCER") { return .groceries }
-        if primary.contains("FOOD") { return .dining }
-        if primary.contains("TRANSPORT") { return .transportation }
-        if primary.contains("MEDICAL") || primary.contains("HEALTH") { return .health }
-        if primary.contains("INSURANCE") { return .insurance }
-        if primary.contains("SHOP") || primary.contains("MERCHANDISE") { return .shopping }
-        if primary.contains("PERSONAL") { return .personalCare }
-        if primary.contains("ENTERTAINMENT") || primary.contains("RECREATION") {
-            return .entertainment
-        }
-        if detailed.contains("SUBSCRIPTION") { return .subscriptions }
-        if primary.contains("TRAVEL") { return .travel }
-        if primary.contains("EDUCATION") { return .education }
-        if primary.contains("CHILD") || primary.contains("PET") { return .familyAndPets }
-        if primary.contains("TAX") { return .taxes }
-        if primary.contains("FEE") || primary.contains("INTEREST") {
-            return .feesAndInterest
-        }
-        if primary.contains("GIFT") || primary.contains("DONATION") {
-            return .giftsAndDonations
-        }
-        return nil
     }
 
     public func forecastTreatment(

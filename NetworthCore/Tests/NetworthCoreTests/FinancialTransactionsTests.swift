@@ -388,7 +388,6 @@ struct FinancialTransactionsTests {
         let rule = MerchantClassificationRule(
             fingerprint: transaction.merchantFingerprint,
             preferredName: "Trader Joe's",
-            category: .groceries,
             categoryName: "Groceries & Household",
             treatment: .ordinarySpending,
             provenance: .user,
@@ -398,7 +397,6 @@ struct FinancialTransactionsTests {
         let result = TransactionClassifier().classify(transaction, rules: [rule])
 
         #expect(result.displayName == "Trader Joe's")
-        #expect(result.category == .groceries)
         #expect(result.categoryName == "Groceries & Household")
         #expect(result.provenance == .confirmedRule)
         #expect(result.requiresReview == false)
@@ -415,7 +413,6 @@ struct FinancialTransactionsTests {
         let rule = MerchantClassificationRule(
             fingerprint: transaction.merchantFingerprint,
             preferredName: "Target",
-            category: .groceries,
             categoryName: "Groceries",
             treatment: .ordinarySpending,
             categoryReusable: false,
@@ -426,11 +423,11 @@ struct FinancialTransactionsTests {
         let result = TransactionClassifier().classify(transaction, rules: [rule])
 
         #expect(result.displayName == "Target")
-        #expect(result.category == .shopping)
+        #expect(result.categoryName == nil)
         #expect(result.requiresReview)
     }
 
-    @Test func reusableRuleReturnsForReviewWhenPlaidStronglyContradictsIt() {
+    @Test func providerTaxonomyDoesNotOverrideConfirmedRule() {
         let transaction = plaidTransaction(
             merchantName: "VARIABLE MERCHANT",
             merchantEntityId: "variable",
@@ -441,7 +438,6 @@ struct FinancialTransactionsTests {
         let rule = MerchantClassificationRule(
             fingerprint: transaction.merchantFingerprint,
             preferredName: "Variable Merchant",
-            category: .dining,
             categoryName: "Dining Out",
             treatment: .ordinarySpending,
             categoryReusable: true,
@@ -452,11 +448,11 @@ struct FinancialTransactionsTests {
         let result = TransactionClassifier().classify(transaction, rules: [rule])
 
         #expect(result.displayName == "Variable Merchant")
-        #expect(result.category == .transportation)
-        #expect(result.requiresReview)
+        #expect(result.categoryName == "Dining Out")
+        #expect(!result.requiresReview)
     }
 
-    @Test func agreeingHighConfidenceModelAndPlaidCanAutoApply() {
+    @Test func highConfidenceModelSuggestionStillRequiresReview() {
         let transaction = plaidTransaction(
             merchantName: "Joe's Pizza",
             categoryPrimary: "FOOD_AND_DRINK",
@@ -465,7 +461,6 @@ struct FinancialTransactionsTests {
         )
         let model = ModelClassificationSuggestion(
             displayName: "Joe's Pizza",
-            category: .dining,
             confidence: .high,
             provenance: .appleModel
         )
@@ -476,9 +471,8 @@ struct FinancialTransactionsTests {
             modelSuggestion: model
         )
 
-        #expect(result.category == .dining)
         #expect(result.confidence == .high)
-        #expect(result.requiresReview == false)
+        #expect(result.requiresReview)
     }
 
     @Test func disagreementAlwaysRequiresReview() {
@@ -490,7 +484,6 @@ struct FinancialTransactionsTests {
         )
         let model = ModelClassificationSuggestion(
             displayName: "Target",
-            category: .groceries,
             confidence: .high,
             provenance: .claude
         )
@@ -501,7 +494,6 @@ struct FinancialTransactionsTests {
             modelSuggestion: model
         )
 
-        #expect(result.category == .groceries)
         #expect(result.requiresReview == true)
     }
 
@@ -534,21 +526,23 @@ struct FinancialTransactionsTests {
         let uncategorized = classifier.classify(unknownRefund, rules: [])
 
         #expect(categorized.treatment == .refund)
-        #expect(categorized.category == .shopping)
+        #expect(categorized.categoryName == nil)
         #expect(uncategorized.treatment == .refund)
-        #expect(uncategorized.category == .other)
+        #expect(uncategorized.categoryName == nil)
     }
 
-    @Test func reimbursementCategoryIsAvailableAndRecognized() {
-        let classifier = TransactionClassifier()
-
-        #expect(NativeTransactionCategory.reimbursements.displayName == "Reimbursements")
-        #expect(
-            classifier.nativeCategory(
-                primary: "REIMBURSEMENTS",
-                detailed: nil
-            ) == .reimbursements
+    @Test func providerCategoryDoesNotCreateAnAppCategory() {
+        let transaction = plaidTransaction(
+            amount: 20_000,
+            categoryPrimary: "REIMBURSEMENTS"
         )
+        let result = TransactionClassifier().classify(
+            transaction,
+            rules: []
+        )
+
+        #expect(result.categoryName == nil)
+        #expect(result.requiresReview)
     }
 
     @Test func discretionaryBudgetCountsSelectedCurrentMonthSpendingAndRefunds() {

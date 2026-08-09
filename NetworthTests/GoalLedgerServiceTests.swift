@@ -77,7 +77,6 @@ struct GoalLedgerServiceTests {
         )
         let classification = TransactionClassification(
             displayName: "Test Merchant",
-            category: .other,
             treatment: treatment,
             confidence: .high,
             provenance: .user,

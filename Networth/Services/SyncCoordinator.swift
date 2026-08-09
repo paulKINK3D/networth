@@ -1643,8 +1643,7 @@ public final class PlaidTransactionSyncCoordinator {
             row.categoryCanonicalId = nil
             row.categoryName = nil
             row.subtransactionsData = nil
-            row.nativeCategoryRaw =
-                sourceClassification.category.rawValue
+            row.nativeCategoryRaw = "other"
             row.forecastTreatmentRaw =
                 sourceClassification.treatment.rawValue
             row.classificationConfidenceRaw =
@@ -2084,10 +2083,6 @@ public final class PlaidTransactionSyncCoordinator {
                 row.categoryName = suggestion.categoryNameSnapshot
                 row.forecastTreatmentRaw = suggestion.forecastTreatmentRaw
                 row.subtransactionsData = suggestion.subtransactionsData
-                if let name = suggestion.categoryNameSnapshot {
-                    row.nativeCategoryRaw =
-                        nativeCategory(forCategoryName: name).rawValue
-                }
                 row.classificationConfidenceRaw = suggestion.confidenceRaw
                 row.classificationProvenanceRaw =
                     ClassificationProvenance.historicalMatch.rawValue
@@ -2104,10 +2099,6 @@ public final class PlaidTransactionSyncCoordinator {
                     row.categoryCanonicalId = pattern.categoryCanonicalId
                     row.categoryName = pattern.categoryNameSnapshot
                     row.forecastTreatmentRaw = pattern.forecastTreatmentRaw
-                    if let name = pattern.categoryNameSnapshot {
-                        row.nativeCategoryRaw =
-                            nativeCategory(forCategoryName: name).rawValue
-                    }
                     row.classificationConfidenceRaw =
                         ClassificationConfidence.high.rawValue
                     row.classificationProvenanceRaw =
@@ -2151,10 +2142,6 @@ public final class PlaidTransactionSyncCoordinator {
         row.goalId = nil
         row.forecastTreatmentRaw = suggestion.forecastTreatmentRaw
         row.subtransactionsData = suggestion.subtransactionsData
-        if let name = suggestion.categoryNameSnapshot {
-            row.nativeCategoryRaw =
-                nativeCategory(forCategoryName: name).rawValue
-        }
         row.classificationConfidenceRaw = suggestion.confidenceRaw
         row.classificationProvenanceRaw =
             ClassificationProvenance.historicalMatch.rawValue
@@ -2176,12 +2163,7 @@ public final class PlaidTransactionSyncCoordinator {
         row.goalId = decision.goalId
         row.forecastTreatmentRaw = decision.forecastTreatmentRaw
         row.subtransactionsData = decision.subtransactionsData
-        if let categoryName = decision.categoryNameSnapshot {
-            row.nativeCategoryRaw =
-                nativeCategory(forCategoryName: categoryName).rawValue
-        } else {
-            row.nativeCategoryRaw = NativeTransactionCategory.other.rawValue
-        }
+        row.nativeCategoryRaw = "other"
         row.classificationConfidenceRaw =
             ClassificationConfidence.high.rawValue
         row.classificationProvenanceRaw = decision.provenanceRaw
@@ -3305,8 +3287,6 @@ public final class PlaidTransactionSyncCoordinator {
         )) ?? []
         for row in rows where row.categoryCanonicalId == canonicalId {
             row.categoryName = cleanedName
-            row.nativeCategoryRaw =
-                nativeCategory(forCategoryName: cleanedName).rawValue
             row.updatedAt = .now
         }
         guard mainContext.safeSave(
@@ -3625,7 +3605,6 @@ public final class PlaidTransactionSyncCoordinator {
     ) -> TransactionClassification {
         TransactionClassification(
             displayName: suggestion.displayName,
-            category: suggestion.category,
             categoryName: suggestion.categoryName,
             treatment: suggestion.treatment,
             confidence: suggestion.confidence,
@@ -3801,7 +3780,7 @@ public final class PlaidTransactionSyncCoordinator {
         row.providerCategoryConfidence = summary.providerCategoryConfidence
         row.transactionCode = summary.transactionCode
         row.displayName = classification.displayName
-        row.nativeCategoryRaw = classification.category.rawValue
+        row.nativeCategoryRaw = "other"
         row.categoryName = classification.categoryName
         row.forecastTreatmentRaw = classification.treatment.rawValue
         row.subtransactionsData = subtransactionsData
@@ -3815,15 +3794,6 @@ public final class PlaidTransactionSyncCoordinator {
         // Plaid never un-removes an id. A later added/modified redelivery for
         // the same id must not bring a dead row back into spending.
         row.updatedAt = .now
-    }
-
-    private func nativeCategory(forCategoryName name: String) -> NativeTransactionCategory {
-        if let exact = NativeTransactionCategory.allCases.first(where: {
-            $0.displayName.localizedCaseInsensitiveCompare(name) == .orderedSame
-        }) {
-            return exact
-        }
-        return classifier.nativeCategory(primary: name, detailed: name) ?? .other
     }
 
     private func message(for error: PlaidClientError) -> String {

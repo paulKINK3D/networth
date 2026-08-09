@@ -807,7 +807,9 @@ public final class DurableMerchantRule {
     public var id: UUID = UUID()
     public var fingerprint: String = ""
     public var preferredName: String = ""
-    public var categoryRaw: String = NativeTransactionCategory.other.rawValue
+    /// Retained only for CloudKit schema compatibility. Built-in category
+    /// codes no longer participate in classification.
+    public var categoryRaw: String = "other"
     public var categoryName: String? = nil
     public var forecastTreatmentRaw: String = ForecastTreatment.ordinarySpending.rawValue
     public var categoryReusable: Bool = false
@@ -822,7 +824,6 @@ public final class DurableMerchantRule {
         id: UUID = UUID(),
         fingerprint: String = "",
         preferredName: String = "",
-        category: NativeTransactionCategory = .other,
         categoryName: String? = nil,
         forecastTreatment: ForecastTreatment = .ordinarySpending,
         categoryReusable: Bool = false,
@@ -836,7 +837,7 @@ public final class DurableMerchantRule {
         self.id = id
         self.fingerprint = fingerprint
         self.preferredName = preferredName
-        self.categoryRaw = category.rawValue
+        self.categoryRaw = "other"
         self.categoryName = categoryName
         self.forecastTreatmentRaw = forecastTreatment.rawValue
         self.categoryReusable = categoryReusable
@@ -853,7 +854,6 @@ public final class DurableMerchantRule {
             id: id,
             fingerprint: fingerprint,
             preferredName: preferredName,
-            category: NativeTransactionCategory(rawValue: categoryRaw) ?? .other,
             categoryName: categoryName,
             treatment: TransactionType(rawValue: forecastTreatmentRaw) ?? .unknown,
             categoryReusable: categoryReusable,
@@ -902,7 +902,8 @@ public final class DurableTransactionOverride {
     public var id: UUID = UUID()
     public var transactionExternalId: String = ""
     public var displayName: String = ""
-    public var categoryRaw: String = NativeTransactionCategory.other.rawValue
+    /// Retained only for CloudKit schema compatibility.
+    public var categoryRaw: String = "other"
     public var categoryName: String? = nil
     public var forecastTreatmentRaw: String = ForecastTreatment.ordinarySpending.rawValue
     public var subtransactionsData: Data? = nil
@@ -914,7 +915,6 @@ public final class DurableTransactionOverride {
         id: UUID = UUID(),
         transactionExternalId: String = "",
         displayName: String = "",
-        category: NativeTransactionCategory = .other,
         categoryName: String? = nil,
         forecastTreatment: ForecastTreatment = .ordinarySpending,
         subtransactionsData: Data? = nil,
@@ -925,7 +925,7 @@ public final class DurableTransactionOverride {
         self.id = id
         self.transactionExternalId = transactionExternalId
         self.displayName = displayName
-        self.categoryRaw = category.rawValue
+        self.categoryRaw = "other"
         self.categoryName = categoryName
         self.forecastTreatmentRaw = forecastTreatment.rawValue
         self.subtransactionsData = subtransactionsData

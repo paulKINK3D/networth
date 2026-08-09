@@ -16,33 +16,22 @@ test("inference input accepts only privacy-bounded classification fields", () =>
     plaidCategoryDetailed: "FOOD_AND_DRINK_RESTAURANTS",
     plaidCategoryConfidence: "HIGH",
     direction: "outflow",
-    allowedCategoryCodes: ["dining", "groceries"],
     exactAmount: 42.5,
     accountName: "Private Checking",
   });
 
   assert.equal(result.rawDescription, "SQ *JOES PIZZA 1842");
-  assert.deepEqual(result.allowedCategoryCodes, ["dining", "groceries"]);
+  assert.equal("allowedCategoryCodes" in result, false);
   assert.equal("exactAmount" in result, false);
   assert.equal("accountName" in result, false);
 });
 
-test("inference input rejects invalid directions and category sets", () => {
+test("inference input rejects invalid directions", () => {
   assert.throws(
     () =>
       parseInferenceInput({
         rawDescription: "Example",
         direction: "unknown",
-        allowedCategoryCodes: ["other"],
-      }),
-    InferenceRequestError,
-  );
-  assert.throws(
-    () =>
-      parseInferenceInput({
-        rawDescription: "Example",
-        direction: "outflow",
-        allowedCategoryCodes: [],
       }),
     InferenceRequestError,
   );

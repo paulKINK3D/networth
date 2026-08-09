@@ -653,7 +653,7 @@ public final class CachedFinancialTransaction {
         providerCategoryConfidence = summary.providerCategoryConfidence
         transactionCode = summary.transactionCode
         displayName = classification.displayName
-        nativeCategoryRaw = classification.category.rawValue
+        nativeCategoryRaw = "other"
         categoryName = classification.categoryName
         forecastTreatmentRaw = classification.treatment.rawValue
         self.subtransactionsData = subtransactionsData
@@ -667,14 +667,10 @@ public final class CachedFinancialTransaction {
         self.updatedAt = updatedAt
     }
 
-    public var category: NativeTransactionCategory {
-        NativeTransactionCategory(rawValue: nativeCategoryRaw) ?? .other
-    }
-
     public var categoryDisplayName: String {
         if isSplit { return "Split" }
         let trimmed = categoryName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? category.displayName : trimmed
+        return trimmed.isEmpty ? "Unassigned" : trimmed
     }
 
     /// Name review follows the user-facing local name once it is specific

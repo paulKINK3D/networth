@@ -322,7 +322,6 @@ struct CanonicalDirectoryServiceTests {
             summary: summary,
             classification: TransactionClassification(
                 displayName: "Transaction",
-                category: .other,
                 categoryName: "Other",
                 treatment: .ordinarySpending,
                 confidence: .high,

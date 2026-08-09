@@ -110,7 +110,6 @@ struct AppContainerTests {
             summary: confirmed,
             classification: TransactionClassification(
                 displayName: "Market",
-                category: .groceries,
                 categoryName: "Groceries",
                 treatment: .ordinarySpending,
                 confidence: .high,
@@ -146,7 +145,6 @@ struct AppContainerTests {
             ),
             classification: TransactionClassification(
                 displayName: "Unknown",
-                category: .other,
                 treatment: .ordinarySpending,
                 confidence: .low,
                 provenance: .plaidEnrichment,
@@ -1131,7 +1129,6 @@ struct AppContainerTests {
         let context = modelContainer.mainContext
         let classification = TransactionClassification(
             displayName: "Transaction",
-            category: .other,
             categoryName: "Reviewed Category",
             treatment: .ordinarySpending,
             confidence: .high,
@@ -1454,7 +1451,6 @@ struct AppContainerTests {
             summary: summary,
             classification: TransactionClassification(
                 displayName: "Store",
-                category: .shopping,
                 categoryName: "Shopping",
                 treatment: .ordinarySpending,
                 confidence: .high,
@@ -1515,7 +1511,6 @@ struct AppContainerTests {
             summary: summary,
             classification: TransactionClassification(
                 displayName: "Chase Credit Card Payment",
-                category: .income,
                 categoryName: "Income",
                 treatment: .cardPayment,
                 confidence: .medium,
@@ -1571,7 +1566,6 @@ struct AppContainerTests {
         context.insert(DurableMerchantRule(
             fingerprint: "merchant:gusto-existing",
             preferredName: "Gusto Payroll",
-            category: .income,
             categoryName: "Income",
             forecastTreatment: .income,
             categoryReusable: false,
@@ -1584,7 +1578,6 @@ struct AppContainerTests {
             summary: summary,
             classification: TransactionClassification(
                 displayName: "Gusto Pay",
-                category: .income,
                 categoryName: "Income",
                 treatment: .income,
                 confidence: .low,
@@ -1757,7 +1750,6 @@ struct AppContainerTests {
             summary: first,
             classification: TransactionClassification(
                 displayName: "Target",
-                category: .groceries,
                 categoryName: "Groceries",
                 treatment: .ordinarySpending,
                 confidence: .low,
@@ -1769,7 +1761,6 @@ struct AppContainerTests {
             summary: second,
             classification: TransactionClassification(
                 displayName: "Target",
-                category: .shopping,
                 categoryName: "Home Improvement",
                 treatment: .ordinarySpending,
                 confidence: .low,
@@ -1836,7 +1827,6 @@ struct AppContainerTests {
             summary: summary,
             classification: TransactionClassification(
                 displayName: "Old Merchant",
-                category: .other,
                 categoryName: "Old Category",
                 treatment: .ordinarySpending,
                 confidence: .low,
@@ -1894,7 +1884,6 @@ struct AppContainerTests {
         context.insert(DurableMerchantRule(
             fingerprint: summary.merchantFingerprint,
             preferredName: "Known Merchant",
-            category: .shopping,
             categoryName: "Shopping",
             forecastTreatment: .ordinarySpending,
             categoryReusable: false,
@@ -1970,7 +1959,6 @@ struct AppContainerTests {
             indn botto paul co id xxxxx36151 ppd
             """,
             preferredName: "Treasury Deposit",
-            category: .income,
             categoryName: "Income",
             forecastTreatment: .income,
             categoryReusable: false,
@@ -2650,7 +2638,6 @@ struct AppContainerTests {
         func transaction(
             id: String,
             amount: Int64,
-            category: NativeTransactionCategory,
             categoryName: String,
             categoryCanonicalId: String
         ) -> CachedFinancialTransaction {
@@ -2682,7 +2669,6 @@ struct AppContainerTests {
                 summary: summary,
                 classification: TransactionClassification(
                     displayName: categoryName,
-                    category: category,
                     categoryName: categoryName,
                     treatment: .ordinarySpending,
                     confidence: .high,
@@ -2697,14 +2683,12 @@ struct AppContainerTests {
         context.insert(transaction(
             id: "groceries",
             amount: -100_000,
-            category: .groceries,
             categoryName: "Groceries",
             categoryCanonicalId: "ynab:groceries"
         ))
         context.insert(transaction(
             id: "dining",
             amount: -50_000,
-            category: .dining,
             categoryName: "Dining",
             categoryCanonicalId: "networth:dining"
         ))

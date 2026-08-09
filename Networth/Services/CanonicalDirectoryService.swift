@@ -191,7 +191,7 @@ struct CanonicalDirectoryService {
                 if topLevelMatch {
                     row.categoryCanonicalId = nil
                     row.categoryName = nil
-                    row.nativeCategoryRaw = NativeTransactionCategory.other.rawValue
+                    row.nativeCategoryRaw = "other"
                 }
                 if updatedLegs != legs {
                     row.subtransactionsData = try encode(updatedLegs)

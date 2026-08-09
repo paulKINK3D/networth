@@ -504,7 +504,6 @@ public actor RecordedPlaidClient: PlaidClient {
         transactions: PlaidTransactionsSyncResponseDTO? = nil,
         inference: PlaidInferenceResponseDTO = .init(
             displayName: "Recorded Merchant",
-            categoryCode: NativeTransactionCategory.other.rawValue,
             confidence: ClassificationConfidence.medium.rawValue
         ),
         claudeConnectCode: ClaudeConnectCodeResponseDTO = .init(
@@ -608,8 +607,8 @@ public struct AppleTransactionInferenceProvider: OnDeviceTransactionInferring {
         let session = LanguageModelSession(
             model: model,
             instructions: """
-            Classify one personal-finance transaction. Return a short defensible
-            merchant/counterparty display name and exactly one allowed category.
+            Normalize one personal-finance transaction. Return a short,
+            defensible merchant or counterparty display name.
             Do not infer identity, account ownership, location, or other facts.
             """
         )
@@ -627,9 +626,7 @@ public struct AppleTransactionInferenceProvider: OnDeviceTransactionInferring {
                 to: prompt,
                 generating: AppleTransactionInferenceOutput.self
             )
-            guard let category = NativeTransactionCategory(
-                rawValue: response.content.categoryCode
-            ), let confidence = ClassificationConfidence(
+            guard let confidence = ClassificationConfidence(
                 rawValue: response.content.confidence
             ) else {
                 return nil
@@ -639,7 +636,6 @@ public struct AppleTransactionInferenceProvider: OnDeviceTransactionInferring {
             guard !name.isEmpty else { return nil }
             return ModelClassificationSuggestion(
                 displayName: String(name.prefix(120)),
-                category: category,
                 confidence: confidence,
                 provenance: .appleModel
             )
@@ -669,19 +665,7 @@ private struct AppleTransactionInferenceOutput {
     var displayName: String
 
     @Guide(
-        description: "Exactly one allowed Networth category code.",
-        .anyOf([
-            "income", "reimbursements", "housing", "utilities", "groceries",
-            "dining", "transportation", "health", "insurance", "shopping",
-            "personalCare", "entertainment", "subscriptions", "travel",
-            "education", "familyAndPets", "taxes", "feesAndInterest",
-            "giftsAndDonations", "other"
-        ])
-    )
-    var categoryCode: String
-
-    @Guide(
-        description: "Confidence in the name and category.",
+        description: "Confidence in the normalized display name.",
         .anyOf(["high", "medium", "low"])
     )
     var confidence: String

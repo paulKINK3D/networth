@@ -417,7 +417,6 @@ public struct PlaidInferenceRequestDTO: Codable, Sendable, Equatable {
     public let plaidCategoryDetailed: String?
     public let plaidCategoryConfidence: String?
     public let direction: String
-    public let allowedCategoryCodes: [String]
 
     public init(transaction: FinancialTransactionSummary) {
         rawDescription = transaction.rawDescription
@@ -429,29 +428,26 @@ public struct PlaidInferenceRequestDTO: Codable, Sendable, Equatable {
         plaidCategoryDetailed = transaction.providerCategoryDetailed
         plaidCategoryConfidence = transaction.providerCategoryConfidence
         direction = transaction.amount.isNegative ? "outflow" : "inflow"
-        allowedCategoryCodes = NativeTransactionCategory.allCases.map(\.rawValue)
     }
 }
 
 public struct PlaidInferenceResponseDTO: Codable, Sendable, Equatable {
     public let displayName: String
-    public let categoryCode: String
     public let confidence: String
 
-    public init(displayName: String, categoryCode: String, confidence: String) {
+    public init(displayName: String, confidence: String) {
         self.displayName = displayName
-        self.categoryCode = categoryCode
         self.confidence = confidence
     }
 
     public func suggestion(provenance: ClassificationProvenance) -> ModelClassificationSuggestion? {
-        guard let category = NativeTransactionCategory(rawValue: categoryCode),
-              let confidence = ClassificationConfidence(rawValue: confidence) else {
+        guard let confidence = ClassificationConfidence(
+            rawValue: confidence
+        ) else {
             return nil
         }
         return ModelClassificationSuggestion(
             displayName: displayName,
-            category: category,
             confidence: confidence,
             provenance: provenance
         )

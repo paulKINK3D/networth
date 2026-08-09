@@ -41,56 +41,6 @@ public enum FinancialAccountType: String, Codable, Sendable, CaseIterable {
     }
 }
 
-public enum NativeTransactionCategory: String, Codable, Sendable, CaseIterable, Identifiable {
-    case income
-    case reimbursements
-    case housing
-    case utilities
-    case groceries
-    case dining
-    case transportation
-    case health
-    case insurance
-    case shopping
-    case personalCare
-    case entertainment
-    case subscriptions
-    case travel
-    case education
-    case familyAndPets
-    case taxes
-    case feesAndInterest
-    case giftsAndDonations
-    case other
-
-    public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .income: "Income"
-        case .reimbursements: "Reimbursements"
-        case .housing: "Housing"
-        case .utilities: "Utilities"
-        case .groceries: "Groceries"
-        case .dining: "Dining"
-        case .transportation: "Transportation"
-        case .health: "Health"
-        case .insurance: "Insurance"
-        case .shopping: "Shopping"
-        case .personalCare: "Personal Care"
-        case .entertainment: "Entertainment"
-        case .subscriptions: "Subscriptions"
-        case .travel: "Travel"
-        case .education: "Education"
-        case .familyAndPets: "Family & Pets"
-        case .taxes: "Taxes"
-        case .feesAndInterest: "Fees & Interest"
-        case .giftsAndDonations: "Gifts & Donations"
-        case .other: "Other"
-        }
-    }
-}
-
 public enum TransactionType: String, Codable, Sendable, CaseIterable {
     case income
     case ordinarySpending
@@ -505,9 +455,7 @@ public struct PayeeIdentityEvidence: Hashable, Codable, Sendable {
 
 public struct TransactionClassification: Hashable, Codable, Sendable {
     public let displayName: String
-    public let category: NativeTransactionCategory
-    /// User-facing category name. This may preserve a detailed legacy or
-    /// user-created category while `category` remains the broad internal type.
+    /// User-facing category name from the canonical user directory.
     public let categoryName: String?
     public let treatment: ForecastTreatment
     public let confidence: ClassificationConfidence
@@ -516,7 +464,6 @@ public struct TransactionClassification: Hashable, Codable, Sendable {
 
     public init(
         displayName: String,
-        category: NativeTransactionCategory,
         categoryName: String? = nil,
         treatment: ForecastTreatment,
         confidence: ClassificationConfidence,
@@ -524,7 +471,6 @@ public struct TransactionClassification: Hashable, Codable, Sendable {
         requiresReview: Bool
     ) {
         self.displayName = displayName
-        self.category = category
         self.categoryName = categoryName
         self.treatment = treatment
         self.confidence = confidence
@@ -537,7 +483,6 @@ public struct MerchantClassificationRule: Identifiable, Hashable, Codable, Senda
     public let id: UUID
     public let fingerprint: String
     public let preferredName: String
-    public let category: NativeTransactionCategory
     public let categoryName: String?
     public let treatment: ForecastTreatment
     public let categoryReusable: Bool
@@ -548,7 +493,6 @@ public struct MerchantClassificationRule: Identifiable, Hashable, Codable, Senda
         id: UUID = UUID(),
         fingerprint: String,
         preferredName: String,
-        category: NativeTransactionCategory,
         categoryName: String? = nil,
         treatment: ForecastTreatment,
         categoryReusable: Bool = true,
@@ -558,7 +502,6 @@ public struct MerchantClassificationRule: Identifiable, Hashable, Codable, Senda
         self.id = id
         self.fingerprint = fingerprint
         self.preferredName = preferredName
-        self.category = category
         self.categoryName = categoryName
         self.treatment = treatment
         self.categoryReusable = categoryReusable
@@ -569,18 +512,15 @@ public struct MerchantClassificationRule: Identifiable, Hashable, Codable, Senda
 
 public struct ModelClassificationSuggestion: Hashable, Codable, Sendable {
     public let displayName: String
-    public let category: NativeTransactionCategory
     public let confidence: ClassificationConfidence
     public let provenance: ClassificationProvenance
 
     public init(
         displayName: String,
-        category: NativeTransactionCategory,
         confidence: ClassificationConfidence,
         provenance: ClassificationProvenance
     ) {
         self.displayName = displayName
-        self.category = category
         self.confidence = confidence
         self.provenance = provenance
     }
