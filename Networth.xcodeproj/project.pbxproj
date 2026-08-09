@@ -17,6 +17,7 @@
 		2C94630AAC492D7D989576C3 /* SecretStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46AEE1E8769FD0365DCFDACD /* SecretStore.swift */; };
 		30AC8227EB22FED248375033 /* SafeSave.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8E0B6EEBCB472F8B2AF50EF /* SafeSave.swift */; };
 		35CD0B8D2A7E4D60A18E0004 /* CanonicalDirectoryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35CD0B8D2A7E4D60A18E0003 /* CanonicalDirectoryServiceTests.swift */; };
+		35CD0B8D2A7E4D60A18E0006 /* SpendingEntryPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35CD0B8D2A7E4D60A18E0005 /* SpendingEntryPipelineTests.swift */; };
 		35CD0B8D2A7E4D60A18E0002 /* CanonicalDirectoryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35CD0B8D2A7E4D60A18E0001 /* CanonicalDirectoryService.swift */; };
 		7A11FE5C0DDA24D225030003 /* YNABReferenceImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A11FE5C0DDA24D225030004 /* YNABReferenceImport.swift */; };
 		31AE6D2EF3AA233A76DA534F /* NetWorthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06108EDF4711FC37956304D8 /* NetWorthView.swift */; };
@@ -97,6 +98,7 @@
 		341C0448EBF9D1C9337844CE /* CardSettingsForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardSettingsForm.swift; sourceTree = "<group>"; };
 		35CD0B8D2A7E4D60A18E0001 /* CanonicalDirectoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalDirectoryService.swift; sourceTree = "<group>"; };
 		35CD0B8D2A7E4D60A18E0003 /* CanonicalDirectoryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalDirectoryServiceTests.swift; sourceTree = "<group>"; };
+		35CD0B8D2A7E4D60A18E0005 /* SpendingEntryPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpendingEntryPipelineTests.swift; sourceTree = "<group>"; };
 		3A988782B660CD247AC4D6D5 /* ManualAssetForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualAssetForm.swift; sourceTree = "<group>"; };
 		42FB5FDDDD46ED86502D6E77 /* AppContainerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainerController.swift; sourceTree = "<group>"; };
 		45A47DBE9CC8F8A78C358517 /* BiometricGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricGate.swift; sourceTree = "<group>"; };
@@ -279,6 +281,7 @@
 				E9085A745F14DDD4FBA55039 /* AppContainerTests.swift */,
 				35CD0B8D2A7E4D60A18E0003 /* CanonicalDirectoryServiceTests.swift */,
 				D7170A1E000000000000F00A /* GoalLedgerServiceTests.swift */,
+				35CD0B8D2A7E4D60A18E0005 /* SpendingEntryPipelineTests.swift */,
 			);
 			path = NetworthTests;
 			sourceTree = "<group>";
@@ -527,6 +530,7 @@
 				EAC39DDB209373670EAE5F28 /* AppContainerTests.swift in Sources */,
 				35CD0B8D2A7E4D60A18E0004 /* CanonicalDirectoryServiceTests.swift in Sources */,
 				D7170A1E000000000000F00B /* GoalLedgerServiceTests.swift in Sources */,
+				35CD0B8D2A7E4D60A18E0006 /* SpendingEntryPipelineTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

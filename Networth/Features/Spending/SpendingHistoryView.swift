@@ -585,11 +585,11 @@ enum SpendingGroupSetup {
     static let userGroupIdentityPrefix = "networth:spending:user:"
     static let unassignedIdentity = "networth:spending:unassigned"
     static let unassignedName = "Unassigned"
-    static let savingsCategoryIdentity = "networth:savings-transfers"
-    static let investmentCategoryIdentity = "networth:investment-contributions"
-    static let automaticCategoryIdentities: Set<String> = [
-        savingsCategoryIdentity, investmentCategoryIdentity
-    ]
+    /// Investment contribution is a transaction type, not a canonical
+    /// category. Its report group is derived directly from that type.
+    static let investmentReportingIdentity =
+        "networth:investment-contributions"
+    static let investmentReportingName = "Investment Contributions"
 
     private struct RetiredDefault {
         let identity: String
@@ -624,9 +624,6 @@ enum SpendingGroupSetup {
         groupByIdentity: [String: DurableCategoryGroup]
     ) -> Bool {
         guard !category.deletedAtSource else { return false }
-        if automaticCategoryIdentities.contains(category.canonicalId) {
-            return true
-        }
         guard let identity = category.categoryGroupIdentity,
               let sourceGroup = groupByIdentity[identity] else {
             return true
@@ -643,25 +640,10 @@ enum SpendingGroupSetup {
     }
 
     static func categoryIdentitiesWithTransactions(
-        transactions: [CachedFinancialTransaction],
-        accounts: [CachedFinancialAccount]
+        transactions: [CachedFinancialTransaction]
     ) -> Set<String> {
-        let accountTypeByIdentity = Dictionary(
-            accounts.map { ($0.canonicalAccountId, $0.type) },
-            uniquingKeysWith: { first, _ in first }
-        )
         var identities = Set<String>()
         for transaction in transactions where !transaction.deleted {
-            if transaction.forecastTreatment == .internalTransfer,
-               accountTypeByIdentity[transaction.canonicalAccountId] == .savings {
-                identities.insert(savingsCategoryIdentity)
-            }
-            if transaction.forecastTreatment == .investmentContribution,
-               accountTypeByIdentity[transaction.canonicalAccountId]?.isCashLike
-                    == true {
-                identities.insert(investmentCategoryIdentity)
-            }
-
             let legs = transaction.subtransactions.filter { !$0.deleted }
             if legs.isEmpty {
                 if let categoryID = transaction.categoryCanonicalId {
@@ -694,9 +676,6 @@ enum SpendingGroupSetup {
         let transactions = (try? context.fetch(
             FetchDescriptor<CachedFinancialTransaction>()
         )) ?? []
-        let accounts = (try? context.fetch(
-            FetchDescriptor<CachedFinancialAccount>()
-        )) ?? []
         var changed = false
 
         if (settings?.spendingGroupSetupVersion ?? 0) < userOwnedGroupsVersion {
@@ -724,25 +703,9 @@ enum SpendingGroupSetup {
             }
         }
 
-        let automaticCategories = [
-            (savingsCategoryIdentity, "Savings Transfers"),
-            (investmentCategoryIdentity, "Investment Contributions")
-        ]
         let transactionCategoryIDs = categoryIdentitiesWithTransactions(
-            transactions: transactions,
-            accounts: accounts
+            transactions: transactions
         )
-        for automatic in automaticCategories
-        where transactionCategoryIDs.contains(automatic.0)
-            && !categories.contains(where: { $0.canonicalId == automatic.0 }) {
-            context.insert(DurableCanonicalCategory(
-                canonicalId: automatic.0,
-                name: automatic.1,
-                sourceName: automatic.1,
-                userEdited: true
-            ))
-            changed = true
-        }
 
         if let settings,
            settings.spendingGroupSetupVersion < userOwnedGroupsVersion {
@@ -830,7 +793,6 @@ struct SpendingGroupManagementSheet: View {
     @Query private var groupRows: [DurableCategoryGroup]
     @Query private var categoryRows: [DurableCanonicalCategory]
     @Query private var transactionRows: [CachedFinancialTransaction]
-    @Query private var accountRows: [CachedFinancialAccount]
 
     @State private var editorTarget: SpendingGroupEditorTarget?
 
@@ -883,10 +845,6 @@ struct SpendingGroupManagementSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                } footer: {
-                    Text(
-                        "Savings Transfers and Investment Contributions are automatic categories; you decide which group contains them."
-                    )
                 }
 
                 if !hiddenGroups.isEmpty {
@@ -986,8 +944,7 @@ struct SpendingGroupManagementSheet: View {
             rows.max(by: { $0.updatedAt < $1.updatedAt })
         }
         let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
-            transactions: transactionRows,
-            accounts: accountRows
+            transactions: transactionRows
         )
         return categoryRows.filter {
             categoryIDs.contains($0.canonicalId)
@@ -1062,8 +1019,7 @@ struct SpendingGroupManagementSheet: View {
 
     private func categoryCount(for identity: String) -> Int {
         let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
-            transactions: transactionRows,
-            accounts: accountRows
+            transactions: transactionRows
         )
         return Set(categoryRows.lazy.filter {
             $0.categoryGroupIdentity == identity
@@ -1217,7 +1173,6 @@ private struct SpendingGroupCategoryList: View {
     @Query private var categories: [DurableCanonicalCategory]
     @Query private var groupRows: [DurableCategoryGroup]
     @Query private var transactionRows: [CachedFinancialTransaction]
-    @Query private var accountRows: [CachedFinancialAccount]
     let group: ManagedSpendingGroup
 
     @State private var categoryToMove: ManagedSpendingCategory?
@@ -1334,8 +1289,7 @@ private struct SpendingGroupCategoryList: View {
             SpendingGroupSetup.isUserGroup($0)
         }.map(\.groupIdentity))
         let categoryIDs = SpendingGroupSetup.categoryIdentitiesWithTransactions(
-            transactions: transactionRows,
-            accounts: accountRows
+            transactions: transactionRows
         )
         return categories
             .filter {
@@ -1608,6 +1562,10 @@ actor SpendingHistoryBuildActor {
                 paletteIndex[group.groupIdentity] = index
             }
         }
+        // Type-derived reporting groups sit after the user's spending groups
+        // and never participate in category-group management or palette order.
+        orderIndex[SpendingGroupSetup.investmentReportingIdentity] =
+            spendingGroups.count
         var seenHidden = Set<String>()
         let hiddenGroups = groups
             .filter {

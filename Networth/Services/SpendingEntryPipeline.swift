@@ -70,37 +70,22 @@ enum SpendingEntryPipeline {
 
     /// Maps approved rows to entries, including entries belonging to hidden
     /// groups — visibility is a later stage. Split legs map one entry each;
-    /// transfer/investment rows follow the one-side-only conventions.
+    /// internal transfers are omitted; investment rows use the cash side.
     static func assembleEntries(
         rows: [CachedFinancialTransaction],
         context: Context
     ) -> [SpendingHistoryEntry] {
-        let savingsGroup = context.resolvedGroup(
-            categoryCanonicalId: SpendingGroupSetup.savingsCategoryIdentity
-        )
-        let investmentGroup = context.resolvedGroup(
-            categoryCanonicalId: SpendingGroupSetup.investmentCategoryIdentity
-        )
-
         var entries: [SpendingHistoryEntry] = []
         for row in rows {
+            // Reimbursements are their own high-level classification and stay
+            // outside Spending History entirely. They are not purchase
+            // refunds and must never fall through category routing into
+            // Unassigned.
+            if row.category == .reimbursements { continue }
             if row.forecastTreatment == .internalTransfer {
-                // Count only the savings-account side. The corresponding
-                // checking row is ignored, preventing a transfer from being
-                // shown twice while preserving net deposits minus withdrawals.
-                guard context.accountTypeByIdentity[row.canonicalAccountId]
-                        == .savings else { continue }
-                entries.append(SpendingHistoryEntry(
-                    transactionId: row.id,
-                    date: row.postedDate,
-                    amountMilliunits: row.amountMilliunits,
-                    treatment: .internalTransfer,
-                    reportingRole: .transfer,
-                    groupIdentity: savingsGroup.identity,
-                    groupName: savingsGroup.name,
-                    categoryKey: SpendingGroupSetup.savingsCategoryIdentity,
-                    categoryName: "Savings Transfers"
-                ))
+                // Moving money between owned accounts is not spending or
+                // savings activity. Goal funding comes from explicit reserve
+                // account selection and allocations, never transfer rows.
                 continue
             }
             if row.forecastTreatment == .investmentContribution {
@@ -115,10 +100,12 @@ enum SpendingEntryPipeline {
                     amountMilliunits: row.amountMilliunits,
                     treatment: .investmentContribution,
                     reportingRole: .investment,
-                    groupIdentity: investmentGroup.identity,
-                    groupName: investmentGroup.name,
-                    categoryKey: SpendingGroupSetup.investmentCategoryIdentity,
-                    categoryName: "Investment Contributions"
+                    groupIdentity:
+                        SpendingGroupSetup.investmentReportingIdentity,
+                    groupName: SpendingGroupSetup.investmentReportingName,
+                    categoryKey:
+                        SpendingGroupSetup.investmentReportingIdentity,
+                    categoryName: SpendingGroupSetup.investmentReportingName
                 ))
                 continue
             }
