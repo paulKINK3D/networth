@@ -106,10 +106,6 @@ public final class AppContainerController {
         hasPlaidBackendToken = (plaidToken?.isEmpty == false)
 
         let ctx = modelContainer.mainContext
-        // The versioned Plaid-first clean start must run before anything
-        // observes model saves — the wipe must not trigger a Claude snapshot
-        // upload of data that is being deleted.
-        FreshStart.runIfNeeded(context: ctx)
         claudeDataSyncCoordinator.start()
 
         let descriptor = FetchDescriptor<DurableUserSettings>()

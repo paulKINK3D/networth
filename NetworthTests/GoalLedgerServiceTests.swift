@@ -5,7 +5,7 @@ import SwiftData
 import NetworthCore
 
 /// App-level coverage for the Goals money invariants: the schema registers,
-/// FreshStart owns the new types, the shared pipeline resolves external ids,
+/// The schema owns the new types, the shared pipeline resolves external ids,
 /// and `GoalLedgerService` enforces every mutation rule.
 @MainActor
 @Suite("Goal ledger service and pipeline")
@@ -109,7 +109,7 @@ struct GoalLedgerServiceTests {
         )
     }
 
-    // MARK: - Schema and FreshStart membership
+    // MARK: - Schema membership
 
     @Test func goalModelsRegisterAndPersistInBothSchemas() throws {
         let context = try makeContext()

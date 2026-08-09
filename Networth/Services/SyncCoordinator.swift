@@ -1088,8 +1088,8 @@ public final class PlaidTransactionSyncCoordinator {
     /// Internal (not private) so tests can assert cursors reach the current
     /// reconciliation marker without hardcoding its value.
     static let currentHistoricalReconciliationVersion = 13
-    /// Internal (not private) so `FreshStart` can stamp fresh settings with
-    /// the current version and keep one source of truth.
+    /// Internal so tests can verify the current migration marker without
+    /// hardcoding it.
     static let currentCanonicalTransactionDataVersion = 2
 
     public enum Phase: Sendable, Equatable {

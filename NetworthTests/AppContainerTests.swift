@@ -542,15 +542,14 @@ struct AppContainerTests {
         #expect(manual.currentValue == Money.dollars(8_000))
     }
 
-    @Test func cleanStartWipesBothStoresAndCreatesPlaidFirstDefaults() async throws {
+    @Test func bootstrapPreservesExistingDurableAndCachedData() async throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let ctx = modelContainer.mainContext
-        // Legacy rows across both tiers: settings, YNAB cache, durable user
-        // data, and retired budget/fund records. All must be deleted.
-        let legacySettings = DurableUserSettings()
-        legacySettings.settingsSchemaVersion = 2
-        legacySettings.spendingLookbackDays = 60
-        ctx.insert(legacySettings)
+        let settings = DurableUserSettings()
+        settings.settingsSchemaVersion = 3
+        settings.spendingLookbackDays = 60
+        settings.freshStartVersion = 0
+        ctx.insert(settings)
         ctx.insert(CachedAccount(
             id: "ynab-checking", budgetId: "budget", name: "Checking",
             typeRaw: "checking", balanceMilliunits: 1_000_000,
@@ -577,58 +576,17 @@ struct AppContainerTests {
         )
         await container.bootstrap()
 
-        // Every legacy row is gone; exactly one fresh settings row exists
-        // with Plaid-first defaults and the completion marker.
-        #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).isEmpty)
-        #expect(try ctx.fetch(FetchDescriptor<DurableManualAsset>()).isEmpty)
-        #expect(try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).isEmpty)
-        #expect(try ctx.fetch(FetchDescriptor<DurableSinkingFund>()).isEmpty)
+        #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).count == 1)
+        #expect(try ctx.fetch(FetchDescriptor<DurableManualAsset>()).count == 1)
+        #expect(try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).count == 1)
+        #expect(try ctx.fetch(FetchDescriptor<DurableSinkingFund>()).count == 1)
         let settingsRows = try ctx.fetch(FetchDescriptor<DurableUserSettings>())
         #expect(settingsRows.count == 1)
-        let fresh = try #require(settingsRows.first)
-        #expect(fresh.freshStartVersion == FreshStart.currentVersion)
-        #expect(fresh.primaryFinancialDataSource == .plaid)
-        #expect(fresh.plaidTransactionsEnabled == true)
-        #expect(fresh.spendingLookbackDays == 365)
-        #expect(fresh.firstPlaidSyncCompletedAt == nil)
-        // The YNAB PAT survives in Keychain for explicit reference imports.
+        let preserved = try #require(settingsRows.first)
+        #expect(preserved.freshStartVersion == 0)
+        #expect(preserved.spendingLookbackDays == 60)
         #expect(try secrets.load(.ynabPersonalAccessToken) == "ynab-token")
         #expect(container.hasYNABToken == true)
-    }
-
-    @Test func durableMarkerFromAnotherDeviceStillWipesLocalCaches() async throws {
-        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
-        let ctx = modelContainer.mainContext
-        // Simulate a device whose CloudKit store already carries the completed
-        // clean start from another device (marker + post-reset user data),
-        // while its own device-local caches still hold legacy rows.
-        let syncedSettings = DurableUserSettings()
-        syncedSettings.freshStartVersion = FreshStart.currentVersion
-        ctx.insert(syncedSettings)
-        let postResetAsset = DurableManualAsset(name: "New Boat", kind: .other)
-        ctx.insert(postResetAsset)
-        ctx.insert(CachedAccount(
-            id: "stale-ynab", budgetId: "budget", name: "Stale",
-            typeRaw: "checking", balanceMilliunits: 1, clearedMilliunits: 1,
-            unclearedMilliunits: 0, onBudget: true, closed: false, deleted: false
-        ))
-        ctx.insert(SyncCursor(key: "accounts:budget", serverKnowledge: 42))
-        try ctx.save()
-
-        let suiteName = "freshstart-test-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        FreshStart.runIfNeeded(context: ctx, defaults: defaults)
-
-        // Local caches wiped once per device; durable rows created after the
-        // clean start are never touched.
-        #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).isEmpty)
-        #expect(try ctx.fetch(FetchDescriptor<SyncCursor>()).isEmpty)
-        #expect(try ctx.fetch(FetchDescriptor<DurableManualAsset>()).count == 1)
-        #expect(try ctx.fetch(FetchDescriptor<DurableUserSettings>()).count == 1)
-        #expect(defaults.integer(forKey: FreshStart.localCacheWipeVersionKey)
-            == FreshStart.currentVersion)
     }
 
     @Test func forceFullResyncClearsCursorsAndCoverageButNeverSnapshots() async throws {
@@ -654,35 +612,6 @@ struct AppContainerTests {
         #expect(try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).count == 1)
     }
 
-    @Test func cleanStartIsIdempotentAndPurgesResurrectedLegacyRows() async throws {
-        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
-        let container = AppContainerController(
-            secretStore: InMemorySecretStore(),
-            biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
-            modelContainer: modelContainer
-        )
-        await container.bootstrap()
-        let ctx = modelContainer.mainContext
-
-        // Data created after the clean start must survive later bootstraps.
-        let asset = DurableManualAsset(name: "Car", kind: .vehicle)
-        ctx.insert(asset)
-        // Rows CloudKit resurrects from a pre-wipe device: a retired fund
-        // record and a stale settings row. Both must be purged.
-        ctx.insert(DurableSinkingFund(name: "Resurrected"))
-        let staleSettings = DurableUserSettings(id: "stale")
-        ctx.insert(staleSettings)
-        try ctx.save()
-
-        FreshStart.runIfNeeded(context: ctx)
-
-        #expect(try ctx.fetch(FetchDescriptor<DurableSinkingFund>()).isEmpty)
-        let settingsRows = try ctx.fetch(FetchDescriptor<DurableUserSettings>())
-        #expect(settingsRows.count == 1)
-        #expect(settingsRows.first?.freshStartVersion == FreshStart.currentVersion)
-        #expect(try ctx.fetch(FetchDescriptor<DurableManualAsset>()).count == 1)
-    }
 
     @Test func projectionSelectionsAndCardSourcePersist() async throws {
         let container = AppContainerController.makePreview()

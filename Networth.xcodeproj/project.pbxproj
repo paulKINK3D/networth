@@ -16,7 +16,6 @@
 		1D78662F7FBF2D8D0135391C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = ADDCB9332B061DD3B3B6475D /* Assets.xcassets */; };
 		2C94630AAC492D7D989576C3 /* SecretStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46AEE1E8769FD0365DCFDACD /* SecretStore.swift */; };
 		30AC8227EB22FED248375033 /* SafeSave.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8E0B6EEBCB472F8B2AF50EF /* SafeSave.swift */; };
-		7A11FE5C0DDA24D225030001 /* FreshStart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A11FE5C0DDA24D225030002 /* FreshStart.swift */; };
 		7A11FE5C0DDA24D225030003 /* YNABReferenceImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A11FE5C0DDA24D225030004 /* YNABReferenceImport.swift */; };
 		31AE6D2EF3AA233A76DA534F /* NetWorthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06108EDF4711FC37956304D8 /* NetWorthView.swift */; };
 		3AA51D5A42B05D90E193DFA7 /* NwModalLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B66EA7CEF2BC6F62A7993567 /* NwModalLayout.swift */; };
@@ -107,7 +106,6 @@
 		9C602AFAC1CD6353CD890A9C /* CachedYNABModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedYNABModels.swift; sourceTree = "<group>"; };
 		A0640132B868410EFCA27FBB /* NwButtonStyles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwButtonStyles.swift; sourceTree = "<group>"; };
 		A2B60865EC77C9B95358C3A0 /* SnapshotScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotScheduler.swift; sourceTree = "<group>"; };
-		7A11FE5C0DDA24D225030002 /* FreshStart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreshStart.swift; sourceTree = "<group>"; };
 		7A11FE5C0DDA24D225030004 /* YNABReferenceImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YNABReferenceImport.swift; sourceTree = "<group>"; };
 		A8E0B6EEBCB472F8B2AF50EF /* SafeSave.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeSave.swift; sourceTree = "<group>"; };
 		A9E3D99E3745BEFD8F3CED25 /* NwCornerRadius.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwCornerRadius.swift; sourceTree = "<group>"; };
@@ -265,7 +263,6 @@
 			children = (
 				9C602AFAC1CD6353CD890A9C /* CachedYNABModels.swift */,
 				03E7D5F7CA93A092A1D1FCFA /* DurableModels.swift */,
-				7A11FE5C0DDA24D225030002 /* FreshStart.swift */,
 				DD4A35FDB76A0D7945A3AD61 /* ModelContainerFactory.swift */,
 				A8E0B6EEBCB472F8B2AF50EF /* SafeSave.swift */,
 			);
@@ -471,7 +468,6 @@
 				CC3D8AD27715C21A6B38A831 /* DurableModels.swift in Sources */,
 				16EC8D07575613822A3C0EDA /* ManualAssetForm.swift in Sources */,
 				0D6AFC83F837C0AA24D22503 /* ModelContainerFactory.swift in Sources */,
-				7A11FE5C0DDA24D225030001 /* FreshStart.swift in Sources */,
 				31AE6D2EF3AA233A76DA534F /* NetWorthView.swift in Sources */,
 				4BAA7FC4AAD9F5D777496F59 /* NetworthApp.swift in Sources */,
 				D79AEDEE90E63A7EA2D99DFA /* NwAmountText.swift in Sources */,

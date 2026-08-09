@@ -257,11 +257,9 @@ public final class DurableUserSettings {
     public var budgetSetupCompletedAt: Date? = nil
     /// The single user-defined True Surplus envelope. Defaults to $1,000.
     public var budgetSurplusTargetMilliunits: Int64 = 1_000_000
-    /// `0` = the Plaid-first destructive clean start has not completed for
-    /// this iCloud account. Set to `FreshStart.currentVersion` only after
-    /// every row in both stores was deleted and this fresh default row was
-    /// created. Rows carrying an older value that reappear via CloudKit are
-    /// legacy and get purged at bootstrap.
+    /// Legacy compatibility field from the completed Plaid-first reset.
+    /// Retained so existing CloudKit records continue to hydrate safely; it
+    /// no longer triggers cleanup or deletion behavior.
     public var freshStartVersion: Int = 0
     /// First successful Plaid sync after the clean start. Gates the first
     /// new Net Worth snapshot: history starts on that date and is never
@@ -1138,8 +1136,7 @@ public final class DurableFundEvent {
 // MARK: - Goals (reserve-pool era)
 
 /// A long-term savings goal backed by the shared reserve pool. These are new
-/// record types: the retired sinking-fund models above are purged on sight by
-/// FreshStart and must never store goal data again.
+/// record types and must never reuse the retired sinking-fund models above.
 @Model
 public final class DurableGoal {
     public var id: UUID = UUID()
