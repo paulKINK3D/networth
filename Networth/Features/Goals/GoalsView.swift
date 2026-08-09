@@ -3,19 +3,17 @@ import SwiftData
 import UIKit
 import NetworthCore
 
-/// Goals — long-term savings targets and sinking funds backed by a shared
-/// reserve pool of dedicated savings accounts. Headline question: "how am I
-/// doing?"
+/// Goals are named allocations backed by user-selected accounts. Headline
+/// question: "what is this money for?"
 ///
 /// Funding is pure envelope allocation: the reserve pool is the real savings
 /// balance (interest and every transfer already in it), and goals divide that
 /// total. Deposits and withdrawals in the real account are never traced to a
 /// goal — they only change how much is available to allocate. The one
-/// transaction-linked action is "spent from goal," which also pulls the
-/// purchase out of Spending.
+/// Goal Spend and Goal Refund are explicit transaction types selected during
+/// transaction review; the Goals screen never creates shadow transactions.
 struct GoalsView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
-    @SwiftUI.Environment(\.modelContext) private var context
 
     @State private var model: GoalsModel?
     @State private var rebuildTask: Task<Void, Never>?
@@ -23,7 +21,6 @@ struct GoalsView: View {
     @State private var detailGoalId: UUID?
     @State private var showingReservePicker = false
     @State private var showingAllocate = false
-    @State private var serviceError: String?
 
     var body: some View {
         NavigationStack {
@@ -55,7 +52,7 @@ struct GoalsView: View {
                     } label: {
                         Image(systemName: NwIcon.savings.rawValue)
                     }
-                    .accessibilityLabel("Reserve accounts")
+                    .accessibilityLabel("Goal accounts")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -99,21 +96,10 @@ struct GoalsView: View {
         }
         .sheet(isPresented: $showingAllocate) {
             GoalAllocateSheet(
-                unallocated: model?.pool.unallocated ?? .zero,
+                pool: model?.pool.pool ?? .zero,
                 goals: model?.activeGoals ?? []
             )
             .environment(container)
-        }
-        .alert(
-            "Couldn't Save",
-            isPresented: .init(
-                get: { serviceError != nil },
-                set: { if !$0 { serviceError = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(serviceError ?? "")
         }
     }
 
@@ -123,14 +109,14 @@ struct GoalsView: View {
         VStack(spacing: NwSpacing.lg) {
             NwEmptyState(
                 title: "Save for the big things",
-                message: "Pick the savings accounts that back your goals, "
+                message: "Pick the accounts that back your goals, "
                     + "then create goals to divide that money by purpose.",
                 icon: .goals
             )
             Button {
                 showingReservePicker = true
             } label: {
-                Label("Choose Reserve Accounts",
+                Label("Choose Goal Accounts",
                       systemImage: NwIcon.savings.rawValue)
                     .frame(maxWidth: .infinity)
             }
@@ -146,7 +132,7 @@ struct GoalsView: View {
         NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Reserve")
+                    Text("Goal Accounts")
                         .font(NwTypography.headline)
                         .foregroundStyle(NwAppColors.textPrimary)
                     Spacer()
@@ -185,14 +171,12 @@ struct GoalsView: View {
                     Button {
                         showingAllocate = true
                     } label: {
-                        Label("Allocate to a Goal",
-                              systemImage: "arrow.left.arrow.right")
+                        Label("Edit Allocations",
+                              systemImage: "slider.horizontal.3")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(NwAppColors.accent)
-                    .disabled(model.pool.unallocated.isZero
-                        && model.pool.shortfall.isZero)
                     .padding(.top, NwSpacing.xs)
                 }
             }
@@ -281,27 +265,6 @@ struct GoalsView: View {
         }.value
         guard let built, !Task.isCancelled else { return }
         model = built
-        adoptDerivedTargetsIfNeeded(built)
-    }
-
-    /// Emergency targets self-adjust with hysteresis. Adoption is a real
-    /// write, so it flows through the service; the resulting save triggers
-    /// one more rebuild, after which `shouldAdopt` is false and this settles.
-    private func adoptDerivedTargetsIfNeeded(_ model: GoalsModel) {
-        let adoptions = model.activeGoals.filter {
-            $0.derivedEmergencyTarget != nil
-        }
-        guard !adoptions.isEmpty else { return }
-        let service = GoalLedgerService(context: context)
-        let goals = (try? context.fetch(
-            FetchDescriptor<DurableGoal>()
-        )) ?? []
-        for item in adoptions {
-            guard let target = item.derivedEmergencyTarget,
-                  let row = goals.first(where: { $0.id == item.goalUUID })
-            else { continue }
-            try? service.adoptEmergencyTarget(row, target: target)
-        }
     }
 }
 
@@ -313,13 +276,8 @@ struct GoalsModel: Sendable {
         let goal: Goal
         let goalUUID: UUID
         let balance: Money
-        let status: FundStatus
+        let isResidual: Bool
         let progress: Double?
-        let mtdContributions: Money
-        let orphanedEntryCount: Int
-        /// Non-nil when a newly derived emergency target passed the
-        /// hysteresis rule and should be adopted.
-        let derivedEmergencyTarget: Money?
         var id: String { goal.id }
     }
 
@@ -338,9 +296,6 @@ struct GoalsModel: Sendable {
     let reserves: [ReserveItem]
     let activeGoals: [GoalItem]
     let archivedGoals: [GoalItem]
-    /// Median monthly ordinary spend over complete months, when derivable.
-    let emergencyMedian: Money?
-    let sampleMonthCount: Int
 
     var unavailableReserves: [ReserveItem] {
         reserves.filter { $0.balance == nil }
@@ -349,13 +304,11 @@ struct GoalsModel: Sendable {
 
 // MARK: - Build actor
 
-/// Off-main aggregation for the Goals tab. Consumes the same shared spending
-/// pipeline as Spending History, so the emergency-fund input is exactly the
-/// ordinary total the user sees there.
+/// Off-main aggregation for the Goals tab.
 @ModelActor
 actor GoalsBuildActor {
     func build(now: Date) throws -> GoalsModel {
-        let calendar = Calendar.current
+        _ = now
         let goalRows = try modelContext.fetch(FetchDescriptor<DurableGoal>())
         let ledgerRows = try modelContext.fetch(
             FetchDescriptor<DurableGoalLedgerEntry>()
@@ -410,128 +363,24 @@ actor GoalsBuildActor {
             )
         }
 
-        // Emergency median from the shared pipeline's ordinary totals,
-        // complete months only — computed only when an emergency goal needs
-        // it, since it runs the full spending aggregation.
-        var emergencyMedian: Money?
-        var sampleMonthCount = 0
-        let needsMedian = goalRows.contains {
-            !$0.archived && $0.completedAt == nil
-                && $0.targetMode == .emergencyMonths
-        }
-        if needsMedian {
-            let groups = try modelContext.fetch(
-                FetchDescriptor<DurableCategoryGroup>()
-            )
-            let categories = try modelContext.fetch(
-                FetchDescriptor<DurableCanonicalCategory>()
-            )
-            let pipelineContext = SpendingEntryPipeline.Context(
-                groups: groups, categories: categories, accounts: accounts
-            )
-            let entries = SpendingEntryPipeline.adjustedEntries(
-                rows: transactionRows, ledgerEntries: ledgerRows,
-                context: pipelineContext
-            )
-            let months = SpendingHistoryBuilder.build(
-                entries: entries, monthsBack: 13, now: now,
-                calendar: calendar
-            )
-            // Drop the in-progress current month; use up to 12 complete
-            // months with any activity.
-            let complete = months.dropLast()
-                .filter { $0.ordinaryTotalMilliunits > 0 }
-                .suffix(12)
-                .map(\.ordinaryTotal)
-            sampleMonthCount = complete.count
-            emergencyMedian = EmergencyFundMath.medianOfCompleteMonths(
-                Array(complete)
-            )
-        }
-
-        // Goal items.
-        let entriesByGoal = Dictionary(
-            grouping: ledgerRows, by: \.goalId
-        )
-        var transactionDeltaByGoal: [UUID: Int64] = [:]
-        var directlyAttributedExternalIds = Set<String>()
-        for transaction in transactionRows
-        where !transaction.subtransactionsDecodeFailed {
-            let legs = transaction.subtransactions.filter { !$0.deleted }
-            if !legs.isEmpty {
-                for leg in legs {
-                    guard let goalId = leg.goalId else { continue }
-                    switch leg.forecastTreatment {
-                    case .goalSpend, .goalRefund:
-                        transactionDeltaByGoal[goalId, default: 0] +=
-                            leg.amount.milliunits
-                        directlyAttributedExternalIds.insert(
-                            transaction.externalId
-                        )
-                    default:
-                        continue
-                    }
-                }
-            } else if let goalId = transaction.goalId {
-                switch transaction.forecastTreatment {
-                case .goalSpend, .goalRefund:
-                    transactionDeltaByGoal[goalId, default: 0] +=
-                        transaction.amountMilliunits
-                    directlyAttributedExternalIds.insert(transaction.externalId)
-                default:
-                    continue
-                }
-            }
-        }
-        let nonDeletedExternalIds = Set(
-            allTransactionRows.map(\.externalId)
+        let reserveBalance = Money(milliunits: poolMilliunits)
+        let balances = GoalBalanceCalculator.effectiveBalances(
+            goals: goalRows,
+            ledgerEntries: ledgerRows,
+            transactions: transactionRows,
+            reserveBalance: reserveBalance
         )
         func item(for row: DurableGoal) -> GoalsModel.GoalItem {
-            let storedRows = (entriesByGoal[row.id] ?? []).filter { entry in
-                guard let externalId = entry.linkedTransactionExternalId else {
-                    return true
-                }
-                return !directlyAttributedExternalIds.contains(externalId)
-            }
-            let entries = storedRows.map { $0.toCore() }
-            let balance = GoalMath.balance(entries: entries)
-                + Money(milliunits: transactionDeltaByGoal[row.id] ?? 0)
+            let balance = balances[row.id] ?? .zero
             let goal = row.toCore()
-            var derived: Money?
-            if goal.targetMode == .emergencyMonths, goal.isActive,
-               let median = emergencyMedian {
-                let target = EmergencyFundMath.target(
-                    medianMonthly: median,
-                    months: row.emergencyMonths,
-                    reductionPercent: row.emergencyReductionPercent
-                )
-                if EmergencyFundMath.shouldAdopt(
-                    current: goal.target, derived: target
-                ) {
-                    derived = target
-                }
-            }
-            let orphaned = (entriesByGoal[row.id] ?? []).filter { entry in
-                guard let externalId = entry.linkedTransactionExternalId
-                else { return false }
-                return !nonDeletedExternalIds.contains(externalId)
-            }.count
             return GoalsModel.GoalItem(
                 goal: goal,
                 goalUUID: row.id,
                 balance: balance,
-                status: GoalMath.status(
-                    goal: goal, balance: balance, asOf: now,
-                    calendar: calendar
-                ),
+                isResidual: row.isResidual && goal.isActive,
                 progress: GoalMath.progressFraction(
                     balance: balance, target: goal.target
-                ),
-                mtdContributions: GoalMath.monthToDateContributions(
-                    entries: entries, asOf: now, calendar: calendar
-                ),
-                orphanedEntryCount: orphaned,
-                derivedEmergencyTarget: derived
+                )
             )
         }
         let active = goalRows
@@ -544,7 +393,7 @@ actor GoalsBuildActor {
             .map(item(for:))
 
         let pool = ReservePoolMath.summary(
-            reserveBalance: Money(milliunits: poolMilliunits),
+            reserveBalance: reserveBalance,
             activeGoalBalances: active.map(\.balance)
         )
 
@@ -552,9 +401,7 @@ actor GoalsBuildActor {
             pool: pool,
             reserves: reserveItems,
             activeGoals: active,
-            archivedGoals: archived,
-            emergencyMedian: emergencyMedian,
-            sampleMonthCount: sampleMonthCount
+            archivedGoals: archived
         )
     }
 }

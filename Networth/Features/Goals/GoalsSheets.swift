@@ -4,9 +4,7 @@ import NetworthCore
 
 // MARK: - Goal card
 
-/// One goal: balance, progress toward target, plan-sufficiency status, and
-/// this month's confirmed contributions vs plan. Revived from the retired
-/// FundCard with the same status copy.
+/// One goal: current allocation and optional target progress.
 struct GoalCard: View {
     let item: GoalsModel.GoalItem
     let onTap: () -> Void
@@ -23,6 +21,8 @@ struct GoalCard: View {
                             NwStatusBadge("Completed", style: .positive)
                         } else if item.goal.archived {
                             NwStatusBadge("Archived", style: .neutral)
+                        } else if item.isResidual {
+                            NwStatusBadge("All unallocated", style: .positive)
                         }
                         Spacer()
                         NwAmountText(
@@ -31,16 +31,10 @@ struct GoalCard: View {
                     }
                     if let progress = item.progress {
                         ProgressView(value: progress)
-                            .tint(
-                                item.status == .funded
-                                    ? NwAppColors.positive
-                                    : NwAppColors.accent
-                            )
+                            .tint(progress >= 1
+                                ? NwAppColors.positive
+                                : NwAppColors.accent)
                         HStack {
-                            Text(statusLine)
-                                .font(NwTypography.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
                             HStack(spacing: 2) {
                                 Text("of")
                                     .font(NwTypography.caption)
@@ -51,21 +45,13 @@ struct GoalCard: View {
                                     color: NwAppColors.textSecondary
                                 )
                             }
+                            Spacer()
+                            if progress >= 1 {
+                                Text("Funded")
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(NwAppColors.positive)
+                            }
                         }
-                    }
-                    if item.goal.isActive,
-                       item.goal.plannedMonthly.milliunits > 0
-                        || item.mtdContributions.milliunits > 0 {
-                        Text(monthLine)
-                            .font(NwTypography.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if item.orphanedEntryCount > 0 {
-                        Text("\(item.orphanedEntryCount) linked "
-                             + "transaction(s) no longer exist — review "
-                             + "the ledger.")
-                            .font(NwTypography.caption)
-                            .foregroundStyle(NwAppColors.caution)
                     }
                 }
             }
@@ -74,32 +60,6 @@ struct GoalCard: View {
         .buttonStyle(.plain)
     }
 
-    /// Plan sufficiency, not measured pace: compares the configured monthly
-    /// plan against the math needed to hit a dated target.
-    private var statusLine: String {
-        switch item.status {
-        case .openEnded:
-            return ""
-        case .funded:
-            return "Funded"
-        case .saving:
-            return "Saving"
-        case .onTrack(let required):
-            return "On track · needs \(CurrencyFormatter.compact(required))/mo"
-        case .behind(let required):
-            return "Needs \(CurrencyFormatter.compact(required))/mo"
-        }
-    }
-
-    private var monthLine: String {
-        let added = CurrencyFormatter.compact(item.mtdContributions)
-        guard item.goal.plannedMonthly.milliunits > 0 else {
-            return "\(added) added this month"
-        }
-        return "\(added) of "
-            + CurrencyFormatter.compact(item.goal.plannedMonthly)
-            + " planned this month"
-    }
 }
 
 // MARK: - Sheet shell
@@ -147,18 +107,11 @@ private struct GoalAmountRow: View {
 
 struct GoalDetailSheet: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
-    @SwiftUI.Environment(\.modelContext) private var context
-    @SwiftUI.Environment(\.dismiss) private var dismiss
     @Query private var goalRows: [DurableGoal]
-    @Query(sort: \DurableGoalLedgerEntry.date, order: .reverse)
-    private var ledgerRows: [DurableGoalLedgerEntry]
     let goalId: UUID
     let model: GoalsModel?
 
-    @State private var entrySign: GoalEntrySign?
-    @State private var showingPurchasePicker = false
     @State private var editing = false
-    @State private var serviceError: String?
 
     private var goalRow: DurableGoal? {
         goalRows.first { $0.id == goalId }
@@ -167,10 +120,6 @@ struct GoalDetailSheet: View {
         (model?.activeGoals ?? []).first { $0.goalUUID == goalId }
             ?? (model?.archivedGoals ?? []).first { $0.goalUUID == goalId }
     }
-    private var entries: [DurableGoalLedgerEntry] {
-        ledgerRows.filter { $0.goalId == goalId }
-    }
-
     var body: some View {
         GoalSheetShell(title: goalRow?.name ?? "Goal") {
             if let item {
@@ -184,20 +133,17 @@ struct GoalDetailSheet: View {
                             title: "Target", amount: item.goal.target
                         )
                     }
-                    if case .onTrack(let required) = item.status {
-                        GoalAmountRow(
-                            title: "Needed monthly", amount: required,
-                            color: NwAppColors.positive
-                        )
+                    if let targetDate = item.goal.targetDate {
+                        LabeledContent("Target date") {
+                            Text(DateDisplay.shortDate(targetDate))
+                        }
                     }
-                    if case .behind(let required) = item.status {
-                        GoalAmountRow(
-                            title: "Needed monthly", amount: required,
-                            color: NwAppColors.caution
+                    if item.isResidual {
+                        NwInlineNotice(
+                            "Gets all unallocated money",
+                            message: "Its amount follows the live balance of your selected goal accounts after every other goal.",
+                            tone: .info
                         )
-                    }
-                    if item.goal.targetMode == .emergencyMonths {
-                        emergencyFooter(item)
                     }
                 }
             }
@@ -205,254 +151,16 @@ struct GoalDetailSheet: View {
                 && goalRow?.completedAt == nil {
                 Section {
                     Button {
-                        entrySign = .contribution
-                    } label: {
-                        Label("Add Money", systemImage: NwIcon.add.rawValue)
-                    }
-                    Button {
-                        entrySign = .withdrawal
-                    } label: {
-                        Label("Withdraw", systemImage: "minus")
-                    }
-                    Button {
-                        showingPurchasePicker = true
-                    } label: {
-                        Label("Record Purchase",
-                              systemImage: "cart")
-                    }
-                    Button {
                         editing = true
                     } label: {
                         Label("Edit Goal", systemImage: NwIcon.edit.rawValue)
                     }
                 }
             }
-            ledgerSection
-        }
-        .sheet(item: $entrySign) { sign in
-            GoalEntrySheet(goalId: goalId, sign: sign)
-                .environment(container)
-        }
-        .sheet(isPresented: $showingPurchasePicker) {
-            GoalPurchasePickerSheet(goalId: goalId)
-                .environment(container)
         }
         .sheet(isPresented: $editing) {
             GoalEditorSheet(target: .edit(goalId), model: model)
                 .environment(container)
-        }
-        .alert(
-            "Couldn't Save",
-            isPresented: .init(
-                get: { serviceError != nil },
-                set: { if !$0 { serviceError = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(serviceError ?? "")
-        }
-    }
-
-    @ViewBuilder
-    private func emergencyFooter(_ item: GoalsModel.GoalItem) -> some View {
-        let months = item.goal.emergencyMonths
-        let percent = item.goal.emergencyReductionPercent
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Target = \(months) months × median monthly spending"
-                 + (percent < 100 ? " × \(percent)%" : ""))
-                .font(NwTypography.caption)
-                .foregroundStyle(.secondary)
-            if let adoptedAt = goalRow?.adoptedAt {
-                Text("Last updated "
-                     + DateDisplay.shortDate(adoptedAt))
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var ledgerSection: some View {
-        Section("Ledger") {
-            if entries.isEmpty {
-                Text("No entries yet")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(entries) { entry in
-                ledgerRow(entry)
-                    .swipeActions(edge: .trailing) {
-                        Button("Delete", role: .destructive) {
-                            delete(entry)
-                        }
-                    }
-            }
-        }
-    }
-
-    private func ledgerRow(_ entry: DurableGoalLedgerEntry) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: NwSpacing.xs) {
-                    Text(entry.note ?? kindLabel(entry.kind))
-                        .font(NwTypography.body)
-                    if let externalId = entry.linkedTransactionExternalId,
-                       isOrphaned(externalId) {
-                        NwStatusBadge("Missing", style: .caution)
-                    }
-                }
-                Text(entry.date.formatted(
-                    .dateTime.month(.abbreviated).day().year()
-                ))
-                .font(NwTypography.caption)
-                .foregroundStyle(.secondary)
-            }
-            Spacer()
-            NwAmountText(
-                Money(milliunits: entry.amountMilliunits),
-                variant: .compact, showCents: false
-            )
-        }
-    }
-
-    private func kindLabel(_ kind: GoalLedgerKind) -> String {
-        switch kind {
-        case .manual:
-            "Adjustment"
-        case .contribution:
-            "Contribution"
-        case .purchase:
-            "Purchase"
-        case .purchaseRefund:
-            "Refund"
-        case .withdrawal:
-            "Withdrawal"
-        case .reallocationOut:
-            "Moved to another goal"
-        case .reallocationIn:
-            "Moved from another goal"
-        }
-    }
-
-    private func isOrphaned(_ externalId: String) -> Bool {
-        guard let model else { return false }
-        _ = model
-        // The build actor computes the count; per-row lookup here would need
-        // a cached-row fetch. Cheap approach: only flag when the goal item
-        // reports orphans and this entry's row can't be fetched.
-        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
-            predicate: #Predicate {
-                $0.externalId == externalId && !$0.deleted
-            }
-        )
-        return ((try? context.fetchCount(descriptor)) ?? 0) == 0
-    }
-
-    private func delete(_ entry: DurableGoalLedgerEntry) {
-        do {
-            try GoalLedgerService(context: context).deleteEntry(entry)
-        } catch {
-            serviceError = error.localizedDescription
-        }
-    }
-}
-
-private enum GoalEntrySign: String, Identifiable {
-    case contribution
-    case withdrawal
-    var id: String { rawValue }
-}
-
-// MARK: - Manual entry
-
-/// Manual contribution or withdrawal, validated by the service (pool
-/// capacity for contributions, nonnegative balance for withdrawals). The
-/// sheet stays open on failure so the entry isn't lost.
-private struct GoalEntrySheet: View {
-    @SwiftUI.Environment(\.modelContext) private var context
-    @SwiftUI.Environment(\.dismiss) private var dismiss
-    @Query private var goalRows: [DurableGoal]
-    let goalId: UUID
-    let sign: GoalEntrySign
-
-    @State private var amountText = ""
-    @State private var note = ""
-    @State private var date = Date.now
-    @State private var failure: String?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Amount", text: $amountText)
-                        .keyboardType(.decimalPad)
-                        .onChange(of: amountText) { _, newValue in
-                            amountText = CurrencyInputFormatter.formatted(
-                                newValue
-                            )
-                        }
-                    TextField("Note (optional)", text: $note)
-                    DatePicker(
-                        "Date", selection: $date, displayedComponents: .date
-                    )
-                }
-                if let failure {
-                    Section {
-                        NwInlineNotice(
-                            "Can't save",
-                            message: failure,
-                            tone: .caution
-                        )
-                    }
-                }
-            }
-            .navigationTitle(
-                sign == .contribution ? "Add Money" : "Withdraw"
-            )
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: {
-                        NwIcon.close.image
-                            .foregroundStyle(NwAppColors.liability)
-                    }
-                    .accessibilityLabel("Cancel")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { save() } label: {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(NwAppColors.positive)
-                    }
-                    .disabled(parsedAmount == nil)
-                    .accessibilityLabel("Save")
-                }
-            }
-        }
-        .presentationDetents([.medium])
-    }
-
-    private var parsedAmount: Money? {
-        guard let amount = CurrencyInputFormatter.money(from: amountText),
-              amount.milliunits > 0 else { return nil }
-        return amount
-    }
-
-    private func save() {
-        guard let amount = parsedAmount,
-              let goal = goalRows.first(where: { $0.id == goalId }) else {
-            return
-        }
-        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            try GoalLedgerService(context: context).addManualEntry(
-                goal: goal,
-                amount: sign == .contribution ? amount : -amount,
-                date: date,
-                note: trimmedNote.isEmpty ? nil : trimmedNote
-            )
-            dismiss()
-        } catch {
-            failure = error.localizedDescription
         }
     }
 }
@@ -471,9 +179,8 @@ enum GoalEditorTarget: Identifiable {
     }
 }
 
-/// Create/edit a goal: kind, fixed target or emergency months × reduction,
-/// optional target date, planned monthly. Archive/complete live here, with
-/// the explicit remainder disposition the invariants require.
+/// Create/edit the goal's name and optional target. Allocation is edited in
+/// one staged sheet from the Goals screen, never as a stream of events here.
 struct GoalEditorSheet: View {
     @SwiftUI.Environment(\.modelContext) private var context
     @SwiftUI.Environment(\.dismiss) private var dismiss
@@ -482,23 +189,13 @@ struct GoalEditorSheet: View {
     let model: GoalsModel?
 
     @State private var name = ""
-    @State private var kind: GoalKind = .refillable
-    @State private var targetMode: GoalTargetMode = .fixed
+    @State private var hasTargetAmount = false
     @State private var targetText = ""
     @State private var hasTargetDate = false
     @State private var targetDate = Date.now
-    @State private var plannedText = ""
-    @State private var emergencyMonths = 6
-    @State private var reductionPercent = 100
     @State private var seeded = false
-    @State private var closing: CloseAction?
+    @State private var showingArchiveConfirmation = false
     @State private var failure: String?
-
-    private enum CloseAction: String, Identifiable {
-        case archive
-        case complete
-        var id: String { rawValue }
-    }
 
     private var editedRow: DurableGoal? {
         guard case .edit(let id) = target else { return nil }
@@ -515,29 +212,8 @@ struct GoalEditorSheet: View {
             Form {
                 Section {
                     TextField("Name", text: $name)
-                    Picker("Kind", selection: $kind) {
-                        Text("One-time").tag(GoalKind.oneTime)
-                        Text("Refillable").tag(GoalKind.refillable)
-                        Text("Floor").tag(GoalKind.floor)
-                    }
-                } footer: {
-                    Text(kindFooter)
                 }
                 targetSection
-                Section {
-                    TextField(
-                        "Planned monthly (optional)", text: $plannedText
-                    )
-                    .keyboardType(.decimalPad)
-                    .onChange(of: plannedText) { _, newValue in
-                        plannedText = CurrencyInputFormatter.formatted(
-                            newValue
-                        )
-                    }
-                } footer: {
-                    Text("Used only to judge whether your plan keeps "
-                         + "pace. Money never moves automatically.")
-                }
                 if editedRow != nil {
                     closeSection
                 }
@@ -574,10 +250,7 @@ struct GoalEditorSheet: View {
             .onAppear(perform: seedFromEditedRow)
             .confirmationDialog(
                 closingTitle,
-                isPresented: .init(
-                    get: { closing != nil },
-                    set: { if !$0 { closing = nil } }
-                ),
+                isPresented: $showingArchiveConfirmation,
                 titleVisibility: .visible
             ) {
                 closingButtons
@@ -585,84 +258,29 @@ struct GoalEditorSheet: View {
         }
     }
 
-    private var kindFooter: String {
-        switch kind {
-        case .oneTime:
-            "Completes explicitly when the purpose is fulfilled."
-        case .refillable:
-            "Stays active after spending — travel, replacements."
-        case .floor:
-            "A level to maintain, like an emergency fund."
-        }
-    }
-
     @ViewBuilder
     private var targetSection: some View {
         Section {
-            Picker("Target", selection: $targetMode) {
-                Text("Fixed amount").tag(GoalTargetMode.fixed)
-                Text("Months of spending")
-                    .tag(GoalTargetMode.emergencyMonths)
-            }
-            .pickerStyle(.segmented)
-            if targetMode == .fixed {
+            Toggle("Target amount", isOn: $hasTargetAmount)
+            if hasTargetAmount {
                 TextField("Target amount", text: $targetText)
-                    .keyboardType(.decimalPad)
-                    .onChange(of: targetText) { _, newValue in
-                        targetText = CurrencyInputFormatter.formatted(
-                            newValue
-                        )
-                    }
-                Toggle("Target date", isOn: $hasTargetDate)
-                if hasTargetDate {
-                    DatePicker(
-                        "By", selection: $targetDate,
-                        displayedComponents: .date
-                    )
-                }
-            } else {
-                Stepper(
-                    "\(emergencyMonths) months",
-                    value: $emergencyMonths, in: 1...24
-                )
-                Stepper(
-                    "Spending reduction: \(reductionPercent)%",
-                    value: $reductionPercent, in: 10...100, step: 5
+                    .nwCurrencyInput(text: $targetText)
+            }
+            Toggle("Target date", isOn: $hasTargetDate)
+                .disabled(!hasTargetAmount)
+            if hasTargetAmount && hasTargetDate {
+                DatePicker(
+                    "By", selection: $targetDate,
+                    displayedComponents: .date
                 )
             }
-        } footer: {
-            if targetMode == .emergencyMonths {
-                Text(emergencyFooter)
-            }
         }
-    }
-
-    private var emergencyFooter: String {
-        guard let model else { return "" }
-        if let median = model.emergencyMedian {
-            let target = EmergencyFundMath.target(
-                medianMonthly: median,
-                months: emergencyMonths,
-                reductionPercent: reductionPercent
-            )
-            return "Median monthly spending over "
-                + "\(model.sampleMonthCount) complete months is "
-                + CurrencyFormatter.currency(median, showCents: false)
-                + " → target "
-                + CurrencyFormatter.currency(target, showCents: false)
-                + ". It self-adjusts as your spending changes."
-        }
-        return "Not enough spending history yet (needs 2 complete months)."
-            + " Use a fixed amount for now."
     }
 
     private var closeSection: some View {
         Section {
-            if kind == .oneTime {
-                Button("Mark Completed") { closing = .complete }
-            }
             Button("Archive Goal", role: .destructive) {
-                closing = .archive
+                showingArchiveConfirmation = true
             }
         }
     }
@@ -693,14 +311,11 @@ struct GoalEditorSheet: View {
                 }
             }
         } else {
-            Button(
-                closing == .complete ? "Mark Completed" : "Archive",
-                role: closing == .archive ? .destructive : nil
-            ) {
+            Button("Archive", role: .destructive) {
                 performClose(remainder: nil)
             }
         }
-        Button("Cancel", role: .cancel) { closing = nil }
+        Button("Cancel", role: .cancel) {}
     }
 
     private var transferTargets: [GoalsModel.GoalItem] {
@@ -711,79 +326,62 @@ struct GoalEditorSheet: View {
     private func performClose(
         remainder: GoalLedgerService.RemainderDisposition?
     ) {
-        guard let row = editedRow, let closing else { return }
+        guard let row = editedRow else { return }
         do {
             let service = GoalLedgerService(context: context)
-            switch closing {
-            case .archive:
-                try service.archiveGoal(row, remainder: remainder)
-            case .complete:
-                try service.completeGoal(row, remainder: remainder)
-            }
+            try service.archiveGoal(row, remainder: remainder)
             dismiss()
         } catch {
             failure = error.localizedDescription
         }
-        self.closing = nil
+        showingArchiveConfirmation = false
     }
 
     private func seedFromEditedRow() {
         guard !seeded, let row = editedRow else { return }
         seeded = true
         name = row.name
-        kind = row.kind
-        targetMode = row.targetMode
+        hasTargetAmount = row.targetMilliunits > 0
         targetText = row.targetMilliunits > 0
             ? CurrencyInputFormatter.text(
                 for: Money(milliunits: row.targetMilliunits)
             ) : ""
         hasTargetDate = row.targetDate != nil
         targetDate = row.targetDate ?? .now
-        plannedText = row.plannedMonthlyMilliunits > 0
-            ? CurrencyInputFormatter.text(
-                for: Money(milliunits: row.plannedMonthlyMilliunits)
-            ) : ""
-        emergencyMonths = max(1, row.emergencyMonths == 0
-            ? 6 : row.emergencyMonths)
-        reductionPercent = row.emergencyReductionPercent
     }
 
     private func save() {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else { return }
-        let fixedTarget = CurrencyInputFormatter.money(from: targetText)
-            ?? .zero
-        let planned = CurrencyInputFormatter.money(from: plannedText)
-            ?? .zero
+        let fixedTarget = hasTargetAmount
+            ? CurrencyInputFormatter.money(from: targetText) ?? .zero
+            : .zero
         do {
             let service = GoalLedgerService(context: context)
             if let row = editedRow {
                 try service.updateGoal(
                     row,
                     name: trimmedName,
-                    kind: kind,
-                    targetMode: targetMode,
-                    target: targetMode == .fixed
-                        ? fixedTarget
-                        : Money(milliunits: row.targetMilliunits),
-                    targetDate: targetMode == .fixed && hasTargetDate
+                    kind: .refillable,
+                    targetMode: .fixed,
+                    target: fixedTarget,
+                    targetDate: hasTargetAmount && hasTargetDate
                         ? targetDate : nil,
-                    plannedMonthly: planned,
-                    emergencyMonths: emergencyMonths,
-                    emergencyReductionPercent: reductionPercent
+                    plannedMonthly: .zero,
+                    emergencyMonths: 0,
+                    emergencyReductionPercent: 100
                 )
             } else {
                 try service.createGoal(
                     name: trimmedName,
-                    kind: kind,
-                    targetMode: targetMode,
-                    target: targetMode == .fixed ? fixedTarget : .zero,
-                    targetDate: targetMode == .fixed && hasTargetDate
+                    kind: .refillable,
+                    targetMode: .fixed,
+                    target: fixedTarget,
+                    targetDate: hasTargetAmount && hasTargetDate
                         ? targetDate : nil,
-                    plannedMonthly: planned,
-                    emergencyMonths: targetMode == .emergencyMonths
-                        ? emergencyMonths : 0,
-                    emergencyReductionPercent: reductionPercent
+                    plannedMonthly: .zero,
+                    emergencyMonths: 0,
+                    emergencyReductionPercent: 100
                 )
             }
             dismiss()
@@ -795,7 +393,8 @@ struct GoalEditorSheet: View {
 
 // MARK: - Reserve picker
 
-/// Choose which savings accounts back goals. Selection is derived state for
+/// Choose which accounts back goals. Selection is explicit and independent
+/// of provider account type. It is derived state for
 /// Projections: while an account actively backs goals it leaves the
 /// safe-to-spend cash pool automatically, and returns when deselected.
 struct GoalReservePickerSheet: View {
@@ -803,31 +402,16 @@ struct GoalReservePickerSheet: View {
     @Query private var accounts: [CachedFinancialAccount]
     @Query private var plaidAccounts: [CachedPlaidAccount]
     @Query private var reserveRows: [DurableGoalReserveAccount]
-    @Query private var cardSettings: [DurableCardSettings]
     let model: GoalsModel?
 
     @State private var failure: String?
 
-    /// Taxable brokerage accounts (Plaid investments path). Retirement
-    /// subtypes are excluded — they can't fund a near-term goal without a
-    /// penalty, so backing one would falsely report the goal as funded.
+    /// Investment accounts use the dedicated Plaid investments cache.
     private var eligibleInvestmentAccounts: [CachedPlaidAccount] {
-        let retirement: Set<String> = [
-            "ira", "roth", "roth 401k", "401k", "401a", "403b", "457b",
-            "sep ira", "simple ira", "rollover", "pension", "hsa",
-            "keogh", "sarsep", "thrift savings plan", "ugma", "utma",
-            "education savings account", "529"
-        ]
         return plaidAccounts
             .filter {
-                let subtype = ($0.subtype ?? "").lowercased()
                 return $0.currentBalanceMilliunits != nil
                     && ($0.isoCurrencyCode ?? "USD") == "USD"
-                    && !retirement.contains(subtype)
-                    // Investment/brokerage container only — never depository
-                    // (those already appear under Cash Accounts).
-                    && (($0.typeRaw ?? "").lowercased() == "investment"
-                        || subtype == "brokerage")
             }
             .sorted {
                 ($0.currentBalanceMilliunits ?? 0)
@@ -835,21 +419,14 @@ struct GoalReservePickerSheet: View {
             }
     }
 
-    /// Any cash-like depository account can back goals — Plaid maps money
-    /// market, CD, and cash-management products to `.cash`, not `.savings`,
-    /// so filtering on savings alone hides most dedicated savings accounts.
-    /// Savings sort first; the cashflow checking account is listed but the
-    /// user simply doesn't select it.
+    /// Account type never decides whether money is for goals. The user does.
     private var eligibleAccounts: [CachedFinancialAccount] {
         accounts
             .filter {
-                !$0.deleted && $0.type.isCashLike
+                !$0.deleted && $0.currentBalanceMilliunits != nil
                     && ($0.isoCurrencyCode ?? "USD") == "USD"
             }
             .sorted {
-                if ($0.type == .savings) != ($1.type == .savings) {
-                    return $0.type == .savings
-                }
                 return $0.name.localizedCaseInsensitiveCompare($1.name)
                     == .orderedAscending
             }
@@ -859,26 +436,18 @@ struct GoalReservePickerSheet: View {
         Set(reserveRows.filter(\.active).map(\.canonicalAccountId))
     }
 
-    /// Accounts funding a card's autopay: projections treat those balances
-    /// specially, so backing goals with one is blocked.
-    private var cardFundingIds: Set<String> {
-        Set(cardSettings.compactMap {
-            $0.canonicalPaymentAccountId ?? $0.paymentAccountId
-        })
-    }
-
     var body: some View {
-        GoalSheetShell(title: "Reserve Accounts") {
+        GoalSheetShell(title: "Goal Accounts") {
             Section {
-                Text("Money in reserve accounts is spoken for by goals. "
+                Text("Choose the accounts whose balances back goals. "
                      + "While an account backs goals it won't count toward "
                      + "safe-to-spend in Projections.")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("Cash Accounts") {
+            Section("Accounts") {
                 if eligibleAccounts.isEmpty {
-                    Text("No USD cash accounts are connected.")
+                    Text("No USD accounts with balances are connected.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -893,11 +462,10 @@ struct GoalReservePickerSheet: View {
                         investmentRow(account)
                     }
                 } header: {
-                    Text("Taxable Investments")
+                    Text("Investments")
                 } footer: {
-                    Text("Balances move with the market — if an account "
-                         + "drops below what goals have allocated, you'll "
-                         + "see a shortfall to resolve.")
+                    Text("Changing balances automatically update the amount "
+                         + "available to goals.")
                 }
             }
             unavailableSection
@@ -916,9 +484,8 @@ struct GoalReservePickerSheet: View {
         _ account: CachedFinancialAccount
     ) -> some View {
         let isReserve = activeReserveIds.contains(account.canonicalAccountId)
-        let fundsCard = cardFundingIds.contains(account.canonicalAccountId)
         return Button {
-            toggle(account, isReserve: isReserve, fundsCard: fundsCard)
+            toggle(account, isReserve: isReserve)
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -939,9 +506,6 @@ struct GoalReservePickerSheet: View {
                         Text(typeLabel(account))
                             .font(NwTypography.caption)
                             .foregroundStyle(.secondary)
-                        if fundsCard {
-                            NwStatusBadge("Funds a card", style: .caution)
-                        }
                     }
                 }
                 Spacer()
@@ -1016,7 +580,7 @@ struct GoalReservePickerSheet: View {
         _ reserve: GoalsModel.ReserveItem
     ) -> some View {
         // Re-attach suggestions: same institution+mask among connected
-        // savings accounts not already backing goals. User-confirmed, never
+        // accounts not already backing goals. User-confirmed, never
         // automatic — these fields aren't guaranteed unique.
         let candidates = eligibleAccounts.filter {
             !activeReserveIds.contains($0.canonicalAccountId)
@@ -1061,14 +625,13 @@ struct GoalReservePickerSheet: View {
         case .checking: return "Checking"
         case .savings: return "Savings"
         case .cash: return "Cash"
-        default: return ""
+        default: return account.type.rawValue.capitalized
         }
     }
 
     private func toggle(
         _ account: CachedFinancialAccount,
-        isReserve: Bool,
-        fundsCard: Bool
+        isReserve: Bool
     ) {
         failure = nil
         do {
@@ -1080,10 +643,6 @@ struct GoalReservePickerSheet: View {
                 }) {
                     try service.removeReserveAccount(row)
                 }
-            } else if fundsCard {
-                failure = "\(account.name) funds a card's autopay in "
-                    + "Projections. Pick a different account, or change "
-                    + "the card's funding account first."
             } else if account.currentBalanceMilliunits == nil {
                 failure = "\(account.name) has no reported balance yet."
             } else {
@@ -1153,18 +712,16 @@ struct GoalReservePickerSheet: View {
 
 // MARK: - Allocate
 
-/// Divide the reserve's unallocated money among goals. Pure envelope
-/// allocation — no transaction is involved; the service caps each allocation
-/// at the unallocated remainder.
+/// Stage every goal allocation together, then commit once. One optional goal
+/// can receive the live remainder automatically.
 struct GoalAllocateSheet: View {
     @SwiftUI.Environment(\.modelContext) private var context
     @SwiftUI.Environment(\.dismiss) private var dismiss
-    @Query private var goalRows: [DurableGoal]
-    let unallocated: Money
+    let pool: Money
     let goals: [GoalsModel.GoalItem]
 
-    @State private var selectedGoalId: UUID?
-    @State private var amountText = ""
+    @State private var allocationText: [UUID: String] = [:]
+    @State private var residualGoalId: UUID?
     @State private var seeded = false
     @State private var failure: String?
 
@@ -1172,53 +729,77 @@ struct GoalAllocateSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("Unallocated") {
+                    LabeledContent("Goal accounts") {
                         NwAmountText(
-                            unallocated, variant: .body, showCents: false
+                            pool, variant: .body, showCents: false
                         )
                     }
-                }
-                Section("Allocate to") {
-                    ForEach(goals) { item in
-                        Button {
-                            selectedGoalId = item.goalUUID
-                        } label: {
-                            HStack {
-                                Text(item.goal.name)
-                                    .font(NwTypography.body)
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                                Spacer()
-                                if selectedGoalId == item.goalUUID {
-                                    Image(
-                                        systemName: "checkmark.circle.fill"
-                                    )
-                                    .foregroundStyle(NwAppColors.positive)
-                                }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                    LabeledContent(residualGoalId == nil
+                        ? "Unallocated" : "Automatic remainder") {
+                        NwAmountText(
+                            remaining, variant: .body, showCents: false,
+                            color: overage.isZero
+                                ? NwAppColors.textPrimary
+                                : NwAppColors.liability
+                        )
                     }
                 }
                 Section {
-                    TextField("Amount", text: $amountText)
-                        .keyboardType(.decimalPad)
-                        .onChange(of: amountText) { _, newValue in
-                            amountText = CurrencyInputFormatter.formatted(
-                                newValue
+                    ForEach(goals) { item in
+                        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(item.goal.name)
+                                    .font(NwTypography.headline)
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                                Spacer()
+                                if residualGoalId == item.goalUUID {
+                                    NwAmountText(
+                                        remaining,
+                                        variant: .body,
+                                        showCents: false,
+                                        color: NwAppColors.accent
+                                    )
+                                } else {
+                                    TextField(
+                                        "0.00",
+                                        text: allocationBinding(
+                                            for: item.goalUUID
+                                        )
+                                    )
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(maxWidth: 140)
+                                    .nwCurrencyInput(text: allocationBinding(
+                                        for: item.goalUUID
+                                    ))
+                                }
+                            }
+                            Toggle(
+                                "Gets all unallocated money",
+                                isOn: residualBinding(for: item.goalUUID)
                             )
+                            .font(NwTypography.footnote)
+                            .tint(NwAppColors.accent)
                         }
-                    Button("Allocate All Unallocated") {
-                        amountText = CurrencyInputFormatter.text(
-                            for: unallocated
+                        .padding(.vertical, NwSpacing.xs)
+                    }
+                } header: {
+                    Text("Allocations")
+                } footer: {
+                    Text("Amounts are staged until you tap Apply. Turn on "
+                         + "all unallocated for one goal to let its amount "
+                         + "rise and fall with the selected accounts.")
+                }
+                if !overage.isZero {
+                    Section {
+                        NwInlineNotice(
+                            "Allocations exceed the accounts",
+                            message: "Reduce allocations by "
+                                + CurrencyFormatter.currency(
+                                    overage, showCents: false
+                                ) + ".",
+                            tone: .caution
                         )
                     }
-                    .font(NwTypography.footnote)
-                    .disabled(unallocated.isZero)
-                } footer: {
-                    Text("Moves money from unallocated into the goal. To "
-                         + "move money the other way, use Withdraw in the "
-                         + "goal.")
                 }
                 if let failure {
                     Section {
@@ -1228,7 +809,7 @@ struct GoalAllocateSheet: View {
                     }
                 }
             }
-            .navigationTitle("Allocate")
+            .navigationTitle("Goal Allocations")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -1243,261 +824,78 @@ struct GoalAllocateSheet: View {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(NwAppColors.positive)
                     }
-                    .disabled(selectedGoalId == nil || parsedAmount == nil)
-                    .accessibilityLabel("Save")
+                    .disabled(!overage.isZero)
+                    .accessibilityLabel("Apply")
                 }
             }
             .onAppear {
                 guard !seeded else { return }
                 seeded = true
-                if goals.count == 1 {
-                    selectedGoalId = goals.first?.goalUUID
+                residualGoalId = goals.first(where: \.isResidual)?.goalUUID
+                for goal in goals {
+                    allocationText[goal.goalUUID] =
+                        CurrencyInputFormatter.text(
+                            for: max(goal.balance, .zero)
+                        )
                 }
             }
         }
         .presentationDetents([.large])
     }
 
-    private var parsedAmount: Money? {
-        guard let amount = CurrencyInputFormatter.money(from: amountText),
-              amount.milliunits > 0 else { return nil }
-        return amount
+    private func allocationBinding(for goalId: UUID) -> Binding<String> {
+        Binding(
+            get: { allocationText[goalId] ?? "" },
+            set: { allocationText[goalId] = $0 }
+        )
+    }
+
+    private func residualBinding(for goalId: UUID) -> Binding<Bool> {
+        Binding(
+            get: { residualGoalId == goalId },
+            set: { enabled in
+                if enabled {
+                    if let previous = residualGoalId,
+                       previous != goalId {
+                        allocationText[previous] =
+                            CurrencyInputFormatter.text(for: .zero)
+                    }
+                    residualGoalId = goalId
+                } else if residualGoalId == goalId {
+                    residualGoalId = nil
+                }
+            }
+        )
+    }
+
+    private var allocations: [UUID: Money] {
+        Dictionary(uniqueKeysWithValues: goals.map { goal in
+            let amount = CurrencyInputFormatter.money(
+                from: allocationText[goal.goalUUID] ?? ""
+            ) ?? .zero
+            return (goal.goalUUID, amount)
+        })
+    }
+
+    private var explicitTotal: Money {
+        allocations.reduce(.zero) { total, pair in
+            pair.key == residualGoalId ? total : total + pair.value
+        }
+    }
+
+    private var remaining: Money {
+        max(pool - explicitTotal, .zero)
+    }
+
+    private var overage: Money {
+        max(explicitTotal - pool, .zero)
     }
 
     private func save() {
-        guard let amount = parsedAmount,
-              let goalId = selectedGoalId,
-              let goal = goalRows.first(where: { $0.id == goalId }) else {
-            return
-        }
         do {
-            try GoalLedgerService(context: context).addManualEntry(
-                goal: goal, amount: amount, date: .now, note: nil
-            )
-            dismiss()
-        } catch {
-            failure = error.localizedDescription
-        }
-    }
-}
-
-// MARK: - Purchase picker
-
-/// Mark a posted transaction (or part of one) as spent from this goal. The
-/// amount defaults to the transaction's remaining adjustable spending and is
-/// validated by the service against the same ceiling.
-struct GoalPurchasePickerSheet: View {
-    @SwiftUI.Environment(\.modelContext) private var context
-    @SwiftUI.Environment(\.dismiss) private var dismiss
-    @Query private var goalRows: [DurableGoal]
-    let goalId: UUID
-
-    @State private var searchText = ""
-    @State private var selected: CachedFinancialTransaction?
-    @State private var amountText = ""
-    @State private var failure: String?
-    @State private var candidates: [CachedFinancialTransaction] = []
-    @State private var pipelineContext: SpendingEntryPipeline.Context?
-    @State private var ledgerEntries: [DurableGoalLedgerEntry] = []
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if let selected {
-                    amountForm(selected)
-                } else {
-                    transactionList
-                }
-            }
-            .navigationTitle("Record Purchase")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        if selected != nil { selected = nil }
-                        else { dismiss() }
-                    } label: {
-                        NwIcon.close.image
-                            .foregroundStyle(NwAppColors.liability)
-                    }
-                    .accessibilityLabel("Cancel")
-                }
-                if selected != nil {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { save() } label: {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(NwAppColors.positive)
-                        }
-                        .disabled(parsedAmount == nil)
-                        .accessibilityLabel("Save")
-                    }
-                }
-            }
-            .task { loadCandidates() }
-        }
-    }
-
-    private var transactionList: some View {
-        List {
-            Section {
-                Text("Pick the posted transaction this goal paid for. "
-                     + "It moves out of ordinary spending into the Goal "
-                     + "Purchases column.")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(filteredCandidates, id: \.id) { row in
-                Button {
-                    select(row)
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(rowTitle(row))
-                                .font(NwTypography.body)
-                                .foregroundStyle(NwAppColors.textPrimary)
-                                .lineLimit(1)
-                            Text(DateDisplay.shortDate(row.postedDate))
-                                .font(NwTypography.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        NwAmountText(
-                            Money(milliunits: row.amountMilliunits),
-                            variant: .body, showCents: true
-                        )
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .searchable(text: $searchText, prompt: "Search transactions")
-    }
-
-    private func amountForm(
-        _ row: CachedFinancialTransaction
-    ) -> some View {
-        Form {
-            Section {
-                LabeledContent("Transaction") { Text(rowTitle(row)) }
-                LabeledContent("Posted") {
-                    Text(DateDisplay.shortDate(row.postedDate))
-                }
-                LabeledContent("Assignable") {
-                    NwAmountText(
-                        remainingAdjustable(row), variant: .body,
-                        showCents: true
-                    )
-                }
-            }
-            Section {
-                TextField("Amount from goal", text: $amountText)
-                    .keyboardType(.decimalPad)
-                    .onChange(of: amountText) { _, newValue in
-                        amountText = CurrencyInputFormatter.formatted(
-                            newValue
-                        )
-                    }
-            } footer: {
-                Text("Defaults to the full assignable spending. Lower it "
-                     + "for a partial purchase — the remainder stays in "
-                     + "ordinary spending.")
-            }
-            if let failure {
-                Section {
-                    NwInlineNotice(
-                        "Can't save", message: failure,
-                        tone: .caution
-                    )
-                }
-            }
-        }
-    }
-
-    private var filteredCandidates: [CachedFinancialTransaction] {
-        guard !searchText.isEmpty else { return candidates }
-        return candidates.filter {
-            rowTitle($0).localizedCaseInsensitiveContains(searchText)
-        }
-    }
-
-    private func rowTitle(_ row: CachedFinancialTransaction) -> String {
-        row.displayName
-    }
-
-    private func remainingAdjustable(
-        _ row: CachedFinancialTransaction
-    ) -> Money {
-        guard let pipelineContext else { return .zero }
-        return SpendingEntryPipeline.remainingAdjustableAmount(
-            row: row,
-            existingLedgerEntries: ledgerEntries,
-            context: pipelineContext
-        )
-    }
-
-    private var parsedAmount: Money? {
-        guard let amount = CurrencyInputFormatter.money(from: amountText),
-              amount.milliunits > 0 else { return nil }
-        return amount
-    }
-
-    private func select(_ row: CachedFinancialTransaction) {
-        selected = row
-        amountText = CurrencyInputFormatter.text(
-            for: remainingAdjustable(row)
-        )
-    }
-
-    private func loadCandidates() {
-        let groups = (try? context.fetch(
-            FetchDescriptor<DurableCategoryGroup>()
-        )) ?? []
-        let categories = (try? context.fetch(
-            FetchDescriptor<DurableCanonicalCategory>()
-        )) ?? []
-        let accounts = (try? context.fetch(
-            FetchDescriptor<CachedFinancialAccount>()
-        )) ?? []
-        ledgerEntries = (try? context.fetch(
-            FetchDescriptor<DurableGoalLedgerEntry>()
-        )) ?? []
-        let pipelineContext = SpendingEntryPipeline.Context(
-            groups: groups, categories: categories, accounts: accounts
-        )
-        self.pipelineContext = pipelineContext
-
-        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
-            predicate: #Predicate {
-                !$0.deleted && !$0.pending && !$0.requiresReview
-                    && $0.amountMilliunits < 0
-            },
-            sortBy: [SortDescriptor(\.postedDate, order: .reverse)]
-        )
-        descriptor.fetchLimit = 400
-        let rows = (try? context.fetch(descriptor)) ?? []
-        candidates = rows.filter { row in
-            SpendingEntryPipeline.remainingAdjustableAmount(
-                row: row,
-                existingLedgerEntries: ledgerEntries,
-                context: pipelineContext
-            ).milliunits > 0
-        }
-    }
-
-    private func save() {
-        guard let amount = parsedAmount,
-              let row = selected,
-              let pipelineContext,
-              let goal = goalRows.first(where: { $0.id == goalId }) else {
-            return
-        }
-        do {
-            try GoalLedgerService(context: context).recordPurchase(
-                goal: goal,
-                row: row,
-                amount: amount,
-                pipelineContext: pipelineContext
+            try GoalLedgerService(context: context).applyAllocations(
+                allocations,
+                residualGoalId: residualGoalId
             )
             dismiss()
         } catch {

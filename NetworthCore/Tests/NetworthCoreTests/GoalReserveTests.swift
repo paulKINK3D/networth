@@ -5,6 +5,21 @@ import Foundation
 
 @Suite("Goal reserve pool and ledger math")
 struct GoalReserveTests {
+
+    @Test func residualGoalReceivesLiveRemainder() {
+        let balances = ReservePoolMath.effectiveBalances(
+            reserveBalance: Money.dollars(12_000),
+            activeGoalIds: ["travel", "investments"],
+            residualGoalId: "investments",
+            rawBalances: [
+                "travel": Money.dollars(3_000),
+                "investments": Money.dollars(500),
+            ]
+        )
+
+        #expect(balances["travel"] == Money.dollars(3_000))
+        #expect(balances["investments"] == Money.dollars(9_000))
+    }
     private var utc: Calendar {
         var value = Calendar(identifier: .gregorian)
         value.timeZone = TimeZone(identifier: "UTC")!

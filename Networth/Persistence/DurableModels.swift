@@ -1156,9 +1156,9 @@ public final class DurableGoal {
     public var plannedMonthlyMilliunits: Int64 = 0
     public var emergencyMonths: Int = 0
     public var emergencyReductionPercent: Int = 100
-    /// Retired: the residual/catch-all goal concept was removed. The field
-    /// stays (defaulted, unread) so existing CloudKit/device rows that set it
-    /// remain valid; a goal that had it set simply behaves as a normal goal.
+    /// At most one active goal receives the live remainder after every other
+    /// explicit allocation. The field already existed in the CloudKit model;
+    /// allocation writes enforce the single-residual invariant.
     public var isResidual: Bool = false
     /// When the emergency-derived target was last adopted; explains "target
     /// updated" to the user and gates hysteresis.
@@ -1273,7 +1273,8 @@ public final class DurableGoalLedgerEntry {
     }
 }
 
-/// A savings account the user selected to back goals. Identity fields are
+/// An account the user selected to back goals, independent of account type.
+/// Identity fields are
 /// snapshotted at selection so a disconnected account can still be displayed
 /// and re-attached (user-confirmed — institution+mask is a suggestion key,
 /// never an automatic rebind).

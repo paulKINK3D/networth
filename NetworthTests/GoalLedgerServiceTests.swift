@@ -93,22 +93,6 @@ struct GoalLedgerServiceTests {
         return row
     }
 
-    private func pipelineContext(
-        _ context: ModelContext
-    ) throws -> SpendingEntryPipeline.Context {
-        SpendingEntryPipeline.Context(
-            groups: try context.fetch(
-                FetchDescriptor<DurableCategoryGroup>()
-            ),
-            categories: try context.fetch(
-                FetchDescriptor<DurableCanonicalCategory>()
-            ),
-            accounts: try context.fetch(
-                FetchDescriptor<CachedFinancialAccount>()
-            )
-        )
-    }
-
     // MARK: - Schema membership
 
     @Test func goalModelsRegisterAndPersistInBothSchemas() throws {
@@ -180,6 +164,47 @@ struct GoalLedgerServiceTests {
     }
 
     // MARK: - Allocation invariants
+
+    @Test func stagedAllocationsCommitTogetherAndResidualTracksPool() async throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let account = insertSavingsAccount(context, balance: 1_000_000)
+        let service = GoalLedgerService(context: context)
+        try service.addReserveAccount(account)
+        let travel = try service.createGoal(
+            name: "Travel", kind: .refillable
+        )
+        let investments = try service.createGoal(
+            name: "Investments", kind: .refillable
+        )
+
+        try service.applyAllocations(
+            [travel.id: Money(milliunits: 300_000)],
+            residualGoalId: investments.id
+        )
+
+        var model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        #expect(model.activeGoals.first {
+            $0.goalUUID == travel.id
+        }?.balance == Money(milliunits: 300_000))
+        #expect(model.activeGoals.first {
+            $0.goalUUID == investments.id
+        }?.balance == Money(milliunits: 700_000))
+        #expect(investments.isResidual)
+        #expect(!travel.isResidual)
+
+        account.currentBalanceMilliunits = 1_250_000
+        account.availableBalanceMilliunits = 1_250_000
+        try context.save()
+        model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        #expect(model.activeGoals.first {
+            $0.goalUUID == investments.id
+        }?.balance == Money(milliunits: 950_000))
+    }
 
     @Test func allocationsRespectUnallocatedPool() throws {
         let context = try makeContext()
@@ -258,105 +283,6 @@ struct GoalLedgerServiceTests {
         let summary = try service.poolSummary()
         // Pool allocation unchanged by an internal move.
         #expect(summary.allocated == Money(milliunits: 300_000))
-    }
-
-    // MARK: - Purchase ceiling (mixed-treatment splits)
-
-    @Test func purchaseCeilingUsesAdjustableLegsNotParentAmount() throws {
-        let context = try makeContext()
-        _ = insertSavingsAccount(context, balance: 10_000_000)
-        let service = GoalLedgerService(context: context)
-        let goal = try service.createGoal(name: "Travel", kind: .refillable)
-        let account = try #require(context.fetch(
-            FetchDescriptor<CachedFinancialAccount>()
-        ).first)
-        try service.addReserveAccount(account)
-        try service.addManualEntry(
-            goal: goal, amount: Money(milliunits: 5_000_000),
-            date: .now, note: nil
-        )
-
-        // $100 parent: $60 ordinary leg + $40 transfer leg. Only $60 is
-        // assignable — the parent amount would over-drain the goal.
-        let row = insertTransaction(
-            context,
-            id: "plaid:tx-1", externalId: "tx-1",
-            amountMilliunits: -100_000,
-            legs: [
-                SubTransactionSummary(
-                    id: "leg-1", amount: Money(milliunits: -60_000),
-                    categoryId: nil, categoryName: "Travel",
-                    forecastTreatment: .ordinarySpending,
-                    payeeName: nil, memo: nil, deleted: false
-                ),
-                SubTransactionSummary(
-                    id: "leg-2", amount: Money(milliunits: -40_000),
-                    categoryId: nil, categoryName: "Transfer",
-                    forecastTreatment: .internalTransfer,
-                    payeeName: nil, memo: nil, deleted: false
-                )
-            ]
-        )
-        try context.save()
-        let pipeline = try pipelineContext(context)
-
-        #expect(throws: GoalLedgerService.Failure.self) {
-            try service.recordPurchase(
-                goal: goal, row: row,
-                amount: Money(milliunits: 100_000),
-                pipelineContext: pipeline
-            )
-        }
-        try service.recordPurchase(
-            goal: goal, row: row,
-            amount: Money(milliunits: 60_000),
-            pipelineContext: pipeline
-        )
-        // Fully assigned now: the remaining ceiling is zero.
-        let remaining = SpendingEntryPipeline.remainingAdjustableAmount(
-            row: row,
-            existingLedgerEntries: try context.fetch(
-                FetchDescriptor<DurableGoalLedgerEntry>()
-            ),
-            context: pipeline
-        )
-        #expect(remaining.isZero)
-    }
-
-    // MARK: - Nonnegative balance on every mutation
-
-    @Test func deletingContributionUnderneathPurchaseIsBlocked() throws {
-        let context = try makeContext()
-        _ = insertSavingsAccount(context, balance: 10_000_000)
-        let service = GoalLedgerService(context: context)
-        let goal = try service.createGoal(name: "Travel", kind: .refillable)
-        let account = try #require(context.fetch(
-            FetchDescriptor<CachedFinancialAccount>()
-        ).first)
-        try service.addReserveAccount(account)
-        try service.addManualEntry(
-            goal: goal, amount: Money(milliunits: 100_000),
-            date: .now, note: nil
-        )
-        let row = insertTransaction(
-            context,
-            id: "plaid:tx-2", externalId: "tx-2",
-            amountMilliunits: -60_000
-        )
-        try context.save()
-        try service.recordPurchase(
-            goal: goal, row: row,
-            amount: Money(milliunits: 60_000),
-            pipelineContext: try pipelineContext(context)
-        )
-
-        let contribution = try #require(context.fetch(
-            FetchDescriptor<DurableGoalLedgerEntry>()
-        ).first { $0.kind == .manual })
-        // Removing the $100 contribution would leave the goal at -$60.
-        #expect(throws: GoalLedgerService.Failure.self) {
-            try service.deleteEntry(contribution)
-        }
     }
 
     // MARK: - Archive lifecycle
@@ -480,54 +406,6 @@ struct GoalLedgerServiceTests {
             $0.goalUUID == goal.id
         })
         #expect(item.balance == Money(milliunits: 8_000_000))
-    }
-
-    @Test func pipelineResolvesExternalIdsToCachedRowIds() throws {
-        let context = try makeContext()
-        _ = insertSavingsAccount(context, balance: 10_000_000)
-        let service = GoalLedgerService(context: context)
-        let goal = try service.createGoal(name: "Travel", kind: .refillable)
-        let account = try #require(context.fetch(
-            FetchDescriptor<CachedFinancialAccount>()
-        ).first)
-        try service.addReserveAccount(account)
-        try service.addManualEntry(
-            goal: goal, amount: Money(milliunits: 5_000_000),
-            date: .now, note: nil
-        )
-        // Cached id ("plaid:tx-3") differs from the external id ("tx-3");
-        // the ledger stores the external id and the pipeline must bridge.
-        let row = insertTransaction(
-            context,
-            id: "plaid:tx-3", externalId: "tx-3",
-            amountMilliunits: -4_000_000
-        )
-        try context.save()
-        try service.recordPurchase(
-            goal: goal, row: row,
-            amount: Money(milliunits: 4_000_000),
-            pipelineContext: try pipelineContext(context)
-        )
-
-        let entries = SpendingEntryPipeline.adjustedEntries(
-            rows: try context.fetch(
-                FetchDescriptor<CachedFinancialTransaction>()
-            ),
-            ledgerEntries: try context.fetch(
-                FetchDescriptor<DurableGoalLedgerEntry>()
-            ),
-            context: try pipelineContext(context)
-        )
-        let funded = entries.first {
-            $0.groupIdentity == GoalPurchaseAdjuster.groupIdentity
-        }
-        #expect(funded?.amountMilliunits == -4_000_000)
-        #expect(funded?.transactionId == "plaid:tx-3")
-        // The original entry is fully consumed.
-        #expect(!entries.contains {
-            $0.transactionId == "plaid:tx-3"
-                && $0.groupIdentity != GoalPurchaseAdjuster.groupIdentity
-        })
     }
 
     // MARK: - Derived projection exclusion

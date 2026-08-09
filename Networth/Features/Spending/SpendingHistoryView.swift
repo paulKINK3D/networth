@@ -1408,18 +1408,11 @@ actor SpendingHistoryBuildActor {
         let accounts = try modelContext.fetch(
             FetchDescriptor<CachedFinancialAccount>()
         )
-        let ledgerEntries = (try? modelContext.fetch(
-            FetchDescriptor<DurableGoalLedgerEntry>()
-        )) ?? []
         let pipelineContext = SpendingEntryPipeline.Context(
             groups: groups, categories: categories, accounts: accounts
         )
-        // The shared pipeline assembles entries and resolves goal-purchase
-        // assignments so Goals and Spending always agree.
-        let entries = SpendingEntryPipeline.adjustedEntries(
-            rows: rows,
-            ledgerEntries: ledgerEntries,
-            context: pipelineContext
+        let entries = SpendingEntryPipeline.assembleEntries(
+            rows: rows, context: pipelineContext
         )
 
         var seenDefinitions = Set<String>()
@@ -1577,10 +1570,8 @@ struct SpendingGroupDetailSheet: View {
             .sorted { $0.postedDate > $1.postedDate }
     }
 
-    /// The report's adjusted per-transaction line amount for this category:
-    /// split legs outside the category never count, and goal-funded portions
-    /// have already moved to the Goal Purchases column, so drill-down always
-    /// matches the column totals.
+    /// The report's per-transaction line amount for this category. Split legs
+    /// outside the category never count, so drill-down matches the column.
     private func displayAmount(
         for row: CachedFinancialTransaction,
         category: SpendingHistoryCategoryTotal

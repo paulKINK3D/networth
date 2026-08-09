@@ -253,6 +253,31 @@ public enum ReservePoolMath {
             && summary.shortfall.isZero
             && amount <= summary.unallocated
     }
+
+    /// Resolves one optional catch-all goal from the live reserve balance.
+    /// Explicit goal balances keep their stored values; the residual goal
+    /// receives whatever remains, so account growth automatically flows to
+    /// it without creating allocation events.
+    public static func effectiveBalances(
+        reserveBalance: Money,
+        activeGoalIds: [String],
+        residualGoalId: String?,
+        rawBalances: [String: Money]
+    ) -> [String: Money] {
+        var result = Dictionary(uniqueKeysWithValues: activeGoalIds.map {
+            ($0, rawBalances[$0] ?? .zero)
+        })
+        guard let residualGoalId,
+              activeGoalIds.contains(residualGoalId) else { return result }
+        let explicitTotal = activeGoalIds.reduce(Int64(0)) { total, id in
+            guard id != residualGoalId else { return total }
+            return total + max(0, result[id]?.milliunits ?? 0)
+        }
+        result[residualGoalId] = Money(
+            milliunits: max(0, reserveBalance.milliunits - explicitTotal)
+        )
+        return result
+    }
 }
 
 // MARK: - Emergency fund math
@@ -314,204 +339,5 @@ public enum EmergencyFundMath {
         guard delta > 0 else { return false }
         let fractionThreshold = current.scaled(by: adoptionFraction).milliunits
         return delta >= adoptionFloorMilliunits || delta >= fractionThreshold
-    }
-}
-
-// MARK: - Goal purchase adjustment
-
-/// Confirmed goal spending and refunds, keyed by the cached transaction row
-/// id (already resolved from ledger external ids). Amounts are positive
-/// milliunit magnitudes.
-public struct GoalPurchaseAssignments: Sendable, Hashable {
-    public let purchasesByTransactionId: [String: Int64]
-    public let refundsByTransactionId: [String: Int64]
-
-    public init(
-        purchasesByTransactionId: [String: Int64] = [:],
-        refundsByTransactionId: [String: Int64] = [:]
-    ) {
-        self.purchasesByTransactionId = purchasesByTransactionId
-        self.refundsByTransactionId = refundsByTransactionId
-    }
-
-    public var isEmpty: Bool {
-        purchasesByTransactionId.isEmpty && refundsByTransactionId.isEmpty
-    }
-}
-
-/// Moves confirmed goal-funded portions of transactions out of their ordinary
-/// categories and into the synthetic Goal Purchases group, before the builder
-/// runs. The builder's sign matrix is untouched: adjusted entries are still
-/// ordinary spending; the synthetic entries ride the same rules.
-public enum GoalPurchaseAdjuster {
-    public static let groupIdentity = "networth:goal-purchases"
-    public static let groupName = "Goal Purchases"
-    public static let categoryKey = "networth:goal-purchases:category"
-
-    /// The assignable ceiling for one transaction: the sum of its negative
-    /// ordinary-spending entries. Mixed-treatment splits have a smaller
-    /// ceiling than the parent amount; nil-treatment incoming legs and
-    /// transfer legs never count.
-    public static func adjustableAmount(
-        entries: [SpendingHistoryEntry],
-        transactionId: String
-    ) -> Money {
-        Money(milliunits: entries.reduce(Int64(0)) { sum, entry in
-            guard entry.transactionId == transactionId,
-                  isConsumablePurchaseEntry(entry) else { return sum }
-            return sum - entry.amountMilliunits
-        })
-    }
-
-    /// Applies assignments and returns the adjusted entry list. Consumption
-    /// is largest-magnitude-first with a stable tie-breaker (original array
-    /// index, then category key). Fully consumed entries are dropped; the
-    /// consumed portion re-emerges as Goal Purchases entries. Assignments
-    /// exceeding the adjustable amount consume what exists and no more.
-    public static func apply(
-        entries: [SpendingHistoryEntry],
-        assignments: GoalPurchaseAssignments
-    ) -> [SpendingHistoryEntry] {
-        guard !assignments.isEmpty else { return entries }
-
-        // index -> consumed milliunits (positive magnitude)
-        var consumedByIndex: [Int: Int64] = [:]
-        // transactionId -> (date, purchaseConsumed, refundConsumed)
-        var syntheticByTransaction:
-            [String: (date: Date, purchase: Int64, refund: Int64)] = [:]
-
-        func consume(
-            transactionId: String,
-            amount: Int64,
-            candidates: [(index: Int, entry: SpendingHistoryEntry)],
-            isRefund: Bool
-        ) {
-            guard amount > 0, !candidates.isEmpty else { return }
-            var remaining = amount
-            let ordered = candidates.sorted {
-                let lhs = abs($0.entry.amountMilliunits)
-                let rhs = abs($1.entry.amountMilliunits)
-                if lhs != rhs { return lhs > rhs }
-                if $0.index != $1.index { return $0.index < $1.index }
-                return $0.entry.categoryKey < $1.entry.categoryKey
-            }
-            for candidate in ordered where remaining > 0 {
-                let available = abs(candidate.entry.amountMilliunits)
-                    - (consumedByIndex[candidate.index] ?? 0)
-                guard available > 0 else { continue }
-                let take = min(available, remaining)
-                consumedByIndex[candidate.index, default: 0] += take
-                remaining -= take
-                var record = syntheticByTransaction[transactionId]
-                    ?? (candidate.entry.date, 0, 0)
-                if isRefund { record.refund += take }
-                else { record.purchase += take }
-                syntheticByTransaction[transactionId] = record
-            }
-        }
-
-        for (transactionId, amount) in assignments.purchasesByTransactionId {
-            let candidates = entries.enumerated().compactMap {
-                index, entry -> (Int, SpendingHistoryEntry)? in
-                guard entry.transactionId == transactionId,
-                      isConsumablePurchaseEntry(entry) else { return nil }
-                return (index, entry)
-            }
-            consume(
-                transactionId: transactionId, amount: amount,
-                candidates: candidates.map { (index: $0.0, entry: $0.1) },
-                isRefund: false
-            )
-        }
-        for (transactionId, amount) in assignments.refundsByTransactionId {
-            let candidates = entries.enumerated().compactMap {
-                index, entry -> (Int, SpendingHistoryEntry)? in
-                guard entry.transactionId == transactionId,
-                      isConsumableRefundEntry(entry) else { return nil }
-                return (index, entry)
-            }
-            consume(
-                transactionId: transactionId, amount: amount,
-                candidates: candidates.map { (index: $0.0, entry: $0.1) },
-                isRefund: true
-            )
-        }
-
-        var adjusted: [SpendingHistoryEntry] = []
-        adjusted.reserveCapacity(entries.count + syntheticByTransaction.count)
-        for (index, entry) in entries.enumerated() {
-            guard let consumed = consumedByIndex[index] else {
-                adjusted.append(entry)
-                continue
-            }
-            let magnitude = abs(entry.amountMilliunits) - consumed
-            guard magnitude > 0 else { continue }
-            let sign: Int64 = entry.amountMilliunits < 0 ? -1 : 1
-            adjusted.append(SpendingHistoryEntry(
-                transactionId: entry.transactionId,
-                date: entry.date,
-                amountMilliunits: sign * magnitude,
-                treatment: entry.treatment,
-                reportingRole: entry.reportingRole,
-                groupIdentity: entry.groupIdentity,
-                groupName: entry.groupName,
-                categoryKey: entry.categoryKey,
-                categoryName: entry.categoryName
-            ))
-        }
-        for (transactionId, record) in syntheticByTransaction
-            .sorted(by: { $0.key < $1.key }) {
-            if record.purchase > 0 {
-                adjusted.append(SpendingHistoryEntry(
-                    transactionId: transactionId,
-                    date: record.date,
-                    amountMilliunits: -record.purchase,
-                    treatment: .ordinarySpending,
-                    reportingRole: .spending,
-                    groupIdentity: groupIdentity,
-                    groupName: groupName,
-                    categoryKey: categoryKey,
-                    categoryName: groupName
-                ))
-            }
-            if record.refund > 0 {
-                adjusted.append(SpendingHistoryEntry(
-                    transactionId: transactionId,
-                    date: record.date,
-                    amountMilliunits: record.refund,
-                    treatment: .refund,
-                    reportingRole: .spending,
-                    groupIdentity: groupIdentity,
-                    groupName: groupName,
-                    categoryKey: categoryKey,
-                    categoryName: groupName
-                ))
-            }
-        }
-        return adjusted
-    }
-
-    private static func isConsumablePurchaseEntry(
-        _ entry: SpendingHistoryEntry
-    ) -> Bool {
-        guard entry.amountMilliunits < 0,
-              entry.groupIdentity != groupIdentity else { return false }
-        switch entry.treatment {
-        case .ordinarySpending, nil:
-            return entry.reportingRole == nil
-                || entry.reportingRole == .spending
-        default:
-            return false
-        }
-    }
-
-    private static func isConsumableRefundEntry(
-        _ entry: SpendingHistoryEntry
-    ) -> Bool {
-        entry.amountMilliunits > 0
-            && entry.treatment == .refund
-            && entry.groupIdentity != groupIdentity
-            && (entry.reportingRole == nil
-                || entry.reportingRole == .spending)
     }
 }

@@ -1,196 +1,24 @@
 # WORKING
 
-## Goals tab — full v1 implementation (2026-08-07)
+## Goals overhaul (2026-08-09)
 
-Implements the plan agreed in-session (5 Codex review rounds, final sign-off
-"ready to implement"). All work is uncommitted alongside the still-uncommitted
-paycheck-detection changes below.
-
-- **Domain (NetworthCore, 216/216 tests green)**: new `Models/Goals.swift` —
-  `Goal`/`GoalKind`/`GoalTargetMode`, `GoalLedgerEntry` with 7 kinds
-  (`manual, contribution, purchase, purchaseRefund, withdrawal,
-  reallocationOut, reallocationIn`), `GoalMath` (balance, plan-sufficiency
-  status bridging to `FundMath`, MTD contributions = positive
-  manual+contribution only), `ReservePoolMath` (allocated = Σ max(balance,0)
-  over active goals; canAllocate blocks during shortfall),
-  `EmergencyFundMath` (median of complete months, months × reduction%,
-  $100-rounding + ≥5%/≥$250 adoption hysteresis), `GoalPurchaseAdjuster`
-  (per-transaction assignments, largest-leg-first + stable tie-break,
-  adjustableAmount ceiling = negative ordinary entries only, synthetic
-  Goal Purchases group `networth:goal-purchases`). New test suites:
-  GoalReserve, EmergencyFundMath, GoalPurchaseAdjuster.
-- **Report model** (`SpendingHistory.swift`): group totals carry
-  `reportingRole` + `countsTowardHeadline` (Goal Purchases excluded from the
-  Spent headline but visible as its own column, pinned last via the
-  orderIndex Int.max fallback, "Other" fallback color so user hues never
-  shift); months expose `ordinaryTotalMilliunits` (excludes
-  transfer/investment roles and Goal Purchases — the emergency-median
-  input); category totals carry `lineAmountsByTransactionId` (adjusted,
-  raw-sign) consumed by drill-down `displayAmount`.
-- **Shared pipeline** (`Services/SpendingEntryPipeline.swift`): assembly
-  (no visibility) → ledger externalId→cached-row-id resolution (built from
-  fetched rows, no format assumptions) → purchase/refund adjustment BEFORE
-  hidden-group filtering → visibility. Consumed by both
-  `SpendingHistoryBuildActor` (refactored to it) and `GoalsBuildActor`, so
-  Spending display and the Goals emergency input are the same numbers.
-  `remainingAdjustableAmount(row:)` is the purchase-marking ceiling.
-- **Persistence**: four new CloudKit durable types — `DurableGoal`
-  (targetMode fixed|emergencyMonths, emergencyMonths/reductionPercent,
-  adoptedAt, archived, completedAt, timestamps), `DurableGoalLedgerEntry`,
-  `DurableGoalReserveAccount` (snapshots name/institution/mask for
-  disconnected display + user-confirmed re-attach), 
-  `DurableGoalSuggestionDismissal`. Registered in durable + unified schemas
-  and FreshStart delete/verify lists (NOT the purge list — legacy
-  `DurableSinkingFund`/`DurableFundEvent` stay purged-on-sight and unused).
-- **`Services/GoalLedgerService.swift`** — the single write path.
-  Re-fetch → validate → `safeSave` or rollback + typed `Failure`.
-  Invariants: contribution consumable once app-wide; purchase Σ ≤ adjustable
-  amount; balances never negative on ANY mutation (incl. deleting an old
-  contribution under a purchase); allocations respect pool;
-  archive/complete with balance requires release-or-transfer (atomic
-  reallocation pair, excluded from MTD and Spending).
-- **UI**: 5th tab (`ContentView` tag 4, `NwIcon.goals` = "target").
-  `Features/Goals/GoalsView.swift` (GoalsBuildActor + Sendable GoalsModel,
-  detached-actor + 0.6s-debounced-save + significantTimeChange rebuild
-  idiom; reserve header card with shortfall notice citing recent reserve
-  outflows; suggestion inbox with confirm/dismiss; goal cards; archived
-  section; empty state). `Features/Goals/GoalsSheets.swift` (GoalCard
-  revived from git BudgetView with MTD line; detail sheet with ledger +
-  orphan badges; entry sheet with cents-capable CurrencyInputFormatter and
-  stays-open-on-failure; editor with kind picker, fixed vs
-  months-of-spending target, archive/complete disposition dialog; reserve
-  picker with USD-only + card-funding-account block + re-attach
-  suggestions; contribution confirm; purchase picker defaulting to
-  remaining adjustable amount). Emergency-target adoption runs through the
-  service after each build when hysteresis passes.
-- **Projections**: `ProjectionsDataActor` derives reserve exclusion —
-  `ProjectionCashSelection.selectedAccounts` (unit-tested) filters active
-  reserve canonical ids from the cash pool; no override rows written; the
-  Settings cash-accounts sheet shows reserve-backed accounts as locked
-  ("Backs goals — managed in Goals") and preserves the stored preference.
-- **App tests** (`NetworthTests/GoalLedgerServiceTests.swift`, ⌘U): schema
-  registration, contribution-once, pool-capacity, mixed-split ceiling,
-  delete-blocked-below-zero, archive dispositions + reallocation pair,
-  pipeline id resolution end-to-end, derived projection exclusion/restore.
-- **Validation done**: `swift test` 216/216; generic-device Debug AND
-  Release builds; `build-for-testing` compiles the app-test target. Not
-  run: ⌘U app tests and on-device manual pass (user).
-- New files registered directly in `project.pbxproj` (Goals group,
-  Services entries, test target entry).
-
-### Residual goal REMOVED (2026-08-08)
-Built the residual/"whatever's left" catch-all, user tried it and asked to
-remove it — the reserve header showing "$137.3K Unallocated" while a residual
-goal simultaneously displayed the same $137.3K was confusing (same money, two
-labels). Reverted: core `Goal.isResidual` gone, service create/update no
-longer take it, `validateFundable`/`residualGoalNotFundable` removed, build
-actor back to simple pool math, all UI (editor toggle, detail branch, card
-badge, allocate/transfer exclusions) reverted, residual tests deleted.
-`DurableGoal.isResidual` field KEPT (defaulted, unread) so on-device rows that
-set it stay valid and just behave as normal goals — avoids a CloudKit schema
-removal on the live device.
-
-### (removed) Residual (catch-all) goal — superseded by the removal above
-- Core `Goal` + `DurableGoal` gain `isResidual` (additive, defaulted).
-- `GoalsBuildActor`: pool summary computed from NON-residual active balances;
-  the residual item's balance = `pool.unallocated`, status `.openEnded`, no
-  progress/MTD.
-- Service: create/update take `isResidual` (forces target/planned/mode to
-  neutral); `clearOtherResiduals` enforces the single-residual rule (demotes
-  any other, its allocations stay). `validateFundable` blocks
-  allocate/withdraw/move/purchase on a residual (`Failure
-  .residualGoalNotFundable`).
-- UI: editor toggle (hides target/kind/planned when on, warns if another
-  goal is the current catch-all); detail sheet replaces funding actions with
-  an explanation; residual excluded from allocate targets, move/transfer
-  targets, and the allocate-button gating; card shows an info badge +
-  "holds the unallocated remainder" subtitle, no progress bar.
-- Tests: `residualGoalRejectsAllocation`, `onlyOneActiveResidualGoal`.
-- Note: adding a defaulted param to `Goal.init` changed its mangled symbol —
-  required `swift package clean` + xcodebuild clean to clear a stale-link.
-
-### Taxable investment accounts can back goals (2026-08-07)
-User's ETF money for goals sits in Plaid *investment* accounts, a different
-source than the cash reserve model. Verified via live device data: taxable
-brokerage ****5609 ($100k) + Robinhood individual are `CachedPlaidAccount`
-rows (subtype `brokerage`), not `CachedFinancialAccount`. Scope agreed with
-user: taxable brokerage + Fidelity Cash Plus only (Cash Plus already a cash
-account). Retirement accounts (IRA/Roth/401k) deliberately excluded — can't
-fund near-term goals without penalty, so backing one would falsely read as
-funded.
-- `ReserveBalance.conservative(...)` (in GoalLedgerService.swift) resolves a
-  reserve row's balance from `CachedFinancialAccount` first, else
-  `CachedPlaidAccount` by id — shared by the service and `GoalsBuildActor`.
-  Investment balance = market value (no "available"); volatility surfaces
-  honestly as a shortfall if it drops below allocations.
-- `GoalLedgerService.addReserveAccount` gained a source-neutral overload
-  (canonicalAccountId/name/institution/mask); the Plaid account `id` is the
-  reserve key for investments.
-- Reserve picker: new "Taxable Investments" section listing non-retirement
-  investment/brokerage Plaid accounts (retirement subtype denylist), with a
-  market-volatility footer. Projection cash-pool exclusion is unaffected —
-  brokerage was never in the cash pool. Net worth isn't double-counted —
-  goals only label existing balances.
-- Test: `taxableBrokerageContributesToReservePool`.
-
-### Goals funding model simplified to envelope allocation (2026-08-07)
-User rejected transaction-attributed funding ("why do I have to attribute a
-transaction to a goal? I should be able to allocate any amount of the total
-fund to any goal"). Agreed model, then implemented:
-- **Funding = pure allocation.** Reserve pool = real savings balance (already
-  reflects interest, transfers, everything). Goals divide that total. Deposits
-  and withdrawals in the real account are never traced to a goal — they only
-  change Unallocated. A transfer into savings shows in Spending (Savings
-  Transfers category) and is invisible in Goals except as more to allocate.
-- **Removed**: the entire transaction inbox — contribution suggestions,
-  withdrawal suggestions, reserve-flow detection in `GoalsBuildActor`, the
-  `GoalFlowConfirmSheet`, `confirmContribution`/`confirmWithdrawal`/
-  `dismissSuggestion` service methods, `DurableGoalSuggestionDismissal` model
-  (dropped from schema + FreshStart — never shipped so safe), and the
-  `GoalsModel.Suggestion`/`GoalFlowDirection` types.
-- **Added**: `GoalAllocateSheet` (reserve card → "Allocate to a Goal": pick
-  goal + amount from Unallocated, "Allocate All" shortcut) and
-  `moveBetweenGoals` (atomic reallocation pair). Per-goal detail keeps Add
-  Money (allocate) / Withdraw (release to unallocated) / Record Purchase.
-- **Kept transaction-linked**: only "spent from goal" (purchases), because it
-  also pulls the purchase out of Spending. `manual` positive entries are
-  allocations; MTD "this month" counts them. Shortfall message simplified
-  (balance dropped below allocations → lower an allocation).
-- GoalsView body is now a `List` (needed for the earlier swipe request, still
-  useful) with clear-background card rows. 217/217 core + app tests compile;
-  new service tests: release-to-unallocated, move-between-goals.
-
-### Paycheck-detector fix from on-device data (2026-08-07)
-- User reported a phantom recurring ~$576 Gusto inflow. Verified against the
-  LIVE device store (app-group container `group.com.bluelava.me.financial`,
-  copied via `xcrun devicectl device copy from`, queried with sqlite3 — the
-  app-container copies are stale/pre-cutover): pay moved from account
-  `0DF90838…` to `4F1DDDE2…` in January; the old account's final deposit was
-  $576.06 on Jan 30. Payer-level freshness stayed green (deposits continue),
-  but per-account portions had NO freshness rule, so the dead account kept
-  projecting $576.06 every payday.
-- Fix in `IncomeAnalyzer.detectPaycheck`: `portionIsFresh` applies the same
-  missed-payday rule (tolerate 1, retire at 2) to each account's own series
-  before it becomes a `PaycheckPortion`. New test
-  `accountSwitchRetiresStalePortion` reproduces the switch (old portion
-  retired at 6 months stale, still present one missed payday after the
-  switch). 217/217 core tests green.
-
-### Post-implementation fixes from on-device testing (same session)
-- Reserve picker eligibility broadened from `.savings` to all cash-like
-  types (Plaid maps money-market/CD/most "savings-purpose" accounts to
-  `.cash` or `.checking`; user's dedicated accounts were checking-type).
-  Savings sort first; per-row type caption (Plaid subtype when present).
-  User then decided to consolidate: one true savings account is the sole
-  reserve; other checking accounts revert to cashflow.
-- Outflow suggestions added (was a fast-follow, promoted after the user hit
-  it immediately): reserve outflows — internal transfers out AND investment
-  contributions funded from a reserve account — appear in the inbox;
-  confirm → "withdraw from which goal?" via `confirmWithdrawal` (once
-  app-wide per transaction, capped by goal balance); dismiss = "came from
-  unallocated". `GoalContributionConfirmSheet` generalized to
-  `GoalFlowConfirmSheet` with a direction. Shuffle suppression applies only
-  to internal-transfer pairs. Withdrawal service test added.
+- Goal accounts are explicitly selected regardless of account type. Their
+  conservative live balances form the pool and remain excluded from the
+  Projections cash pool while selected.
+- The allocation sheet stages every goal amount and commits all changes in one
+  save. One optional goal receives the live remainder after all fixed
+  allocations, so account growth automatically flows to it.
+- Goal creation exposes only a name and optional amount/date target. The old
+  kind, monthly-plan, emergency-formula, Add Money, Withdraw, Record Purchase,
+  and Ledger UI is retired.
+- Goal Spend and Goal Refund are explicit transaction/split-leg types with an
+  explicitly selected active goal. They affect goal balances directly and are
+  excluded from monthly Spending and Projections.
+- The legacy synthetic Goal Purchases report path is removed. Historical
+  allocation rows remain readable as the backing representation for current
+  fixed allocations, but they are not exposed as a user timeline.
+- Validation: NetworthCore tests plus generic-device Debug build-for-testing
+  and Release build. On-device interaction pass remains.
 
 ## Paycheck detection in Cash Projections (2026-08-06)
 

@@ -33,15 +33,109 @@ enum ReserveBalance {
     }
 }
 
+/// One balance calculation for every Goals surface and write validation.
+/// Legacy transaction-linked ledger rows are ignored once the transaction
+/// carries direct Goal Spend / Goal Refund attribution, preventing a prior
+/// assignment from being counted twice.
+enum GoalBalanceCalculator {
+    static func rawBalances(
+        goals: [DurableGoal],
+        ledgerEntries: [DurableGoalLedgerEntry],
+        transactions: [CachedFinancialTransaction]
+    ) -> [UUID: Money] {
+        let goalIDs = Set(goals.map(\.id))
+        var directDelta: [UUID: Int64] = [:]
+        var directAttributionKeys = Set<String>()
+        func attributionKey(_ externalId: String, _ goalId: UUID) -> String {
+            "\(externalId)|\(goalId.uuidString)"
+        }
+        for transaction in transactions
+        where !transaction.deleted && !transaction.pending
+            && !transaction.requiresReview
+            && !transaction.subtransactionsDecodeFailed {
+            let legs = transaction.subtransactions.filter { !$0.deleted }
+            if !legs.isEmpty {
+                for leg in legs {
+                    guard let goalId = leg.goalId,
+                          goalIDs.contains(goalId),
+                          (leg.forecastTreatment == .goalSpend
+                            || leg.forecastTreatment == .goalRefund) else {
+                        continue
+                    }
+                    directDelta[goalId, default: 0] += leg.amount.milliunits
+                    directAttributionKeys.insert(attributionKey(
+                        transaction.externalId,
+                        goalId
+                    ))
+                }
+            } else if let goalId = transaction.goalId,
+                      goalIDs.contains(goalId),
+                      (transaction.forecastTreatment == .goalSpend
+                        || transaction.forecastTreatment == .goalRefund) {
+                directDelta[goalId, default: 0] +=
+                    transaction.amountMilliunits
+                directAttributionKeys.insert(attributionKey(
+                    transaction.externalId,
+                    goalId
+                ))
+            }
+        }
+
+        var totals = directDelta
+        for entry in ledgerEntries where goalIDs.contains(entry.goalId) {
+            if let externalId = entry.linkedTransactionExternalId,
+               directAttributionKeys.contains(attributionKey(
+                externalId,
+                entry.goalId
+               )) {
+                continue
+            }
+            totals[entry.goalId, default: 0] += entry.amountMilliunits
+        }
+        return Dictionary(uniqueKeysWithValues: goals.map {
+            ($0.id, Money(milliunits: totals[$0.id] ?? 0))
+        })
+    }
+
+    static func effectiveBalances(
+        goals: [DurableGoal],
+        ledgerEntries: [DurableGoalLedgerEntry],
+        transactions: [CachedFinancialTransaction],
+        reserveBalance: Money
+    ) -> [UUID: Money] {
+        let raw = rawBalances(
+            goals: goals,
+            ledgerEntries: ledgerEntries,
+            transactions: transactions
+        )
+        let active = goals
+            .filter { !$0.archived && $0.completedAt == nil }
+            .sorted { $0.createdAt < $1.createdAt }
+        let residual = active.first(where: \.isResidual)?.id
+        let resolved = ReservePoolMath.effectiveBalances(
+            reserveBalance: reserveBalance,
+            activeGoalIds: active.map { $0.id.uuidString },
+            residualGoalId: residual?.uuidString,
+            rawBalances: Dictionary(uniqueKeysWithValues: raw.map {
+                ($0.key.uuidString, $0.value)
+            })
+        )
+        var result = raw
+        for goal in active {
+            result[goal.id] = resolved[goal.id.uuidString] ?? .zero
+        }
+        return result
+    }
+}
+
 /// The single write path for goals, goal ledger entries, and reserve-account
 /// selection. Every mutation re-fetches current state, validates the money
 /// invariants, then saves or rolls back — no sheet validates independently.
 ///
 /// Invariants owned here:
-/// - A contribution source transaction is consumable once, app-wide.
-/// - Purchase assignments never exceed a transaction's adjustable amount.
 /// - Goal balances never go negative — including via deletes and edits.
-/// - Allocations respect the reserve pool (blocked during shortfall).
+/// - Staged explicit allocations never exceed the live account pool.
+/// - At most one active goal receives the derived remainder.
 /// - Archive/complete with a positive balance requires an explicit
 ///   disposition: release to unallocated, or transfer to another goal
 ///   (atomic reallocation pair).
@@ -55,8 +149,6 @@ struct GoalLedgerService {
         case balanceWouldGoNegative(Money)
         case exceedsUnallocated(Money)
         case poolInShortfall
-        case transactionAlreadyContributed
-        case exceedsAdjustableAmount(Money)
         case remainderNeedsDisposition(Money)
         case transferTargetInactive
 
@@ -72,10 +164,6 @@ struct GoalLedgerService {
                 "Only \(CurrencyFormatter.currency(unallocated)) of the reserve is unallocated."
             case .poolInShortfall:
                 "The reserve pool is short of its allocations. Resolve the shortfall before allocating more."
-            case .transactionAlreadyContributed:
-                "This transfer is already logged as a contribution."
-            case .exceedsAdjustableAmount(let ceiling):
-                "Only \(CurrencyFormatter.currency(ceiling)) of this transaction is assignable spending."
             case .remainderNeedsDisposition(let balance):
                 "This goal still holds \(CurrencyFormatter.currency(balance)). Release it or move it to another goal first."
             case .transferTargetInactive:
@@ -100,6 +188,10 @@ struct GoalLedgerService {
 
     private func allEntries() throws -> [DurableGoalLedgerEntry] {
         try context.fetch(FetchDescriptor<DurableGoalLedgerEntry>())
+    }
+
+    private func allTransactions() throws -> [CachedFinancialTransaction] {
+        try context.fetch(FetchDescriptor<CachedFinancialTransaction>())
     }
 
     private func balance(
@@ -140,14 +232,75 @@ struct GoalLedgerService {
     }
 
     func poolSummary() throws -> ReservePoolSummary {
+        let goals = try allGoals()
         let entries = try allEntries()
-        let activeBalances = try allGoals()
+        let reserve = try reservePoolBalance()
+        let balances = GoalBalanceCalculator.effectiveBalances(
+            goals: goals,
+            ledgerEntries: entries,
+            transactions: try allTransactions(),
+            reserveBalance: reserve
+        )
+        let activeBalances = goals
             .filter { $0.toCore().isActive }
-            .map { balance(of: $0.id, entries: entries) }
+            .map { balances[$0.id] ?? .zero }
         return ReservePoolMath.summary(
-            reserveBalance: try reservePoolBalance(),
+            reserveBalance: reserve,
             activeGoalBalances: activeBalances
         )
+    }
+
+    /// Commits the entire allocation screen in one save. Every active,
+    /// non-residual goal receives an explicit target balance; one optional
+    /// residual goal derives all remaining value from the live account pool.
+    func applyAllocations(
+        _ allocations: [UUID: Money],
+        residualGoalId: UUID?
+    ) throws {
+        let goals = try allGoals()
+        let active = goals.filter { $0.toCore().isActive }
+        if let residualGoalId,
+           !active.contains(where: { $0.id == residualGoalId }) {
+            throw Failure.goalInactive
+        }
+        let explicit = active.filter { $0.id != residualGoalId }
+        let targets = Dictionary(uniqueKeysWithValues: explicit.map { goal in
+            (goal.id, allocations[goal.id] ?? .zero)
+        })
+        guard targets.values.allSatisfy({ $0.milliunits >= 0 }) else {
+            throw Failure.balanceWouldGoNegative(.zero)
+        }
+        let reserve = try reservePoolBalance()
+        let explicitTotal = targets.values.map(\.milliunits).reduce(0, +)
+        guard explicitTotal <= reserve.milliunits else {
+            throw Failure.exceedsUnallocated(
+                Money(milliunits: max(0, reserve.milliunits))
+            )
+        }
+
+        let entries = try allEntries()
+        let raw = GoalBalanceCalculator.rawBalances(
+            goals: goals,
+            ledgerEntries: entries,
+            transactions: try allTransactions()
+        )
+        for goal in explicit {
+            let delta = (targets[goal.id] ?? .zero)
+                - (raw[goal.id] ?? .zero)
+            guard !delta.isZero else { continue }
+            context.insert(DurableGoalLedgerEntry(
+                goalId: goal.id,
+                date: .now,
+                amountMilliunits: delta.milliunits,
+                kind: .manual
+            ))
+        }
+        for goal in goals {
+            goal.isResidual = goal.id == residualGoalId
+                && goal.toCore().isActive
+            goal.updatedAt = .now
+        }
+        try save(source: "goals.applyAllocations")
     }
 
     // MARK: - Goal lifecycle
@@ -235,38 +388,53 @@ struct GoalLedgerService {
         apply: (DurableGoal) -> Void
     ) throws {
         let entries = try allEntries()
-        let current = balance(of: goal.id, entries: entries)
+        let goals = try allGoals()
+        let reserve = try reservePoolBalance()
+        let current = GoalBalanceCalculator.effectiveBalances(
+            goals: goals,
+            ledgerEntries: entries,
+            transactions: try allTransactions(),
+            reserveBalance: reserve
+        )[goal.id] ?? .zero
         if current.milliunits > 0 {
             switch remainder {
             case nil:
                 throw Failure.remainderNeedsDisposition(current)
             case .release:
-                context.insert(DurableGoalLedgerEntry(
-                    goalId: goal.id,
-                    date: .now,
-                    amountMilliunits: -current.milliunits,
-                    kind: .withdrawal,
-                    note: "Released on archive"
-                ))
+                if !goal.isResidual {
+                    context.insert(DurableGoalLedgerEntry(
+                        goalId: goal.id,
+                        date: .now,
+                        amountMilliunits: -current.milliunits,
+                        kind: .withdrawal,
+                        note: "Released on archive"
+                    ))
+                }
             case .transfer(let target):
                 guard target.toCore().isActive, target.id != goal.id else {
                     throw Failure.transferTargetInactive
                 }
-                // Atomic pair: net-zero across the pool, excluded from MTD.
-                context.insert(DurableGoalLedgerEntry(
-                    goalId: goal.id,
-                    date: .now,
-                    amountMilliunits: -current.milliunits,
-                    kind: .reallocationOut
-                ))
-                context.insert(DurableGoalLedgerEntry(
-                    goalId: target.id,
-                    date: .now,
-                    amountMilliunits: current.milliunits,
-                    kind: .reallocationIn
-                ))
+                // A residual balance is derived rather than stored, so only
+                // the receiving allocation is written when closing it.
+                if !goal.isResidual {
+                    context.insert(DurableGoalLedgerEntry(
+                        goalId: goal.id,
+                        date: .now,
+                        amountMilliunits: -current.milliunits,
+                        kind: .reallocationOut
+                    ))
+                }
+                if !target.isResidual {
+                    context.insert(DurableGoalLedgerEntry(
+                        goalId: target.id,
+                        date: .now,
+                        amountMilliunits: current.milliunits,
+                        kind: .reallocationIn
+                    ))
+                }
             }
         }
+        goal.isResidual = false
         apply(goal)
         goal.updatedAt = .now
         try save(source: source)
@@ -328,36 +496,6 @@ struct GoalLedgerService {
             amountMilliunits: amount.milliunits, kind: .reallocationIn
         ))
         try save(source: "goals.move")
-    }
-
-    /// Record spending from a goal against a posted transaction. Validated
-    /// against the transaction's remaining adjustable amount AND the goal's
-    /// balance.
-    func recordPurchase(
-        goal: DurableGoal,
-        row: CachedFinancialTransaction,
-        amount: Money,
-        pipelineContext: SpendingEntryPipeline.Context
-    ) throws {
-        try validateGoalActive(goal)
-        let entries = try allEntries()
-        let ceiling = SpendingEntryPipeline.remainingAdjustableAmount(
-            row: row,
-            existingLedgerEntries: entries,
-            context: pipelineContext
-        )
-        guard amount.milliunits > 0, amount <= ceiling else {
-            throw Failure.exceedsAdjustableAmount(ceiling)
-        }
-        try validateDrawdown(goal: goal, magnitude: amount, entries: entries)
-        context.insert(DurableGoalLedgerEntry(
-            goalId: goal.id,
-            date: row.postedDate,
-            amountMilliunits: -amount.milliunits,
-            kind: .purchase,
-            linkedTransactionExternalId: row.externalId
-        ))
-        try save(source: "goals.purchase")
     }
 
     /// Delete or shrink a ledger entry. The resulting goal balance must stay
@@ -483,9 +621,13 @@ struct GoalLedgerService {
         magnitude: Money,
         entries: [DurableGoalLedgerEntry]? = nil
     ) throws {
-        let current = balance(
-            of: goal.id, entries: try entries ?? allEntries()
-        )
+        let goals = try allGoals()
+        let current = GoalBalanceCalculator.effectiveBalances(
+            goals: goals,
+            ledgerEntries: try entries ?? allEntries(),
+            transactions: try allTransactions(),
+            reserveBalance: try reservePoolBalance()
+        )[goal.id] ?? .zero
         guard magnitude <= current else {
             throw Failure.balanceWouldGoNegative(current - magnitude)
         }

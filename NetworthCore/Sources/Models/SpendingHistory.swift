@@ -89,8 +89,8 @@ public struct SpendingHistoryGroupTotal: Sendable, Hashable, Identifiable {
     public let spentMilliunits: Int64
     public let categories: [SpendingHistoryCategoryTotal]
     /// Dominant reporting role of the entries that built this group; nil is
-    /// ordinary spending. Transfer/investment groups and Goal Purchases are
-    /// excluded from the ordinary total the emergency fund derives from.
+    /// ordinary spending. Transfer/investment groups are excluded from the
+    /// ordinary total.
     public let reportingRole: CategoryReportingRole?
 
     public init(
@@ -109,26 +109,19 @@ public struct SpendingHistoryGroupTotal: Sendable, Hashable, Identifiable {
 
     public var spent: Money { Money(milliunits: spentMilliunits) }
 
-    public var countsTowardHeadline: Bool {
-        id != GoalPurchaseAdjuster.groupIdentity
-    }
-
-    /// Ordinary out-of-pocket spending: not a transfer/investment group and
-    /// not the synthetic Goal Purchases group.
+    /// Ordinary out-of-pocket spending: not a transfer/investment group.
     public var isOrdinarySpending: Bool {
-        countsTowardHeadline
-            && (reportingRole == nil || reportingRole == .spending)
+        reportingRole == nil || reportingRole == .spending
     }
 }
 
 public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
     /// Start of month in the builder's calendar.
     public let month: Date
-    /// The Spent headline: every visible group except Goal Purchases.
+    /// The Spent headline: every visible group.
     public let totalMilliunits: Int64
     /// Ordinary out-of-pocket spending only — excludes transfer and
-    /// investment groups AND Goal Purchases. The emergency-fund median is
-    /// computed over complete months of this value.
+    /// investment groups.
     public let ordinaryTotalMilliunits: Int64
     /// Sorted by spent descending.
     public let groups: [SpendingHistoryGroupTotal]
@@ -315,11 +308,8 @@ public enum SpendingHistoryBuilder {
                 // (usually misclassified income/reimbursements) — it must not
                 // erase other groups' real spending from the headline. Clamp
                 // to zero so the total matches the visible group columns.
-                // Goal Purchases stays visible as a column but never counts
-                // toward the Spent headline: the headline is out-of-pocket.
                 totalMilliunits: groups.reduce(0) {
-                    $1.countsTowardHeadline
-                        ? $0 + max(0, $1.spentMilliunits) : $0
+                    $0 + max(0, $1.spentMilliunits)
                 },
                 ordinaryTotalMilliunits: groups.reduce(0) {
                     $1.isOrdinarySpending
