@@ -60,17 +60,24 @@ public struct SpendingHistoryCategoryTotal: Sendable, Hashable, Identifiable {
     public let name: String
     public let spentMilliunits: Int64
     public let transactionIds: [String]
+    /// Adjusted entry-amount sum per transaction in this category, in the
+    /// raw sign convention (outflow negative). Drill-down rows display these
+    /// instead of recomputing from cached rows, so goal-purchase adjustments
+    /// carry through to every level.
+    public let lineAmountsByTransactionId: [String: Int64]
 
     public init(
         id: String,
         name: String,
         spentMilliunits: Int64,
-        transactionIds: [String]
+        transactionIds: [String],
+        lineAmountsByTransactionId: [String: Int64] = [:]
     ) {
         self.id = id
         self.name = name
         self.spentMilliunits = spentMilliunits
         self.transactionIds = transactionIds
+        self.lineAmountsByTransactionId = lineAmountsByTransactionId
     }
 
     public var spent: Money { Money(milliunits: spentMilliunits) }
@@ -81,31 +88,56 @@ public struct SpendingHistoryGroupTotal: Sendable, Hashable, Identifiable {
     public let name: String
     public let spentMilliunits: Int64
     public let categories: [SpendingHistoryCategoryTotal]
+    /// Dominant reporting role of the entries that built this group; nil is
+    /// ordinary spending. Transfer/investment groups and Goal Purchases are
+    /// excluded from the ordinary total the emergency fund derives from.
+    public let reportingRole: CategoryReportingRole?
 
     public init(
         id: String,
         name: String,
         spentMilliunits: Int64,
-        categories: [SpendingHistoryCategoryTotal]
+        categories: [SpendingHistoryCategoryTotal],
+        reportingRole: CategoryReportingRole? = nil
     ) {
         self.id = id
         self.name = name
         self.spentMilliunits = spentMilliunits
         self.categories = categories
+        self.reportingRole = reportingRole
     }
 
     public var spent: Money { Money(milliunits: spentMilliunits) }
+
+    public var countsTowardHeadline: Bool {
+        id != GoalPurchaseAdjuster.groupIdentity
+    }
+
+    /// Ordinary out-of-pocket spending: not a transfer/investment group and
+    /// not the synthetic Goal Purchases group.
+    public var isOrdinarySpending: Bool {
+        countsTowardHeadline
+            && (reportingRole == nil || reportingRole == .spending)
+    }
 }
 
 public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
     /// Start of month in the builder's calendar.
     public let month: Date
+    /// The Spent headline: every visible group except Goal Purchases.
     public let totalMilliunits: Int64
+    /// Ordinary out-of-pocket spending only — excludes transfer and
+    /// investment groups AND Goal Purchases. The emergency-fund median is
+    /// computed over complete months of this value.
+    public let ordinaryTotalMilliunits: Int64
     /// Sorted by spent descending.
     public let groups: [SpendingHistoryGroupTotal]
 
     public var id: Date { month }
     public var total: Money { Money(milliunits: totalMilliunits) }
+    public var ordinaryTotal: Money {
+        Money(milliunits: ordinaryTotalMilliunits)
+    }
 }
 
 /// Builds the Spending History months from approved activity.
@@ -165,10 +197,12 @@ public enum SpendingHistoryBuilder {
             var name: String
             var spent: Int64 = 0
             var transactionIds: [String] = []
+            var lineAmounts: [String: Int64] = [:]
         }
         struct GroupBucket {
             var name: String
             var categories: [String: CategoryBucket] = [:]
+            var reportingRole: CategoryReportingRole?
         }
         // month -> groupIdentity -> buckets
         var months: [Date: [String: GroupBucket]] = [:]
@@ -215,6 +249,9 @@ public enum SpendingHistoryBuilder {
             let groupName = entry.groupName ?? ungroupedName
             var groups = months[month] ?? [:]
             var group = groups[groupID] ?? GroupBucket(name: groupName)
+            if group.reportingRole == nil {
+                group.reportingRole = entry.reportingRole
+            }
             var category = group.categories[entry.categoryKey]
                 ?? CategoryBucket(name: entry.categoryName)
             category.spent += reportedAmount
@@ -222,6 +259,8 @@ public enum SpendingHistoryBuilder {
             if !category.transactionIds.contains(entry.transactionId) {
                 category.transactionIds.append(entry.transactionId)
             }
+            category.lineAmounts[entry.transactionId, default: 0]
+                += entry.amountMilliunits
             group.categories[entry.categoryKey] = category
             groups[groupID] = group
             months[month] = groups
@@ -240,7 +279,8 @@ public enum SpendingHistoryBuilder {
                             id: key,
                             name: category.name,
                             spentMilliunits: category.spent,
-                            transactionIds: category.transactionIds
+                            transactionIds: category.transactionIds,
+                            lineAmountsByTransactionId: category.lineAmounts
                         )
                     }
                     .sorted {
@@ -256,7 +296,8 @@ public enum SpendingHistoryBuilder {
                     spentMilliunits: categories.reduce(0) {
                         $0 + $1.spentMilliunits
                     },
-                    categories: categories
+                    categories: categories,
+                    reportingRole: bucket.reportingRole
                 )
             }
             .sorted {
@@ -272,8 +313,15 @@ public enum SpendingHistoryBuilder {
                 // (usually misclassified income/reimbursements) — it must not
                 // erase other groups' real spending from the headline. Clamp
                 // to zero so the total matches the visible group columns.
+                // Goal Purchases stays visible as a column but never counts
+                // toward the Spent headline: the headline is out-of-pocket.
                 totalMilliunits: groups.reduce(0) {
-                    $0 + max(0, $1.spentMilliunits)
+                    $1.countsTowardHeadline
+                        ? $0 + max(0, $1.spentMilliunits) : $0
+                },
+                ordinaryTotalMilliunits: groups.reduce(0) {
+                    $1.isOrdinarySpending
+                        ? $0 + max(0, $1.spentMilliunits) : $0
                 },
                 groups: groups
             )

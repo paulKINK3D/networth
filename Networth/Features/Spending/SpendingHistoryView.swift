@@ -1537,146 +1537,22 @@ actor SpendingHistoryBuildActor {
         let accounts = try modelContext.fetch(
             FetchDescriptor<CachedFinancialAccount>()
         )
-        let groupByIdentity = Dictionary(
-            groups.sorted { $0.updatedAt > $1.updatedAt }
-                .map { ($0.groupIdentity, $0) },
-            uniquingKeysWith: { first, _ in first }
+        let ledgerEntries = (try? modelContext.fetch(
+            FetchDescriptor<DurableGoalLedgerEntry>()
+        )) ?? []
+        let pipelineContext = SpendingEntryPipeline.Context(
+            groups: groups, categories: categories, accounts: accounts
         )
-        // CloudKit can duplicate group rows; hiding must win if ANY copy of
-        // the identity is hidden, whichever copy other lookups picked.
-        let hiddenIdentities = Set(
-            groups.filter {
-                SpendingGroupSetup.isUserGroup($0) && $0.hidden
-            }
-                .map(\.groupIdentity)
-        )
-        let accountTypeByIdentity = Dictionary(
-            accounts.map { ($0.canonicalAccountId, $0.type) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        let categoryByCanonicalID = Dictionary(
-            categories.map { ($0.canonicalId, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        let hiddenIdentities = pipelineContext.hiddenIdentities
 
-        func resolvedGroup(
-            categoryCanonicalId: String?
-        ) -> (identity: String, name: String, hidden: Bool) {
-            guard let categoryCanonicalId,
-                  let category = categoryByCanonicalID[categoryCanonicalId],
-                  let identity = category.categoryGroupIdentity,
-                  let group = groupByIdentity[identity],
-                  SpendingGroupSetup.isUserGroup(group) else {
-                return (
-                    SpendingGroupSetup.unassignedIdentity,
-                    SpendingGroupSetup.unassignedName,
-                    false
-                )
-            }
-            return (identity, group.name, hiddenIdentities.contains(identity))
-        }
-
-        let savingsGroup = resolvedGroup(
-            categoryCanonicalId: SpendingGroupSetup.savingsCategoryIdentity
+        // The shared pipeline assembles entries, resolves goal-purchase
+        // assignments, adjusts BEFORE hidden-group filtering, then applies
+        // visibility — so Goals and Spending always agree.
+        let entries = SpendingEntryPipeline.adjustedVisibleEntries(
+            rows: rows,
+            ledgerEntries: ledgerEntries,
+            context: pipelineContext
         )
-        let investmentGroup = resolvedGroup(
-            categoryCanonicalId: SpendingGroupSetup.investmentCategoryIdentity
-        )
-
-        var entries: [SpendingHistoryEntry] = []
-        for row in rows {
-            if row.forecastTreatment == .internalTransfer {
-                // Count only the savings-account side. The corresponding
-                // checking row is ignored, preventing a transfer from being
-                // shown twice while preserving net deposits minus withdrawals.
-                guard accountTypeByIdentity[row.canonicalAccountId] == .savings,
-                      !savingsGroup.hidden else { continue }
-                entries.append(SpendingHistoryEntry(
-                    transactionId: row.id,
-                    date: row.postedDate,
-                    amountMilliunits: row.amountMilliunits,
-                    treatment: .internalTransfer,
-                    reportingRole: .transfer,
-                    groupIdentity: savingsGroup.identity,
-                    groupName: savingsGroup.name,
-                    categoryKey: SpendingGroupSetup.savingsCategoryIdentity,
-                    categoryName: "Savings Transfers"
-                ))
-                continue
-            }
-            if row.forecastTreatment == .investmentContribution {
-                // Count the linked cash-account side only. If a provider also
-                // exposes the investment-account counterpart, ignoring it
-                // prevents the contribution from cancelling itself out.
-                guard accountTypeByIdentity[row.canonicalAccountId]?.isCashLike
-                        == true,
-                      !investmentGroup.hidden else { continue }
-                entries.append(SpendingHistoryEntry(
-                    transactionId: row.id,
-                    date: row.postedDate,
-                    amountMilliunits: row.amountMilliunits,
-                    treatment: .investmentContribution,
-                    reportingRole: .investment,
-                    groupIdentity: investmentGroup.identity,
-                    groupName: investmentGroup.name,
-                    categoryKey: SpendingGroupSetup.investmentCategoryIdentity,
-                    categoryName: "Investment Contributions"
-                ))
-                continue
-            }
-            let legs = row.subtransactions
-            if legs.isEmpty {
-                let group = resolvedGroup(
-                    categoryCanonicalId: row.categoryCanonicalId
-                )
-                // A hidden spending group is excluded from Spending History
-                // entirely — totals, columns, and chart.
-                if group.hidden { continue }
-                entries.append(SpendingHistoryEntry(
-                    transactionId: row.id,
-                    date: row.postedDate,
-                    amountMilliunits: row.amountMilliunits,
-                    treatment: row.forecastTreatment,
-                    reportingRole: .spending,
-                    groupIdentity: group.identity,
-                    groupName: group.name,
-                    categoryKey: row.categoryCanonicalId
-                        ?? "name:\(row.categoryName ?? "Uncategorized")",
-                    categoryName: row.categoryName ?? "Uncategorized"
-                ))
-            } else {
-                for leg in legs where !leg.deleted {
-                    // Confirmed splits persist the canonical identity in
-                    // `categoryId`; reference-suggested splits use
-                    // `categoryCanonicalId`. Accept either.
-                    let legCanonicalId = leg.categoryCanonicalId
-                        ?? leg.categoryId
-                    let group = resolvedGroup(
-                        categoryCanonicalId: legCanonicalId
-                    )
-                    if group.hidden { continue }
-                    entries.append(SpendingHistoryEntry(
-                        transactionId: row.id,
-                        date: row.postedDate,
-                        amountMilliunits: leg.amount.milliunits,
-                        // An unmarked part of an INCOMING split must not
-                        // inherit the whole-transaction Reimbursement label
-                        // and offset spending; nil excludes it. Outgoing
-                        // splits are ordinary spending either way.
-                        treatment: leg.forecastTreatment
-                            ?? (row.amountMilliunits < 0
-                                ? row.forecastTreatment
-                                : nil),
-                        reportingRole: .spending,
-                        groupIdentity: group.identity,
-                        groupName: group.name,
-                        categoryKey: legCanonicalId
-                            ?? "name:\(leg.categoryName ?? "Uncategorized")",
-                        categoryName: leg.categoryName ?? "Uncategorized"
-                    ))
-                }
-            }
-        }
 
         var seenDefinitions = Set<String>()
         let groupDefinitions = groups
@@ -1850,24 +1726,17 @@ struct SpendingGroupDetailSheet: View {
             .sorted { $0.postedDate > $1.postedDate }
     }
 
-    /// For a split, only the legs belonging to this category count — never
-    /// the parent total.
+    /// The report's adjusted per-transaction line amount for this category:
+    /// split legs outside the category never count, and goal-funded portions
+    /// have already moved to the Goal Purchases column, so drill-down always
+    /// matches the column totals.
     private func displayAmount(
         for row: CachedFinancialTransaction,
         category: SpendingHistoryCategoryTotal
     ) -> Money {
-        let legs = row.subtransactions.filter { !$0.deleted }
-        guard !legs.isEmpty else {
-            return Money(milliunits: row.amountMilliunits)
-        }
-        let matching = legs.filter { leg in
-            let canonicalId = leg.categoryCanonicalId ?? leg.categoryId
-            if let canonicalId { return canonicalId == category.id }
-            return "name:\(leg.categoryName ?? "Uncategorized")"
-                == category.id
-        }
-        return Money(
-            milliunits: matching.reduce(0) { $0 + $1.amount.milliunits }
+        Money(
+            milliunits: category.lineAmountsByTransactionId[row.id]
+                ?? row.amountMilliunits
         )
     }
 

@@ -102,9 +102,9 @@ public enum RecurringExpectations {
     ]
 
     /// The bounded window for matching an approved posted transaction to an
-    /// expected occurrence — capped below half the cadence period so a
-    /// re-confirmed transaction can never also match the advanced occurrence
-    /// and double-advance the expectation.
+    /// expected occurrence. Short cadences stay below half their period;
+    /// monthly bills get up to two weeks because statement dates commonly
+    /// shift around weekends and month boundaries.
     public static func occurrenceWindowDays(
         for cadence: CommitmentCadence
     ) -> Int {
@@ -112,8 +112,21 @@ public enum RecurringExpectations {
         case .weekly: 3
         case .biweekly: 6
         case .semimonthly: 6
-        case .monthly, .quarterly, .annual: 7
+        case .monthly: 14
+        case .quarterly, .annual: 7
         }
+    }
+
+    /// Recurring amounts may vary, but a tiny same-payee adjustment or fee
+    /// must not stand in for the actual occurrence. Higher amounts remain
+    /// uncapped so variable bills and legitimate one-time adjustments match.
+    private static func hasPlausibleAmount(
+        _ transaction: TransactionSummary,
+        expectation: RecurringExpectation
+    ) -> Bool {
+        let expected = expectation.amount.absolute.milliunits
+        guard expected > 0 else { return transaction.amount.isZero }
+        return transaction.amount.absolute.milliunits >= expected / 2
     }
 
     /// The next occurrence after `date` for a cadence, anchored to `date`.
@@ -141,16 +154,17 @@ public enum RecurringExpectations {
     }
 
     /// Whether an approved transaction is this expectation's identity: same
-    /// account, same direction, and payee evidence (canonical id when both
-    /// sides have one, else name equality). Category is corroborating, never
-    /// sufficient on its own — a whole category must not collapse into one
-    /// bill.
+    /// direction and payee evidence (canonical id when both sides have one,
+    /// else name equality). The configured account is where the NEXT payment
+    /// is expected, not part of a bill's identity — historical payments may
+    /// legitimately move between cash accounts and cards. Category is
+    /// corroborating, never sufficient on its own — a whole category must not
+    /// collapse into one bill.
     public static func matchesIdentity(
         _ transaction: TransactionSummary,
         expectation: RecurringExpectation
     ) -> Bool {
-        guard transaction.accountId == expectation.accountId,
-              !transaction.deleted,
+        guard !transaction.deleted,
               transaction.amount.milliunits.signum()
                 == expectation.amount.milliunits.signum() else {
             return false
@@ -188,7 +202,8 @@ public enum RecurringExpectations {
         expectation: RecurringExpectation,
         calendar: Calendar
     ) -> Bool {
-        guard matchesIdentity(transaction, expectation: expectation) else {
+        guard matchesIdentity(transaction, expectation: expectation),
+              hasPlausibleAmount(transaction, expectation: expectation) else {
             return false
         }
         let days = abs(
@@ -202,8 +217,8 @@ public enum RecurringExpectations {
     }
 
     /// One approved transaction advances at most one expectation: the best
-    /// occurrence match by date proximity, then by expected-amount
-    /// closeness.
+    /// occurrence match by date proximity. The configured account and amount
+    /// only break ties; neither is a hard identity requirement.
     public static func bestOccurrenceMatch(
         for transaction: TransactionSummary,
         among expectations: [RecurringExpectation],
@@ -237,6 +252,11 @@ public enum RecurringExpectations {
                 if amountDistance(lhs) != amountDistance(rhs) {
                     return amountDistance(lhs) < amountDistance(rhs)
                 }
+                let lhsAccountMismatch = lhs.accountId != transaction.accountId
+                let rhsAccountMismatch = rhs.accountId != transaction.accountId
+                if lhsAccountMismatch != rhsAccountMismatch {
+                    return !lhsAccountMismatch
+                }
                 return lhs.id < rhs.id
             }
     }
@@ -250,21 +270,169 @@ public enum RecurringExpectations {
     /// brand-new expectation with no matching history removes nothing.
     public static func matchedHistoricalIds(
         transactions: [TransactionSummary],
-        expectations: [RecurringExpectation]
+        expectations: [RecurringExpectation],
+        calendar: Calendar = .current
     ) -> Set<String> {
-        guard !expectations.isEmpty else { return [] }
-        var matched: Set<String> = []
-        for transaction in transactions {
-            if expectations.contains(where: {
-                matchesIdentity(transaction, expectation: $0)
-            }) {
-                matched.insert(transaction.id)
-                // The estimate walks split legs by leg id.
-                for leg in transaction.subtransactions {
-                    matched.insert(leg.id)
+        guard !expectations.isEmpty, !transactions.isEmpty else { return [] }
+
+        struct OccurrenceKey: Hashable {
+            let expectationIndex: Int
+            let date: Date
+        }
+        struct Candidate {
+            let transactionIndex: Int
+            let occurrence: OccurrenceKey
+            let dayDistance: Int
+            let accountMismatch: Bool
+            let amountDistance: Int64
+        }
+
+        let transactionDays = transactions.map {
+            calendar.startOfDay(for: $0.date)
+        }
+        guard let earliestTransaction = transactionDays.min(),
+              let latestTransaction = transactionDays.max() else { return [] }
+
+        var candidates: [Candidate] = []
+        for (expectationIndex, expectation) in expectations.enumerated() {
+            let window = occurrenceWindowDays(for: expectation.cadence)
+            let eligibleTransactionIndexes = transactions.indices.filter {
+                matchesIdentity(
+                    transactions[$0], expectation: expectation
+                )
+                && hasPlausibleAmount(
+                    transactions[$0], expectation: expectation
+                )
+            }
+            guard !eligibleTransactionIndexes.isEmpty else { continue }
+
+            for occurrenceDate in historicalOccurrenceDates(
+                for: expectation,
+                earliestTransaction: earliestTransaction,
+                latestTransaction: latestTransaction,
+                calendar: calendar
+            ) {
+                let occurrence = OccurrenceKey(
+                    expectationIndex: expectationIndex,
+                    date: occurrenceDate
+                )
+                for transactionIndex in eligibleTransactionIndexes {
+                    let dayDistance = abs(calendar.dateComponents(
+                        [.day],
+                        from: occurrenceDate,
+                        to: transactionDays[transactionIndex]
+                    ).day ?? .max)
+                    guard dayDistance <= window else { continue }
+                    candidates.append(Candidate(
+                        transactionIndex: transactionIndex,
+                        occurrence: occurrence,
+                        dayDistance: dayDistance,
+                        accountMismatch:
+                            transactions[transactionIndex].accountId
+                                != expectation.accountId,
+                        amountDistance: abs(
+                            transactions[transactionIndex].amount.milliunits
+                                - expectation.amount.milliunits
+                        )
+                    ))
                 }
             }
         }
+
+        // Greedy assignment is deterministic and intentionally conservative:
+        // one actual can satisfy only one expectation, and one expected date
+        // can remove only one actual from the spending estimate.
+        candidates.sort { lhs, rhs in
+            if lhs.amountDistance != rhs.amountDistance {
+                return lhs.amountDistance < rhs.amountDistance
+            }
+            if lhs.dayDistance != rhs.dayDistance {
+                return lhs.dayDistance < rhs.dayDistance
+            }
+            if lhs.accountMismatch != rhs.accountMismatch {
+                return !lhs.accountMismatch
+            }
+            if lhs.occurrence.date != rhs.occurrence.date {
+                return lhs.occurrence.date < rhs.occurrence.date
+            }
+            if lhs.occurrence.expectationIndex
+                != rhs.occurrence.expectationIndex {
+                return lhs.occurrence.expectationIndex
+                    < rhs.occurrence.expectationIndex
+            }
+            return transactions[lhs.transactionIndex].id
+                < transactions[rhs.transactionIndex].id
+        }
+
+        var claimedTransactions: Set<Int> = []
+        var claimedOccurrences: Set<OccurrenceKey> = []
+        var matched: Set<String> = []
+        for candidate in candidates {
+            guard !claimedTransactions.contains(candidate.transactionIndex),
+                  !claimedOccurrences.contains(candidate.occurrence) else {
+                continue
+            }
+            claimedTransactions.insert(candidate.transactionIndex)
+            claimedOccurrences.insert(candidate.occurrence)
+            let transaction = transactions[candidate.transactionIndex]
+            matched.insert(transaction.id)
+            // The estimate walks split legs by leg id.
+            for leg in transaction.subtransactions {
+                matched.insert(leg.id)
+            }
+        }
         return matched
+    }
+
+    private static func historicalOccurrenceDates(
+        for expectation: RecurringExpectation,
+        earliestTransaction: Date,
+        latestTransaction: Date,
+        calendar: Calendar
+    ) -> [Date] {
+        let window = occurrenceWindowDays(for: expectation.cadence)
+        let lowerBound = calendar.date(
+            byAdding: .day, value: -window, to: earliestTransaction
+        ) ?? earliestTransaction
+        let upperBound = calendar.date(
+            byAdding: .day, value: window, to: latestTransaction
+        ) ?? latestTransaction
+        var cursor = calendar.startOfDay(for: expectation.nextOccurrence)
+        var dates: [Date] = []
+
+        // A generous bound prevents malformed dates from creating an
+        // unbounded loop while covering decades of even weekly history.
+        for _ in 0..<2_000 {
+            if cursor <= upperBound {
+                dates.append(cursor)
+            }
+            if cursor < lowerBound { break }
+            guard let previous = retreat(
+                cursor, cadence: expectation.cadence, calendar: calendar
+            ), previous < cursor else { break }
+            cursor = calendar.startOfDay(for: previous)
+        }
+        return dates
+    }
+
+    private static func retreat(
+        _ date: Date,
+        cadence: CommitmentCadence,
+        calendar: Calendar
+    ) -> Date? {
+        switch cadence {
+        case .weekly:
+            calendar.date(byAdding: .day, value: -7, to: date)
+        case .biweekly:
+            calendar.date(byAdding: .day, value: -14, to: date)
+        case .semimonthly:
+            SemimonthlyMath.step(date, calendar: calendar, direction: -1)
+        case .monthly:
+            calendar.date(byAdding: .month, value: -1, to: date)
+        case .quarterly:
+            calendar.date(byAdding: .month, value: -3, to: date)
+        case .annual:
+            calendar.date(byAdding: .year, value: -1, to: date)
+        }
     }
 }

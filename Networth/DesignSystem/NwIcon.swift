@@ -6,6 +6,7 @@ public enum NwIcon: String, Sendable {
     case netWorth     = "chart.line.uptrend.xyaxis"
     case budget       = "dollarsign.circle"
     case projections  = "calendar.badge.clock"
+    case goals        = "target"
     case accounts     = "building.columns"
     case settings     = "gearshape"
 

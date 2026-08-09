@@ -186,7 +186,10 @@ enum FreshStart {
               deleteAllRows(DurableIncomePatternOverride.self, context: context),
               deleteAllRows(DurableRecurringExpectation.self, context: context),
               deleteAllRows(DurableSinkingFund.self, context: context),
-              deleteAllRows(DurableFundEvent.self, context: context)
+              deleteAllRows(DurableFundEvent.self, context: context),
+              deleteAllRows(DurableGoal.self, context: context),
+              deleteAllRows(DurableGoalLedgerEntry.self, context: context),
+              deleteAllRows(DurableGoalReserveAccount.self, context: context)
         else { return false }
         return true
     }
@@ -245,6 +248,9 @@ enum FreshStart {
             && isEmpty(DurableRecurringExpectation.self, context: context)
             && isEmpty(DurableSinkingFund.self, context: context)
             && isEmpty(DurableFundEvent.self, context: context)
+            && isEmpty(DurableGoal.self, context: context)
+            && isEmpty(DurableGoalLedgerEntry.self, context: context)
+            && isEmpty(DurableGoalReserveAccount.self, context: context)
     }
 
     private static func isEmpty<T: PersistentModel>(

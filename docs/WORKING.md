@@ -1,5 +1,276 @@
 # WORKING
 
+## Goals tab — full v1 implementation (2026-08-07)
+
+Implements the plan agreed in-session (5 Codex review rounds, final sign-off
+"ready to implement"). All work is uncommitted alongside the still-uncommitted
+paycheck-detection changes below.
+
+- **Domain (NetworthCore, 216/216 tests green)**: new `Models/Goals.swift` —
+  `Goal`/`GoalKind`/`GoalTargetMode`, `GoalLedgerEntry` with 7 kinds
+  (`manual, contribution, purchase, purchaseRefund, withdrawal,
+  reallocationOut, reallocationIn`), `GoalMath` (balance, plan-sufficiency
+  status bridging to `FundMath`, MTD contributions = positive
+  manual+contribution only), `ReservePoolMath` (allocated = Σ max(balance,0)
+  over active goals; canAllocate blocks during shortfall),
+  `EmergencyFundMath` (median of complete months, months × reduction%,
+  $100-rounding + ≥5%/≥$250 adoption hysteresis), `GoalPurchaseAdjuster`
+  (per-transaction assignments, largest-leg-first + stable tie-break,
+  adjustableAmount ceiling = negative ordinary entries only, synthetic
+  Goal Purchases group `networth:goal-purchases`). New test suites:
+  GoalReserve, EmergencyFundMath, GoalPurchaseAdjuster.
+- **Report model** (`SpendingHistory.swift`): group totals carry
+  `reportingRole` + `countsTowardHeadline` (Goal Purchases excluded from the
+  Spent headline but visible as its own column, pinned last via the
+  orderIndex Int.max fallback, "Other" fallback color so user hues never
+  shift); months expose `ordinaryTotalMilliunits` (excludes
+  transfer/investment roles and Goal Purchases — the emergency-median
+  input); category totals carry `lineAmountsByTransactionId` (adjusted,
+  raw-sign) consumed by drill-down `displayAmount`.
+- **Shared pipeline** (`Services/SpendingEntryPipeline.swift`): assembly
+  (no visibility) → ledger externalId→cached-row-id resolution (built from
+  fetched rows, no format assumptions) → purchase/refund adjustment BEFORE
+  hidden-group filtering → visibility. Consumed by both
+  `SpendingHistoryBuildActor` (refactored to it) and `GoalsBuildActor`, so
+  Spending display and the Goals emergency input are the same numbers.
+  `remainingAdjustableAmount(row:)` is the purchase-marking ceiling.
+- **Persistence**: four new CloudKit durable types — `DurableGoal`
+  (targetMode fixed|emergencyMonths, emergencyMonths/reductionPercent,
+  adoptedAt, archived, completedAt, timestamps), `DurableGoalLedgerEntry`,
+  `DurableGoalReserveAccount` (snapshots name/institution/mask for
+  disconnected display + user-confirmed re-attach), 
+  `DurableGoalSuggestionDismissal`. Registered in durable + unified schemas
+  and FreshStart delete/verify lists (NOT the purge list — legacy
+  `DurableSinkingFund`/`DurableFundEvent` stay purged-on-sight and unused).
+- **`Services/GoalLedgerService.swift`** — the single write path.
+  Re-fetch → validate → `safeSave` or rollback + typed `Failure`.
+  Invariants: contribution consumable once app-wide; purchase Σ ≤ adjustable
+  amount; balances never negative on ANY mutation (incl. deleting an old
+  contribution under a purchase); allocations respect pool;
+  archive/complete with balance requires release-or-transfer (atomic
+  reallocation pair, excluded from MTD and Spending).
+- **UI**: 5th tab (`ContentView` tag 4, `NwIcon.goals` = "target").
+  `Features/Goals/GoalsView.swift` (GoalsBuildActor + Sendable GoalsModel,
+  detached-actor + 0.6s-debounced-save + significantTimeChange rebuild
+  idiom; reserve header card with shortfall notice citing recent reserve
+  outflows; suggestion inbox with confirm/dismiss; goal cards; archived
+  section; empty state). `Features/Goals/GoalsSheets.swift` (GoalCard
+  revived from git BudgetView with MTD line; detail sheet with ledger +
+  orphan badges; entry sheet with cents-capable CurrencyInputFormatter and
+  stays-open-on-failure; editor with kind picker, fixed vs
+  months-of-spending target, archive/complete disposition dialog; reserve
+  picker with USD-only + card-funding-account block + re-attach
+  suggestions; contribution confirm; purchase picker defaulting to
+  remaining adjustable amount). Emergency-target adoption runs through the
+  service after each build when hysteresis passes.
+- **Projections**: `ProjectionsDataActor` derives reserve exclusion —
+  `ProjectionCashSelection.selectedAccounts` (unit-tested) filters active
+  reserve canonical ids from the cash pool; no override rows written; the
+  Settings cash-accounts sheet shows reserve-backed accounts as locked
+  ("Backs goals — managed in Goals") and preserves the stored preference.
+- **App tests** (`NetworthTests/GoalLedgerServiceTests.swift`, ⌘U): schema
+  registration, contribution-once, pool-capacity, mixed-split ceiling,
+  delete-blocked-below-zero, archive dispositions + reallocation pair,
+  pipeline id resolution end-to-end, derived projection exclusion/restore.
+- **Validation done**: `swift test` 216/216; generic-device Debug AND
+  Release builds; `build-for-testing` compiles the app-test target. Not
+  run: ⌘U app tests and on-device manual pass (user).
+- New files registered directly in `project.pbxproj` (Goals group,
+  Services entries, test target entry).
+
+### Residual goal REMOVED (2026-08-08)
+Built the residual/"whatever's left" catch-all, user tried it and asked to
+remove it — the reserve header showing "$137.3K Unallocated" while a residual
+goal simultaneously displayed the same $137.3K was confusing (same money, two
+labels). Reverted: core `Goal.isResidual` gone, service create/update no
+longer take it, `validateFundable`/`residualGoalNotFundable` removed, build
+actor back to simple pool math, all UI (editor toggle, detail branch, card
+badge, allocate/transfer exclusions) reverted, residual tests deleted.
+`DurableGoal.isResidual` field KEPT (defaulted, unread) so on-device rows that
+set it stay valid and just behave as normal goals — avoids a CloudKit schema
+removal on the live device.
+
+### (removed) Residual (catch-all) goal — superseded by the removal above
+- Core `Goal` + `DurableGoal` gain `isResidual` (additive, defaulted).
+- `GoalsBuildActor`: pool summary computed from NON-residual active balances;
+  the residual item's balance = `pool.unallocated`, status `.openEnded`, no
+  progress/MTD.
+- Service: create/update take `isResidual` (forces target/planned/mode to
+  neutral); `clearOtherResiduals` enforces the single-residual rule (demotes
+  any other, its allocations stay). `validateFundable` blocks
+  allocate/withdraw/move/purchase on a residual (`Failure
+  .residualGoalNotFundable`).
+- UI: editor toggle (hides target/kind/planned when on, warns if another
+  goal is the current catch-all); detail sheet replaces funding actions with
+  an explanation; residual excluded from allocate targets, move/transfer
+  targets, and the allocate-button gating; card shows an info badge +
+  "holds the unallocated remainder" subtitle, no progress bar.
+- Tests: `residualGoalRejectsAllocation`, `onlyOneActiveResidualGoal`.
+- Note: adding a defaulted param to `Goal.init` changed its mangled symbol —
+  required `swift package clean` + xcodebuild clean to clear a stale-link.
+
+### Taxable investment accounts can back goals (2026-08-07)
+User's ETF money for goals sits in Plaid *investment* accounts, a different
+source than the cash reserve model. Verified via live device data: taxable
+brokerage ****5609 ($100k) + Robinhood individual are `CachedPlaidAccount`
+rows (subtype `brokerage`), not `CachedFinancialAccount`. Scope agreed with
+user: taxable brokerage + Fidelity Cash Plus only (Cash Plus already a cash
+account). Retirement accounts (IRA/Roth/401k) deliberately excluded — can't
+fund near-term goals without penalty, so backing one would falsely read as
+funded.
+- `ReserveBalance.conservative(...)` (in GoalLedgerService.swift) resolves a
+  reserve row's balance from `CachedFinancialAccount` first, else
+  `CachedPlaidAccount` by id — shared by the service and `GoalsBuildActor`.
+  Investment balance = market value (no "available"); volatility surfaces
+  honestly as a shortfall if it drops below allocations.
+- `GoalLedgerService.addReserveAccount` gained a source-neutral overload
+  (canonicalAccountId/name/institution/mask); the Plaid account `id` is the
+  reserve key for investments.
+- Reserve picker: new "Taxable Investments" section listing non-retirement
+  investment/brokerage Plaid accounts (retirement subtype denylist), with a
+  market-volatility footer. Projection cash-pool exclusion is unaffected —
+  brokerage was never in the cash pool. Net worth isn't double-counted —
+  goals only label existing balances.
+- Test: `taxableBrokerageContributesToReservePool`.
+
+### Goals funding model simplified to envelope allocation (2026-08-07)
+User rejected transaction-attributed funding ("why do I have to attribute a
+transaction to a goal? I should be able to allocate any amount of the total
+fund to any goal"). Agreed model, then implemented:
+- **Funding = pure allocation.** Reserve pool = real savings balance (already
+  reflects interest, transfers, everything). Goals divide that total. Deposits
+  and withdrawals in the real account are never traced to a goal — they only
+  change Unallocated. A transfer into savings shows in Spending (Savings
+  Transfers category) and is invisible in Goals except as more to allocate.
+- **Removed**: the entire transaction inbox — contribution suggestions,
+  withdrawal suggestions, reserve-flow detection in `GoalsBuildActor`, the
+  `GoalFlowConfirmSheet`, `confirmContribution`/`confirmWithdrawal`/
+  `dismissSuggestion` service methods, `DurableGoalSuggestionDismissal` model
+  (dropped from schema + FreshStart — never shipped so safe), and the
+  `GoalsModel.Suggestion`/`GoalFlowDirection` types.
+- **Added**: `GoalAllocateSheet` (reserve card → "Allocate to a Goal": pick
+  goal + amount from Unallocated, "Allocate All" shortcut) and
+  `moveBetweenGoals` (atomic reallocation pair). Per-goal detail keeps Add
+  Money (allocate) / Withdraw (release to unallocated) / Record Purchase.
+- **Kept transaction-linked**: only "spent from goal" (purchases), because it
+  also pulls the purchase out of Spending. `manual` positive entries are
+  allocations; MTD "this month" counts them. Shortfall message simplified
+  (balance dropped below allocations → lower an allocation).
+- GoalsView body is now a `List` (needed for the earlier swipe request, still
+  useful) with clear-background card rows. 217/217 core + app tests compile;
+  new service tests: release-to-unallocated, move-between-goals.
+
+### Paycheck-detector fix from on-device data (2026-08-07)
+- User reported a phantom recurring ~$576 Gusto inflow. Verified against the
+  LIVE device store (app-group container `group.com.bluelava.me.financial`,
+  copied via `xcrun devicectl device copy from`, queried with sqlite3 — the
+  app-container copies are stale/pre-cutover): pay moved from account
+  `0DF90838…` to `4F1DDDE2…` in January; the old account's final deposit was
+  $576.06 on Jan 30. Payer-level freshness stayed green (deposits continue),
+  but per-account portions had NO freshness rule, so the dead account kept
+  projecting $576.06 every payday.
+- Fix in `IncomeAnalyzer.detectPaycheck`: `portionIsFresh` applies the same
+  missed-payday rule (tolerate 1, retire at 2) to each account's own series
+  before it becomes a `PaycheckPortion`. New test
+  `accountSwitchRetiresStalePortion` reproduces the switch (old portion
+  retired at 6 months stale, still present one missed payday after the
+  switch). 217/217 core tests green.
+
+### Post-implementation fixes from on-device testing (same session)
+- Reserve picker eligibility broadened from `.savings` to all cash-like
+  types (Plaid maps money-market/CD/most "savings-purpose" accounts to
+  `.cash` or `.checking`; user's dedicated accounts were checking-type).
+  Savings sort first; per-row type caption (Plaid subtype when present).
+  User then decided to consolidate: one true savings account is the sole
+  reserve; other checking accounts revert to cashflow.
+- Outflow suggestions added (was a fast-follow, promoted after the user hit
+  it immediately): reserve outflows — internal transfers out AND investment
+  contributions funded from a reserve account — appear in the inbox;
+  confirm → "withdraw from which goal?" via `confirmWithdrawal` (once
+  app-wide per transaction, capped by goal balance); dismiss = "came from
+  unallocated". `GoalContributionConfirmSheet` generalized to
+  `GoalFlowConfirmSheet` with a direction. Shuffle suppression applies only
+  to internal-transfer pairs. Withdrawal service test added.
+
+## Paycheck detection in Cash Projections (2026-08-06)
+
+- `IncomeAnalyzer.detectPaycheck(confirmedTransactions:selectedAccountIds:
+  asOf:calendar:)` is the Plaid-first entry point: groups confirmed `.income`
+  transactions (split legs included) by canonical payee or folded name,
+  merges same-day deposits per payday while keeping per-account amount
+  breakdowns, judges payers on trailing-15-month totals, and reuses the
+  existing private cadence classifier and phase detector.
+- Review round (same session) hardened five correctness gaps:
+  - **Freshness limit**: ≥2 expected paydays passed without a confirmed
+    deposit → `.staleHistory(payee, lastDepositDate)`; income stops
+    projecting instead of extrapolating a dead pattern. One missed payday is
+    tolerated as review lag.
+  - **Exact dated events**: `DetectedPaycheck.scheduledSummaries(asOf:
+    horizonDays:)` emits one `.never`-frequency summary per expected payday
+    via `IncomePattern.expectedPaycheckDates` (payday-of-month clamping —
+    no monthly/semimonthly drift; detected daysOfMonth are used).
+  - **Phase-priced amounts**: each payday priced by
+    `IncomePattern.expectedPerPaycheckAmount` (phases from pool-scoped
+    deposit amounts; no unobserved step-ups, bonuses can't leak in).
+  - **Pool scoping**: deposits landing only outside the selected cash pool →
+    `.depositsExcluded(payee)` warning instead of silently-dropped inflows;
+    split paydays project only the in-pool portion.
+  - **Per-account portions** (second review round): each selected account's
+    share projects as its own dated inflow from its own deposit series
+    (`PaycheckPortion`) — a checking/savings split can never overstate the
+    account that pays the bills. Event ids carry the account suffix.
+  - **Bonus resistance** (second review round): per-portion amounts are the
+    month's phase price capped by `confirmedRecurringAmount` — the newest
+    run of ≥2 matching deposits (2.5% tolerance). A single higher deposit
+    (trailing bonus, unconfirmed raise) never raises the forecast until it
+    repeats; a single lower deposit adopts immediately.
+  - **nextDate = first generated event** (derived from the same payday
+    enumeration), so Projection Details never advertises a date the
+    timeline doesn't contain.
+- `PaycheckDetection` cases: `.detected`, `.staleHistory`,
+  `.depositsExcluded`, `.insufficientHistory` (<4 recent deposits),
+  `.unstableCadence`, `.noConfirmedIncome` — every failure reason drives a
+  specific UI warning.
+- Manual recurring income overrides detection per payer:
+  `IncomeAnalyzer.manualIncomeOverride(for:expectations:)` matches canonical
+  payee id when both sides have one, else case/diacritic-insensitive name.
+  A manual entry for a different payer coexists with the detected paycheck.
+- ProjectionsDataActor (Plaid path only): runs detection on the projection
+  history with the selected cash-account ids, appends the dated summaries
+  unless overridden, passes `paycheckDetection` + override payee +
+  `hasManualIncome` through ProjectionData. Detected ids join the
+  estimate-exempt set automatically (computed after the append).
+- UI: Projection Details Income section (payer, cadence, next paycheck
+  amount, next deposit date, confirmed-deposit count — or the specific
+  warning); "Income not projected" priority notice when the projection has
+  no future paychecks and no manual income, after shortfall warnings. Stale
+  "Schedule paychecks and bills in YNAB" copy replaced in the timeline empty
+  state and tutorial step 4.
+- Projection Details lists per-account portion amounts when a paycheck
+  splits across more than one pool account.
+- Off-cycle hardening (third review round):
+  - `onCycleOccurrences` drops deposits off the payday grid before anchor/
+    dates/phases/portions form: interval cadences require a day gap within
+    ±2 of a whole step multiple to a neighbor (holiday shifts survive);
+    day-of-month cadences require the clamped day within ±3 of a detected
+    payday-of-month. An off-cycle bonus can no longer shift the anchor or
+    enter the series; detection re-classifies from the cleaned dates and
+    needs ≥4 on-cycle deposits.
+  - A portion requires deposits on ≥2 paydays — a one-time bonus into a new
+    account (even on a regular payday) never becomes a recurring inflow.
+  - Freshness counts missed paydays via the same clamped
+    `expectedPaycheckDates` enumeration the events use — a 31st payday is
+    checked at its real clamped date, so month-end stepping drift cannot
+    miscount (verified: May 30 with an Apr 30-clamped anchor reports zero
+    missed and projects May 31).
+  - Known residual: multiple off-cycle bonuses landing on several distinct
+    days of month within the window can still confuse semimonthly
+    stable-days detection (falls back to biweekly); single bonuses are
+    handled.
+- Validation: NetworthCore 189/189 (22 paycheck tests incl. off-cycle
+  bonus anchor, new-account bonus portion, month-end freshness clamp);
+  generic-device Debug + Release builds pass.
+
 ## Phase 2 — Spending groups (2026-08-05)
 
 - Spending remains the screen/tab name and now answers where money went:
@@ -56,9 +327,9 @@ are easier to identify with them).
 ## Current State (2026-08-04 — Phase 1 COMPLETE; all four steps committed)
 
 Commits: 79fa7b2 (step 1) · 18ea60d (step 2) · 8da7e06 (step 3) ·
-78f16b1 (step 4), all on feature/budget-phase-1, pushed. Pending manual
-cleanup in Xcode: delete BudgetView.swift, ResetChartHistorySheet.swift,
-and the dead DiscretionaryBudgetSettingsSheet struct in SettingsView.swift.
+78f16b1 (step 4), all on feature/budget-phase-1, pushed. Cleanup done
+2026-08-06: BudgetView.swift and ResetChartHistorySheet.swift deleted, dead
+DiscretionaryBudgetSettingsSheet struct removed from SettingsView.swift.
 
 ### Step 4 — Recurring expectations in Cash Projections (this session)
 
@@ -79,8 +350,13 @@ and the dead DiscretionaryBudgetSettingsSheet struct in SettingsView.swift.
   parameter on `CashPositionProjector.project` keeps transfers/investment
   expectations (whose actuals never enter projection history) out of the
   subtraction so they are dated events only.
-- Matching: `RecurringExpectations.matchesNextOccurrence` (account, payee
-  canonical-id-or-name, treatment, direction, ±7-day window).
+- Matching: account is routing for the next payment, not identity. Matching
+  uses payee canonical-id-or-name, category corroboration, treatment,
+  direction, and a cadence-specific date window across accounts. Historical
+  estimate removal reconstructs expected dates backward and claims at most
+  one closest actual per occurrence; amount then account only break ties, so
+  changing the payment account neither double-counts a bill nor excludes all
+  activity from the same merchant.
   `advanceRecurringExpectations(for:)` runs inside all three confirm paths
   (single, split, batch): an approved matching transaction replaces the
   occurrence and advances the cadence; otherwise only explicit Skip
@@ -93,12 +369,34 @@ and the dead DiscretionaryBudgetSettingsSheet struct in SettingsView.swift.
   ids for non-ordinary treatments. YNAB schedules remain dead.
 - UI: Settings → Projections page "Recurring" section (add, edit sheet,
   swipe Delete = archive, swipe Skip Next); `RecurringExpectationForm`
-  (payee, type, account [cards allowed for bills], destination for
-  transfers, optional category, cadence, next date, amount; "start from a
-  recent transaction" prefill). Events surface in the existing
+  (canonical payee and optional category pickers, type, account [cards
+  allowed for bills], destination for transfers, cadence, next date, amount;
+  "start from a recent transaction" prefill). Events surface in the existing
   Projections timeline rows automatically.
-- Tests: 9 recurring tests. NetworthCore 159/159; Debug + Release + test
-  bundle build.
+- Tests: 13 recurring tests. NetworthCore 189/189; generic-device Debug +
+  Release builds.
+
+- Device-data projection correction (2026-08-06): monthly recurring matches
+  allow up to 14 days of posting drift, require the actual to be at least 50%
+  of the expected amount, and rank amount proximity before date proximity.
+  This matches all 12 observed $1,995 loan payments to the $2,040 expectation
+  while rejecting the same-payee $5 fee. Matched recurring actuals now remain
+  visible in observed/monthly totals and are labeled as removed from the
+  everyday reserve; Projection Details reports that overlap instead of $0.
+- Refund correction (2026-08-06): the everyday projection now nets approved
+  `.refund` transactions in their posted month instead of forecasting gross
+  charges forever. Projection Details reports the refund total, and monthly
+  transaction drill-downs show the offset. Live-device replay moved the
+  everyday median from $9,002.08 to $7,917.84 before installation.
+- [ ] Required projection-audit CSV export: add a user-initiated local export
+  from Projection Details with one row for every source transaction/split leg
+  considered (including excluded rows), its stored treatment, signed amount,
+  projection bucket, inclusion/exclusion reason, recurring match, and monthly
+  sample. Include all dated forecast events, running balances, calculation
+  settings, and reconciliation rows for every displayed total so the math can
+  be reproduced independently. Keep stored facts separate from computed labels;
+  never infer semantics such as reimbursement from payee/category. Exclude
+  credentials and raw provider/account identifiers.
 
 ### Step-4 Codex review — 2 blockers + 5 majors, all fixed same session
 - BLOCKER redesign: exactly-once is now ID-BASED. Every expectation summary

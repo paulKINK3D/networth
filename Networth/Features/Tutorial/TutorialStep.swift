@@ -79,7 +79,7 @@ enum TutorialContent {
             bullets: [
                 "Choose cash accounts and a minimum buffer.",
                 "Set each card's close day, autopay day, and payment account.",
-                "Schedule paychecks and recurring bills in YNAB."
+                "Confirm deposits so your paycheck is detected, and add recurring bills in Settings."
             ],
             footnote: nil
         ),

@@ -112,6 +112,9 @@ struct ContentView: View {
             InvestmentsView()
                 .tabItem { Label("Investments", systemImage: NwIcon.investment.rawValue) }
                 .tag(3)
+            GoalsView()
+                .tabItem { Label("Goals", systemImage: NwIcon.goals.rawValue) }
+                .tag(4)
         }
         .tint(NwAppColors.primary)
     }

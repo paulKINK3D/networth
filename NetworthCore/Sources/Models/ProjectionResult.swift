@@ -209,13 +209,25 @@ public struct MonthlySpendTransaction: Sendable, Hashable, Codable, Identifiable
     public let payeeName: String
     public let amount: Money
     public let excluded: Bool
+    /// This posted transaction is represented by a dated recurring
+    /// expectation, so it is shown in observed spending but removed from the
+    /// everyday reserve.
+    public let recurring: Bool
 
-    public init(id: String, date: Date, payeeName: String, amount: Money, excluded: Bool) {
+    public init(
+        id: String,
+        date: Date,
+        payeeName: String,
+        amount: Money,
+        excluded: Bool,
+        recurring: Bool = false
+    ) {
         self.id = id
         self.date = date
         self.payeeName = payeeName
         self.amount = amount
         self.excluded = excluded
+        self.recurring = recurring
     }
 }
 
@@ -271,6 +283,7 @@ public struct ExpectedSpendEstimate: Sendable, Hashable, Codable {
     public let higherDailyAmount: Money?
     public let sampleMonthCount: Int
     public let historicalOutflows: Money
+    public let historicalRefunds: Money
     public let scheduledOutflows: Money
     public let historyDays: Int
     public let lookbackStart: Date?
@@ -289,6 +302,7 @@ public struct ExpectedSpendEstimate: Sendable, Hashable, Codable {
         higherDailyAmount: Money? = nil,
         sampleMonthCount: Int = 0,
         historicalOutflows: Money,
+        historicalRefunds: Money = .zero,
         scheduledOutflows: Money,
         historyDays: Int,
         lookbackStart: Date?,
@@ -302,6 +316,7 @@ public struct ExpectedSpendEstimate: Sendable, Hashable, Codable {
         self.higherDailyAmount = higherDailyAmount
         self.sampleMonthCount = sampleMonthCount
         self.historicalOutflows = historicalOutflows
+        self.historicalRefunds = historicalRefunds
         self.scheduledOutflows = scheduledOutflows
         self.historyDays = historyDays
         self.lookbackStart = lookbackStart
@@ -314,6 +329,7 @@ public struct ExpectedSpendEstimate: Sendable, Hashable, Codable {
         unscheduledMonthlyAmount: .zero,
         sampleMonthCount: 0,
         historicalOutflows: .zero,
+        historicalRefunds: .zero,
         scheduledOutflows: .zero,
         historyDays: 0,
         lookbackStart: nil,

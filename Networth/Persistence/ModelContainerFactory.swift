@@ -55,7 +55,10 @@ public enum ModelContainerFactory {
             DurableIncomePatternOverride.self,
             DurableRecurringExpectation.self,
             DurableSinkingFund.self,
-            DurableFundEvent.self
+            DurableFundEvent.self,
+            DurableGoal.self,
+            DurableGoalLedgerEntry.self,
+            DurableGoalReserveAccount.self,
         ])
 
         let cacheConfig = ModelConfiguration(
@@ -123,7 +126,10 @@ public enum ModelContainerFactory {
             DurableIncomePatternOverride.self,
             DurableRecurringExpectation.self,
             DurableSinkingFund.self,
-            DurableFundEvent.self
+            DurableFundEvent.self,
+            DurableGoal.self,
+            DurableGoalLedgerEntry.self,
+            DurableGoalReserveAccount.self,
         ])
         return try ModelContainer(for: unified, configurations: [cacheConfig, durableConfig])
     }

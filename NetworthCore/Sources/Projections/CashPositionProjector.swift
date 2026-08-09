@@ -107,6 +107,10 @@ public struct CashPositionProjector: Sendable {
         historicalTransactions: [TransactionSummary],
         excludedCategoryIds: Set<String> = [],
         excludedTransactionIds: Set<String> = [],
+        /// Historical actuals already represented by dated recurring
+        /// expectations. They remain visible in observed spending but are
+        /// removed from the everyday reserve.
+        recurringMatchedTransactionIds: Set<String> = [],
         outflowOnlyExcludedCategoryIds: Set<String> = [],
         spendAccountIds: Set<String> = [],
         lookbackDays: Int = 365,
@@ -153,6 +157,7 @@ public struct CashPositionProjector: Sendable {
             historicalTransactions: historicalTransactions,
             excludedCategoryIds: excludedCategoryIds,
             excludedTransactionIds: excludedTransactionIds,
+            recurringMatchedTransactionIds: recurringMatchedTransactionIds,
             outflowOnlyExcludedCategoryIds: outflowOnlyExcludedCategoryIds,
             spendAccountIds: spendAccountIds,
             lookbackDays: lookbackDays,
@@ -445,6 +450,7 @@ public struct CashPositionProjector: Sendable {
         historicalTransactions: [TransactionSummary],
         excludedCategoryIds: Set<String>,
         excludedTransactionIds: Set<String>,
+        recurringMatchedTransactionIds: Set<String>,
         outflowOnlyExcludedCategoryIds: Set<String>,
         spendAccountIds: Set<String>,
         lookbackDays: Int,
@@ -463,8 +469,12 @@ public struct CashPositionProjector: Sendable {
             return amount.isNegative && outflowOnlyExcludedCategoryIds.contains(categoryId)
         }
 
-        var historicalOutflows = Money.zero
+        var ordinaryHistoricalOutflows = Money.zero
+        var recurringHistoricalOutflows = Money.zero
+        var historicalRefunds = Money.zero
         var historicalByMonth: [Date: Money] = [:]
+        var recurringByMonth: [Date: Money] = [:]
+        var refundsByMonth: [Date: Money] = [:]
         var categoriesByMonth: [Date: [String: CategoryAccumulator]] = [:]
         var earliest: Date?
 
@@ -475,7 +485,8 @@ public struct CashPositionProjector: Sendable {
             categoryName: String?,
             transactionId: String,
             payeeName: String?,
-            isExcluded: Bool
+            isExcluded: Bool,
+            isRecurring: Bool
         ) {
             let outflow = amount.absolute
             let sampleMonth = monthStart(for: date)
@@ -493,12 +504,57 @@ public struct CashPositionProjector: Sendable {
                 date: date,
                 payeeName: resolvedPayee,
                 amount: outflow,
+                excluded: isExcluded && !isRecurring,
+                recurring: isRecurring
+            ))
+            if isRecurring {
+                recurringHistoricalOutflows += outflow
+                recurringByMonth[sampleMonth, default: .zero] += outflow
+                accumulator.amount += outflow
+                earliest = min(earliest ?? date, date)
+            } else if !isExcluded {
+                ordinaryHistoricalOutflows += outflow
+                historicalByMonth[sampleMonth, default: .zero] += outflow
+                accumulator.amount += outflow
+                earliest = min(earliest ?? date, date)
+            }
+            categories[resolvedId] = accumulator
+            categoriesByMonth[sampleMonth] = categories
+        }
+
+        func recordHistoricalRefund(
+            _ amount: Money,
+            on date: Date,
+            categoryId: String?,
+            categoryName: String?,
+            transactionId: String,
+            payeeName: String?,
+            isExcluded: Bool
+        ) {
+            let refund = amount.absolute
+            let sampleMonth = monthStart(for: date)
+            let resolvedId = categoryId ?? "uncategorized"
+            let resolvedName = categoryName?.isEmpty == false
+                ? categoryName! : "Uncategorized"
+            let resolvedPayee = payeeName?.isEmpty == false
+                ? payeeName! : "Refund"
+            var categories = categoriesByMonth[sampleMonth] ?? [:]
+            var accumulator = categories[resolvedId] ?? CategoryAccumulator(
+                name: resolvedName,
+                amount: .zero,
+                transactions: []
+            )
+            accumulator.transactions.append(MonthlySpendTransaction(
+                id: transactionId,
+                date: date,
+                payeeName: resolvedPayee,
+                amount: -refund,
                 excluded: isExcluded
             ))
             if !isExcluded {
-                historicalOutflows += outflow
-                historicalByMonth[sampleMonth, default: .zero] += outflow
-                accumulator.amount += outflow
+                historicalRefunds += refund
+                refundsByMonth[sampleMonth, default: .zero] += refund
+                accumulator.amount -= refund
                 earliest = min(earliest ?? date, date)
             }
             categories[resolvedId] = accumulator
@@ -509,23 +565,54 @@ public struct CashPositionProjector: Sendable {
             !transaction.deleted && eligibleIds.contains(transaction.accountId) &&
             transaction.date >= requestedStart && transaction.date < today {
             if transaction.isSplit {
-                for leg in transaction.subtransactions where !leg.deleted && leg.amount.isNegative {
+                for leg in transaction.subtransactions where !leg.deleted {
                     if let transfer = leg.transferAccountId, spendAccountIds.contains(transfer) { continue }
                     if excluded(categoryId: leg.categoryId, amount: leg.amount) { continue }
-                    recordHistoricalOutflow(
-                        leg.amount,
-                        on: transaction.date,
-                        categoryId: leg.categoryId,
-                        categoryName: leg.categoryName,
-                        transactionId: leg.id,
-                        payeeName: leg.payeeName ?? transaction.payeeName,
-                        isExcluded: excludedTransactionIds.contains(leg.id)
-                    )
+                    if leg.amount.isNegative {
+                        recordHistoricalOutflow(
+                            leg.amount,
+                            on: transaction.date,
+                            categoryId: leg.categoryId,
+                            categoryName: leg.categoryName,
+                            transactionId: leg.id,
+                            payeeName: leg.payeeName ?? transaction.payeeName,
+                            isExcluded: excludedTransactionIds.contains(leg.id),
+                            isRecurring: recurringMatchedTransactionIds.contains(leg.id)
+                        )
+                    } else if leg.amount > .zero,
+                              (leg.forecastTreatment
+                                ?? transaction.forecastTreatment) == .refund {
+                        recordHistoricalRefund(
+                            leg.amount,
+                            on: transaction.date,
+                            categoryId: leg.categoryId,
+                            categoryName: leg.categoryName,
+                            transactionId: leg.id,
+                            payeeName: leg.payeeName ?? transaction.payeeName,
+                            isExcluded: excludedTransactionIds.contains(leg.id)
+                        )
+                    }
                 }
             } else if transaction.amount.isNegative {
                 if let transfer = transaction.transferAccountId, spendAccountIds.contains(transfer) { continue }
                 if excluded(categoryId: transaction.categoryId, amount: transaction.amount) { continue }
                 recordHistoricalOutflow(
+                    transaction.amount,
+                    on: transaction.date,
+                    categoryId: transaction.categoryId,
+                    categoryName: transaction.categoryName,
+                    transactionId: transaction.id,
+                    payeeName: transaction.payeeName,
+                    isExcluded: excludedTransactionIds.contains(transaction.id),
+                    isRecurring: recurringMatchedTransactionIds.contains(transaction.id)
+                )
+            } else if transaction.amount > .zero,
+                      transaction.forecastTreatment == .refund {
+                if excluded(
+                    categoryId: transaction.categoryId,
+                    amount: transaction.amount
+                ) { continue }
+                recordHistoricalRefund(
                     transaction.amount,
                     on: transaction.date,
                     categoryId: transaction.categoryId,
@@ -557,7 +644,21 @@ public struct CashPositionProjector: Sendable {
             }
         }
 
-        let unscheduled = max(historicalOutflows - scheduledOutflows, .zero)
+        let netOrdinaryHistoricalOutflows = max(
+            ordinaryHistoricalOutflows - historicalRefunds,
+            .zero
+        )
+        let historicalOutflows = netOrdinaryHistoricalOutflows
+            + recurringHistoricalOutflows
+        let theoreticalScheduledOutflows = min(
+            scheduledOutflows, netOrdinaryHistoricalOutflows
+        )
+        let reportedScheduledOutflows = recurringHistoricalOutflows
+            + theoreticalScheduledOutflows
+        let unscheduled = max(
+            netOrdinaryHistoricalOutflows - theoreticalScheduledOutflows,
+            .zero
+        )
         let days = max(1, calendar.dateComponents([.day], from: calendar.startOfDay(for: earliest), to: today).day ?? 1)
         let firstCompleteMonth = calendar.date(
             byAdding: .month,
@@ -570,9 +671,17 @@ public struct CashPositionProjector: Sendable {
         var monthlySamples: [MonthlySpendSample] = []
         var month = firstCompleteMonth
         while let sampleMonth = month, sampleMonth < currentMonth {
-            let historical = historicalByMonth[sampleMonth] ?? .zero
-            let scheduled = min(scheduledByMonth[sampleMonth] ?? .zero, historical)
-            let unscheduled = historical - scheduled
+            let ordinary = max(
+                (historicalByMonth[sampleMonth] ?? .zero)
+                    - (refundsByMonth[sampleMonth] ?? .zero),
+                .zero
+            )
+            let recurring = recurringByMonth[sampleMonth] ?? .zero
+            let scheduled = recurring
+                + min(scheduledByMonth[sampleMonth] ?? .zero, ordinary)
+            let unscheduled = ordinary
+                - min(scheduledByMonth[sampleMonth] ?? .zero, ordinary)
+            let historical = ordinary + recurring
             let categories = (categoriesByMonth[sampleMonth] ?? [:])
                 .map { categoryId, accumulator in
                     MonthlySpendCategory(
@@ -641,7 +750,8 @@ public struct CashPositionProjector: Sendable {
             higherDailyAmount: higherDaily,
             sampleMonthCount: monthlyTotalSamples.count,
             historicalOutflows: historicalOutflows,
-            scheduledOutflows: min(scheduledOutflows, historicalOutflows),
+            historicalRefunds: historicalRefunds,
+            scheduledOutflows: reportedScheduledOutflows,
             historyDays: days,
             lookbackStart: earliest,
             monthlySamples: monthlySamples

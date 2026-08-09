@@ -1063,9 +1063,18 @@ private struct ProjectionCashAccountsSheet: View {
     @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
     @Query private var userSettings: [DurableUserSettings]
     @Query private var overrides: [DurableProjectionCashAccountOverride]
+    @Query private var goalReserves: [DurableGoalReserveAccount]
 
     private var cashAccounts: [CachedAccount] {
         accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
+    }
+
+    /// Accounts actively backing Goals are excluded from the pool by
+    /// derivation; the toggle locks so the user changes this in Goals, not
+    /// here, and their underlying preference is preserved for when the
+    /// account stops backing goals.
+    private var goalReserveIds: Set<String> {
+        Set(goalReserves.filter(\.active).map(\.canonicalAccountId))
     }
 
     var body: some View {
@@ -1089,13 +1098,21 @@ private struct ProjectionCashAccountsSheet: View {
                                     .foregroundStyle(NwAppColors.primary)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(account.name).foregroundStyle(NwAppColors.textPrimary)
-                                    Text(account.institutionName ?? "Plaid")
+                                    Text(isGoalReserve(account)
+                                        ? "Backs goals — managed in Goals"
+                                        : account.institutionName ?? "Plaid")
                                         .font(NwTypography.caption)
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Toggle("", isOn: binding(for: account))
-                                    .labelsHidden()
+                                if isGoalReserve(account) {
+                                    Toggle("", isOn: .constant(false))
+                                        .labelsHidden()
+                                        .disabled(true)
+                                } else {
+                                    Toggle("", isOn: binding(for: account))
+                                        .labelsHidden()
+                                }
                             }
                             .padding(.vertical, NwSpacing.sm)
                             if account.canonicalAccountId != plaidCashAccounts.last?.canonicalAccountId {
@@ -1140,6 +1157,10 @@ private struct ProjectionCashAccountsSheet: View {
 
     private var plaidCashAccounts: [CachedFinancialAccount] {
         financialAccounts.filter { !$0.deleted && $0.type.isCashLike }
+    }
+
+    private func isGoalReserve(_ account: CachedFinancialAccount) -> Bool {
+        goalReserveIds.contains(account.canonicalAccountId)
     }
 
     private func binding(for account: CachedAccount) -> Binding<Bool> {
@@ -1254,202 +1275,6 @@ private struct MinimumCashBufferSheet: View {
         guard ctx.safeSave(source: "settings.minimumCashBuffer") else {
             settings.dipThresholdMilliunits = prior
             saveError = "Saving the minimum cash buffer failed. Try again."
-            return
-        }
-        dismiss()
-    }
-}
-
-struct DiscretionaryBudgetSettingsSheet: View {
-    @SwiftUI.Environment(\.dismiss) private var dismiss
-    @SwiftUI.Environment(AppContainerController.self) private var container
-    @Query private var settingsList: [DurableUserSettings]
-    @Query(sort: \DurableCanonicalCategory.name)
-    private var canonicalCategories: [DurableCanonicalCategory]
-    @Query(sort: \CachedCategory.name)
-    private var cachedCategories: [CachedCategory]
-
-    @State private var targetText = ""
-    @State private var selectedIds: Set<String> = []
-    @State private var saveError: String?
-    @State private var loaded = false
-
-    private var activeOptions: [DiscretionaryCategoryOption] {
-        DiscretionaryCategoryResolver.options(
-            canonical: canonicalCategories,
-            cached: cachedCategories,
-            activeOnly: true
-        ).filter {
-            $0.groupName != "Credit Card Payments"
-                && $0.groupName != "Internal Master Category"
-        }
-    }
-
-    private var groupedOptions: [
-        (group: String, items: [DiscretionaryCategoryOption])
-    ] {
-        Dictionary(grouping: activeOptions, by: \.groupName)
-            .map {
-                (
-                    group: $0.key,
-                    items: $0.value.sorted {
-                        $0.name.localizedCaseInsensitiveCompare($1.name)
-                            == .orderedAscending
-                    }
-                )
-            }
-            .sorted {
-                $0.group.localizedCaseInsensitiveCompare($1.group)
-                    == .orderedAscending
-            }
-    }
-
-    var body: some View {
-        NwModalLayout(
-            title: "Discretionary Budget",
-            onClose: { dismiss() },
-            onConfirm: save
-        ) {
-            if let saveError {
-                NwInlineNotice(
-                    "Couldn't save",
-                    message: saveError,
-                    tone: .warning
-                )
-            }
-
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                Text("MONTHLY TARGET")
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
-                TextField("0.00", text: $targetText)
-                    .nwCurrencyInput(text: $targetText)
-                    .font(NwTypography.display)
-                    .padding(NwSpacing.md)
-                    .background(NwAppColors.cardSurface)
-                    .clipShape(RoundedRectangle(
-                        cornerRadius: NwCornerRadius.md,
-                        style: .continuous
-                    ))
-            }
-
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                HStack {
-                    Text("DISCRETIONARY CATEGORIES")
-                        .font(NwTypography.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("\(selectedIds.count) selected")
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Text("One shared envelope. Transfers, income, and card payments are always excluded.")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            if groupedOptions.isEmpty {
-                NwEmptyState(
-                    title: "No active categories",
-                    message: "Sync your transaction categories first.",
-                    icon: .empty
-                )
-            } else {
-                ForEach(groupedOptions, id: \.group) { group in
-                    VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                        Text(displayGroupName(group.group).uppercased())
-                            .font(NwTypography.caption)
-                            .foregroundStyle(.secondary)
-                        VStack(spacing: 0) {
-                            ForEach(group.items) { option in
-                                categoryRow(option)
-                                if option.id != group.items.last?.id {
-                                    Divider()
-                                }
-                            }
-                        }
-                        .padding(.horizontal, NwSpacing.md)
-                        .background(NwAppColors.cardSurface)
-                        .clipShape(RoundedRectangle(
-                            cornerRadius: NwCornerRadius.md,
-                            style: .continuous
-                        ))
-                    }
-                }
-            }
-        }
-        .onAppear { loadDraft() }
-    }
-
-    private func categoryRow(
-        _ option: DiscretionaryCategoryOption
-    ) -> some View {
-        let selected = selectedIds.contains(option.id)
-        return Button {
-            if selected {
-                selectedIds.remove(option.id)
-            } else {
-                selectedIds.insert(option.id)
-            }
-        } label: {
-            HStack(spacing: NwSpacing.sm) {
-                Image(systemName: selected
-                    ? "checkmark.circle.fill"
-                    : "circle")
-                    .foregroundStyle(selected
-                        ? NwAppColors.primary
-                        : NwAppColors.strokeSubtle)
-                Text(option.name)
-                    .font(NwTypography.body)
-                    .foregroundStyle(NwAppColors.textPrimary)
-                Spacer()
-            }
-            .contentShape(Rectangle())
-            .padding(.vertical, NwSpacing.sm)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func displayGroupName(_ name: String) -> String {
-        name == "Internal Master Category" ? "Income" : name
-    }
-
-    private func loadDraft() {
-        guard !loaded else { return }
-        let settings = settingsList.first
-        targetText = CurrencyInputFormatter.text(
-            for: Money(
-                milliunits: settings?
-                    .discretionaryMonthlyTargetMilliunits ?? 0
-            )
-        )
-        selectedIds = DiscretionaryCategoryResolver.selectedIds(
-            settings: settings,
-            activeOptions: activeOptions
-        )
-        loaded = true
-    }
-
-    private func save() {
-        guard let target = CurrencyInputFormatter.money(from: targetText),
-              target > .zero else {
-            saveError = "Enter a monthly target greater than zero."
-            return
-        }
-        let context = container.modelContainer.mainContext
-        let settings = settingsList.first ?? {
-            let value = DurableUserSettings()
-            context.insert(value)
-            return value
-        }()
-        let priorTarget = settings.discretionaryMonthlyTargetMilliunits
-        let priorCategoryData = settings.discretionaryCategoryIdsData
-        settings.discretionaryMonthlyTargetMilliunits = target.milliunits
-        settings.discretionaryCategoryIds = selectedIds
-        guard context.safeSave(source: "settings.discretionaryBudget") else {
-            settings.discretionaryMonthlyTargetMilliunits = priorTarget
-            settings.discretionaryCategoryIdsData = priorCategoryData
-            saveError = "Saving the discretionary budget failed. Try again."
             return
         }
         dismiss()
@@ -5218,6 +5043,11 @@ struct RecurringExpectationForm: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query(sort: \CachedFinancialAccount.name)
     private var financialAccounts: [CachedFinancialAccount]
+    @Query(sort: \DurableCanonicalPayee.name)
+    private var canonicalPayees: [DurableCanonicalPayee]
+    @Query(sort: \DurableCanonicalCategory.name)
+    private var canonicalCategories: [DurableCanonicalCategory]
+    @Query private var durableCategoryGroups: [DurableCategoryGroup]
     let expectation: DurableRecurringExpectation?
 
     @State private var payeeName = ""
@@ -5237,7 +5067,6 @@ struct RecurringExpectationForm: View {
     @State private var saveError: String?
     @State private var recent: [CachedFinancialTransaction] = []
     @State private var loaded = false
-    @State private var programmaticNameChange = false
 
     private var openAccounts: [CachedFinancialAccount] {
         financialAccounts.filter { !$0.deleted }
@@ -5268,6 +5097,37 @@ struct RecurringExpectationForm: View {
         }
     }
 
+    private var recurringCategoryGroups: [PlaidCategoryGroup] {
+        let roleByIdentity = Dictionary(
+            durableCategoryGroups.map {
+                ($0.groupIdentity, $0.reportingRole)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let allowedRoles = TransactionTypeRules.allowedCategoryRoles(
+            for: .ordinarySpending
+        ) ?? []
+        let options = canonicalCategories.compactMap {
+            category -> PlaidCategoryOption? in
+            guard !category.hidden,
+                  !category.deletedAtSource,
+                  !category.name.trimmed.isEmpty else { return nil }
+            let role = category.categoryGroupIdentity.flatMap {
+                roleByIdentity[$0]
+            }
+            guard role.map(allowedRoles.contains) ?? true else { return nil }
+            return PlaidCategoryOption(
+                categoryID: category.canonicalId,
+                name: category.name.trimmed,
+                groupName: category.groupName.trimmed.isEmpty
+                    ? "Networth Categories"
+                    : category.groupName.trimmed,
+                role: role
+            )
+        }
+        return PlaidCategoryGroup.makeGroups(from: options)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -5282,17 +5142,23 @@ struct RecurringExpectationForm: View {
                 }
 
                 Section("Details") {
-                    TextField("Payee", text: $payeeName)
-                        .onChange(of: payeeName) {
-                            // A manual rename breaks the prefilled canonical
-                            // link; matching falls back to the typed name.
-                            // Programmatic prefill/load sets are exempt.
-                            if programmaticNameChange {
-                                programmaticNameChange = false
-                            } else {
-                                payeeCanonicalId = nil
-                            }
+                    NavigationLink {
+                        CanonicalPayeePicker(
+                            selection: $payeeCanonicalId,
+                            displayName: $payeeName,
+                            payees: canonicalPayees
+                        )
+                    } label: {
+                        LabeledContent("Payee") {
+                            Text(
+                                payeeName.trimmed.isEmpty
+                                    ? "Select payee"
+                                    : payeeName
+                            )
+                            .foregroundStyle(.secondary)
                         }
+                        .contentShape(Rectangle())
+                    }
                     Picker("Type", selection: $treatment) {
                         ForEach(
                             RecurringExpectations.allowedTreatments,
@@ -5331,7 +5197,37 @@ struct RecurringExpectationForm: View {
                         }
                     }
                     if treatment == .ordinarySpending {
-                        TextField("Category (optional)", text: $categoryName)
+                        NavigationLink {
+                            PlaidCategoryPicker(
+                                selection: $categoryName,
+                                groups: recurringCategoryGroups,
+                                onSelect: { option in
+                                    categoryCanonicalId = option.categoryID
+                                }
+                            )
+                        } label: {
+                            LabeledContent("Category") {
+                                Text(
+                                    categoryName.trimmed.isEmpty
+                                        ? "Optional"
+                                        : categoryName
+                                )
+                                .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        if !categoryName.trimmed.isEmpty {
+                            Button {
+                                categoryName = ""
+                                categoryCanonicalId = nil
+                            } label: {
+                                Label(
+                                    "Remove category",
+                                    systemImage: "xmark.circle"
+                                )
+                            }
+                            .foregroundStyle(NwAppColors.liability)
+                        }
                     }
                 }
 
@@ -5406,7 +5302,6 @@ struct RecurringExpectationForm: View {
         guard !loaded else { return }
         loaded = true
         if let expectation {
-            programmaticNameChange = true
             payeeName = expectation.payeeName
             payeeCanonicalId = expectation.payeeCanonicalId
             treatment = expectation.forecastTreatment
@@ -5442,7 +5337,6 @@ struct RecurringExpectationForm: View {
     }
 
     private func prefill(from row: CachedFinancialTransaction) {
-        programmaticNameChange = true
         payeeName = row.displayName
         if RecurringExpectations.allowedTreatments
             .contains(row.forecastTreatment) {
@@ -5457,8 +5351,6 @@ struct RecurringExpectationForm: View {
         nextDate = Calendar.current.date(
             byAdding: .month, value: 1, to: row.postedDate
         ) ?? .now
-        // Set the canonical link LAST: the payeeName onChange above clears
-        // it for manual edits.
         payeeCanonicalId = row.payeeCanonicalId
     }
 
@@ -5480,10 +5372,12 @@ struct RecurringExpectationForm: View {
             treatment == .internalTransfer && !destinationId.isEmpty
                 ? destinationId
                 : nil
-        target.categoryName = categoryName.trimmed.isEmpty
+        target.categoryName = treatment != .ordinarySpending
+            || categoryName.trimmed.isEmpty
             ? nil
             : categoryName.trimmed
-        target.categoryCanonicalId = categoryName.trimmed.isEmpty
+        target.categoryCanonicalId = treatment != .ordinarySpending
+            || categoryName.trimmed.isEmpty
             ? nil
             : categoryCanonicalId
         target.cadence = cadence

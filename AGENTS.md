@@ -25,7 +25,7 @@ Personal financial radar that helps the user understand their real financial pos
 - Single-user app gated by a Face ID toggle that defaults ON when the device supports biometrics. A versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows forward so iCloud-restored or cross-device settings never silently leave the user unlocked.
 - YNAB Personal Access Token entered once in Settings, stored in iCloud-synced Keychain so a future device swap is zero-friction.
 - On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, `YNABClient` and `PlaidClient` actors, `ModelContainer`, `ConnectivityMonitor`, the read-only `IBRLoanStore`, and local `IBRLoanHistorySettingsStore`.
-- 4-tab structure: Net Worth · Spending · Projections · Investments. Accounts is reached from an "All Accounts" card on Net Worth. Settings is opened from a sheet behind the Net Worth toolbar (not a tab).
+- 5-tab structure: Net Worth · Spending · Projections · Investments · Goals. Accounts is reached from an "All Accounts" card on Net Worth. Settings is opened from a sheet behind the Net Worth toolbar (not a tab).
 - Sync strategy: SwiftData local cache for re-fetchable YNAB and Plaid data; CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings, account identity decisions, merchant rules, and transaction corrections).
 - Optional IBR loan sharing uses `group.com.bluelava.me.financial`. The decoded summary stays in memory; its dated balances overlay the chart locally and must never be copied into SwiftData or CloudKit.
 
@@ -133,7 +133,7 @@ cd PlaidWorker && npm test && npm run check
   fixes apply globally.
 - **Theme:** "Deep Slate" — navy/teal accent (`#1E3A8A` family); teal for positive deltas, muted red for liabilities/regressions. Defined in `NwAppColors`.
 - **Currency display:** never show raw milliunits. Always route through `NetworthCore.Money` formatters. Hide cents where the design calls for compact metrics; show full precision in detail rows.
-- **Information architecture is fixed at 4 tabs:** Net Worth · Spending · Projections · Investments (Accounts lives behind Net Worth; scope decision 2026-08-02, logged in `docs/PLAN.md`). Settings is opened from a sheet behind the Net Worth toolbar (not a tab). Do not add tabs without a scope decision logged in `docs/PLAN.md`.
+- **Information architecture is fixed at 5 tabs:** Net Worth · Spending · Projections · Investments · Goals (Accounts lives behind Net Worth, scope decision 2026-08-02; Goals added by scope decision 2026-08-07 — both logged in `docs/PLAN.md`). Settings is opened from a sheet behind the Net Worth toolbar (not a tab). This uses the last tab-bar slot; do not add tabs without a scope decision logged in `docs/PLAN.md`.
 - **No privacy/blur mode** in v1 (explicitly scoped out).
 - **No transactions tab** in v1 (explicitly scoped out — users open YNAB to browse transactions).
 

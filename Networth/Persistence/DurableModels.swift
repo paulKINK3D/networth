@@ -1135,6 +1135,173 @@ public final class DurableFundEvent {
     }
 }
 
+// MARK: - Goals (reserve-pool era)
+
+/// A long-term savings goal backed by the shared reserve pool. These are new
+/// record types: the retired sinking-fund models above are purged on sight by
+/// FreshStart and must never store goal data again.
+@Model
+public final class DurableGoal {
+    public var id: UUID = UUID()
+    public var name: String = ""
+    public var kindRaw: String = GoalKind.refillable.rawValue
+    public var targetModeRaw: String = GoalTargetMode.fixed.rawValue
+    /// For `.fixed` the user-entered target; for `.emergencyMonths` the
+    /// adopted (hysteresis-smoothed) derived target. 0 = open-ended.
+    public var targetMilliunits: Int64 = 0
+    public var targetDate: Date? = nil
+    /// Used only for plan-sufficiency math; never auto-contributes.
+    public var plannedMonthlyMilliunits: Int64 = 0
+    public var emergencyMonths: Int = 0
+    public var emergencyReductionPercent: Int = 100
+    /// Retired: the residual/catch-all goal concept was removed. The field
+    /// stays (defaulted, unread) so existing CloudKit/device rows that set it
+    /// remain valid; a goal that had it set simply behaves as a normal goal.
+    public var isResidual: Bool = false
+    /// When the emergency-derived target was last adopted; explains "target
+    /// updated" to the user and gates hysteresis.
+    public var adoptedAt: Date? = nil
+    public var archived: Bool = false
+    /// One-time goals move to history only through explicit completion.
+    public var completedAt: Date? = nil
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        name: String = "",
+        kind: GoalKind = .refillable,
+        targetMode: GoalTargetMode = .fixed,
+        targetMilliunits: Int64 = 0,
+        targetDate: Date? = nil,
+        plannedMonthlyMilliunits: Int64 = 0,
+        emergencyMonths: Int = 0,
+        emergencyReductionPercent: Int = 100
+    ) {
+        self.id = id
+        self.name = name
+        self.kindRaw = kind.rawValue
+        self.targetModeRaw = targetMode.rawValue
+        self.targetMilliunits = targetMilliunits
+        self.targetDate = targetDate
+        self.plannedMonthlyMilliunits = plannedMonthlyMilliunits
+        self.emergencyMonths = emergencyMonths
+        self.emergencyReductionPercent = emergencyReductionPercent
+    }
+
+    public var kind: GoalKind {
+        get { GoalKind(rawValue: kindRaw) ?? .refillable }
+        set { kindRaw = newValue.rawValue }
+    }
+
+    public var targetMode: GoalTargetMode {
+        get { GoalTargetMode(rawValue: targetModeRaw) ?? .fixed }
+        set { targetModeRaw = newValue.rawValue }
+    }
+
+    public func toCore() -> Goal {
+        Goal(
+            id: id.uuidString,
+            name: name,
+            kind: kind,
+            targetMode: targetMode,
+            target: Money(milliunits: targetMilliunits),
+            targetDate: targetDate,
+            plannedMonthly: Money(milliunits: plannedMonthlyMilliunits),
+            emergencyMonths: emergencyMonths,
+            emergencyReductionPercent: emergencyReductionPercent,
+            archived: archived,
+            completedAt: completedAt
+        )
+    }
+}
+
+/// One explicit goal movement. All writes flow through `GoalLedgerService`,
+/// which owns the money invariants — nothing else mutates these rows.
+@Model
+public final class DurableGoalLedgerEntry {
+    public var id: UUID = UUID()
+    public var goalId: UUID = UUID()
+    public var date: Date = Date.now
+    /// Signed by kind: contributions/refunds positive; purchases,
+    /// withdrawals, and reallocation-out negative.
+    public var amountMilliunits: Int64 = 0
+    public var kindRaw: String = GoalLedgerKind.manual.rawValue
+    /// Provider external transaction id for transfer-linked contributions
+    /// and purchase/refund links; resolved to cached row ids at build time.
+    public var linkedTransactionExternalId: String? = nil
+    public var note: String? = nil
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        goalId: UUID = UUID(),
+        date: Date = .now,
+        amountMilliunits: Int64 = 0,
+        kind: GoalLedgerKind = .manual,
+        linkedTransactionExternalId: String? = nil,
+        note: String? = nil
+    ) {
+        self.id = id
+        self.goalId = goalId
+        self.date = date
+        self.amountMilliunits = amountMilliunits
+        self.kindRaw = kind.rawValue
+        self.linkedTransactionExternalId = linkedTransactionExternalId
+        self.note = note
+    }
+
+    public var kind: GoalLedgerKind {
+        get { GoalLedgerKind(rawValue: kindRaw) ?? .manual }
+        set { kindRaw = newValue.rawValue }
+    }
+
+    public func toCore() -> GoalLedgerEntry {
+        GoalLedgerEntry(
+            id: id.uuidString,
+            goalId: goalId.uuidString,
+            date: date,
+            amount: Money(milliunits: amountMilliunits),
+            kind: kind,
+            linkedTransactionId: linkedTransactionExternalId,
+            note: note,
+            createdAt: createdAt
+        )
+    }
+}
+
+/// A savings account the user selected to back goals. Identity fields are
+/// snapshotted at selection so a disconnected account can still be displayed
+/// and re-attached (user-confirmed — institution+mask is a suggestion key,
+/// never an automatic rebind).
+@Model
+public final class DurableGoalReserveAccount {
+    public var id: UUID = UUID()
+    public var canonicalAccountId: String = ""
+    public var accountName: String = ""
+    public var institutionName: String = ""
+    public var mask: String = ""
+    public var active: Bool = true
+    public var addedAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        canonicalAccountId: String = "",
+        accountName: String = "",
+        institutionName: String = "",
+        mask: String = ""
+    ) {
+        self.id = id
+        self.canonicalAccountId = canonicalAccountId
+        self.accountName = accountName
+        self.institutionName = institutionName
+        self.mask = mask
+    }
+}
+
+
 /// A user-confirmed fixed commitment for the monthly Budget. Confirmation is
 /// always explicit; detection only proposes candidates. Confirmed items stay
 /// active until explicitly disabled — missing activity is a quiet stale

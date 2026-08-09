@@ -323,6 +323,51 @@ struct CashPositionProjectorTests {
         #expect(result.expectedSpend.monthlySamples[0].categories.first?.amount == Money.dollars(100))
     }
 
+    @Test func expectedSpendNetsApprovedRefundsInTheirPostedMonth() {
+        let today = date(2026, 8, 1)
+        var history: [TransactionSummary] = []
+        for month in 2...7 {
+            history.append(transaction(
+                "cash", amount: -100, date: date(2026, month, 10)
+            ))
+            history.append(transaction(
+                "cash", amount: 40, date: date(2026, month, 15),
+                treatment: .refund
+            ))
+        }
+        // Positive income is not a refund and must not reduce spending.
+        history.append(transaction(
+            "cash", amount: 5_000, date: date(2026, 7, 20),
+            treatment: .income
+        ))
+
+        let result = CashPositionProjector(calendar: utc).project(
+            cashAccounts: [account("cash", balance: 2_000)],
+            selectedCashAccountIds: ["cash"],
+            cardAccountIds: [], fundedCardAccountIds: [], cardPayments: [],
+            scheduled: [], historicalTransactions: history,
+            spendAccountIds: ["cash"], lookbackDays: 200,
+            asOf: today, horizonDays: 2
+        )
+
+        #expect(result.expectedSpend.estimatedMonthlyAmount
+            == Money.dollars(60))
+        #expect(result.expectedSpend.unscheduledMonthlyAmount
+            == Money.dollars(60))
+        #expect(result.expectedSpend.historicalOutflows
+            == Money.dollars(360))
+        #expect(result.expectedSpend.historicalRefunds
+            == Money.dollars(240))
+        #expect(result.expectedSpend.monthlySamples.allSatisfy {
+            $0.totalAmount == Money.dollars(60)
+                && $0.unscheduledAmount == Money.dollars(60)
+        })
+        #expect(result.expectedSpend.monthlySamples
+            .flatMap(\.categories)
+            .flatMap(\.transactions)
+            .contains { $0.amount == Money.dollars(-40) })
+    }
+
     @Test func higherSpendingCaseUsesUpperQuartileWithFourCompleteMonths() {
         let today = date(2026, 2, 15)
         let history = [
@@ -514,13 +559,15 @@ struct CashPositionProjectorTests {
         _ accountId: String,
         amount: Int,
         date: Date,
-        transfer: String? = nil
+        transfer: String? = nil,
+        treatment: ForecastTreatment? = nil
     ) -> TransactionSummary {
         TransactionSummary(
             id: "\(accountId)-\(amount)-\(date.timeIntervalSince1970)",
             accountId: accountId, date: date,
             amount: Money.dollars(integer: amount), cleared: true, approved: true,
-            payeeName: nil, categoryName: nil, transferAccountId: transfer,
+            payeeName: nil, categoryName: nil,
+            forecastTreatment: treatment, transferAccountId: transfer,
             memo: nil, deleted: false
         )
     }

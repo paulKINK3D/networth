@@ -52,11 +52,12 @@ struct RecurringExpectationsTests {
         date: Date,
         amount: Money,
         payee: String,
+        accountId: String = "checking",
         treatment: ForecastTreatment? = .ordinarySpending
     ) -> TransactionSummary {
         TransactionSummary(
             id: id,
-            accountId: "checking",
+            accountId: accountId,
             date: date,
             amount: amount,
             cleared: true,
@@ -113,7 +114,7 @@ struct RecurringExpectationsTests {
         ))
         // Outside the bounded date window.
         #expect(!RecurringExpectations.matchesNextOccurrence(
-            historical(id: "b", date: date(2026, 8, 12),
+            historical(id: "b", date: date(2026, 8, 16),
                        amount: Money.dollars(-1_500), payee: "Landlord"),
             expectation: rent, calendar: utc
         ))
@@ -147,9 +148,120 @@ struct RecurringExpectationsTests {
                 historical(id: "other", date: date(2026, 7, 8),
                            amount: Money.dollars(-90), payee: "Grocer")
             ],
-            expectations: [rent]
+            expectations: [rent],
+            calendar: utc
         )
         #expect(matched == ["july"])
+    }
+
+    @Test func occurrenceMatchAllowsPaymentAccountToChange() {
+        let rent = expectation(next: date(2026, 8, 1))
+        let paidFromSavings = historical(
+            id: "rent",
+            date: date(2026, 8, 2),
+            amount: Money.dollars(-1_500),
+            payee: "Landlord",
+            accountId: "savings"
+        )
+
+        #expect(RecurringExpectations.matchesNextOccurrence(
+            paidFromSavings,
+            expectation: rent,
+            calendar: utc
+        ))
+    }
+
+    @Test func historicalMatchingClaimsOneActualPerExpectedDate() {
+        let rent = expectation(next: date(2026, 9, 1))
+        let matched = RecurringExpectations.matchedHistoricalIds(
+            transactions: [
+                historical(
+                    id: "july-rent",
+                    date: date(2026, 7, 2),
+                    amount: Money.dollars(-1_500),
+                    payee: "Landlord",
+                    accountId: "savings"
+                ),
+                historical(
+                    id: "july-other",
+                    date: date(2026, 7, 2),
+                    amount: Money.dollars(-250),
+                    payee: "Landlord",
+                    accountId: "checking"
+                ),
+                historical(
+                    id: "august-rent",
+                    date: date(2026, 8, 1),
+                    amount: Money.dollars(-1_500),
+                    payee: "Landlord",
+                    accountId: "credit-card"
+                )
+            ],
+            expectations: [rent],
+            calendar: utc
+        )
+
+        #expect(matched == ["july-rent", "august-rent"])
+    }
+
+    @Test func shiftedMonthlyPaymentsWinOverTinySamePayeeFees() {
+        let bill = expectation(
+            id: "loan",
+            amount: Money.dollars(-2_040),
+            next: date(2026, 8, 19),
+            payee: "Loan Servicer"
+        )
+        let realDates = [
+            date(2025, 8, 29), date(2025, 10, 1),
+            date(2025, 10, 31), date(2025, 12, 1),
+            date(2025, 12, 31), date(2026, 1, 30),
+            date(2026, 2, 27), date(2026, 4, 1),
+            date(2026, 5, 1), date(2026, 5, 18),
+            date(2026, 6, 18), date(2026, 7, 20)
+        ]
+        var history = realDates.enumerated().map { index, paymentDate in
+            historical(
+                id: "payment-\(index)", date: paymentDate,
+                amount: Money.dollars(-1_995), payee: "Loan Servicer"
+            )
+        }
+        history.append(historical(
+            id: "fee", date: date(2025, 11, 25),
+            amount: Money.dollars(-5), payee: "Loan Servicer"
+        ))
+
+        let matched = RecurringExpectations.matchedHistoricalIds(
+            transactions: history,
+            expectations: [bill],
+            calendar: utc
+        )
+
+        #expect(matched.count == 12)
+        #expect(!matched.contains("fee"))
+        #expect(matched == Set(realDates.indices.map { "payment-\($0)" }))
+    }
+
+    @Test func occurrenceMatchAllowsVariableBillsButRejectsTinyFees() {
+        let bill = expectation(
+            amount: Money.dollars(-4_000),
+            next: date(2026, 8, 1)
+        )
+        #expect(RecurringExpectations.matchesNextOccurrence(
+            historical(
+                id: "variable", date: date(2026, 8, 1),
+                amount: Money.dollars(-2_700), payee: "Landlord"
+            ),
+            expectation: bill,
+            calendar: utc
+        ))
+        #expect(!RecurringExpectations.matchesNextOccurrence(
+            historical(
+                id: "fee", date: date(2026, 8, 1),
+                amount: Money.dollars(-5), payee: "Landlord"
+            ),
+            expectation: bill,
+            calendar: utc
+        ))
     }
 
     // MARK: - Exactly-once through the projector
@@ -164,7 +276,9 @@ struct RecurringExpectationsTests {
     ) -> CashPositionProjector.Result {
         let summaries = expectations.map { $0.toScheduledSummary() }
         let matched = RecurringExpectations.matchedHistoricalIds(
-            transactions: history, expectations: expectations
+            transactions: history,
+            expectations: expectations,
+            calendar: utc
         )
         return CashPositionProjector(calendar: utc).project(
             cashAccounts: [account("checking", balance: 10_000)],
@@ -175,6 +289,7 @@ struct RecurringExpectationsTests {
             estimateExemptScheduledIds: Set(summaries.map(\.id)),
             historicalTransactions: history,
             excludedTransactionIds: matched,
+            recurringMatchedTransactionIds: matched,
             spendAccountIds: ["checking"],
             lookbackDays: 200,
             asOf: today, horizonDays: horizonDays
@@ -221,6 +336,22 @@ struct RecurringExpectationsTests {
             < baseline.expectedSpend.dailyAmount)
         #expect(withRent.expectedSpend.unscheduledMonthlyAmount
             == Money.dollars(300))
+        #expect(withRent.expectedSpend.estimatedMonthlyAmount
+            == Money.dollars(1_900))
+        #expect(withRent.expectedSpend.scheduledMonthlyAmount
+            == Money.dollars(1_600))
+        #expect(withRent.expectedSpend.scheduledOutflows
+            == Money.dollars(9_600))
+        #expect(withRent.expectedSpend.monthlySamples.allSatisfy {
+            $0.totalAmount == Money.dollars(1_900)
+                && $0.scheduledAmount == Money.dollars(1_600)
+                && $0.unscheduledAmount == Money.dollars(300)
+        })
+        #expect(withRent.expectedSpend.monthlySamples
+            .flatMap(\.categories)
+            .flatMap(\.transactions)
+            .filter(\.recurring)
+            .count == 5)
     }
 
     /// A brand-new expectation with no matching history must not reduce the

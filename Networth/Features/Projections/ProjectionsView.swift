@@ -26,6 +26,9 @@ struct ProjectionsView: View {
     @Query private var transactionExclusions: [DurableExcludedSpendTransaction]
     @Query private var cashAccountOverrides: [DurableProjectionCashAccountOverride]
 
+    // (Cash-pool membership rules live in ProjectionCashSelection below so
+    // the derived Goals-reserve exclusion is unit-testable.)
+
     @State private var showingAssumptions = false
     @State private var showingSafeToSpendDetails = false
     @State private var selectedPayment: UpcomingCardPayment?
@@ -184,6 +187,8 @@ struct ProjectionsView: View {
                     message: "Known activity takes this account to \(CurrencyFormatter.compact(account.projectedShortfallLowPoint?.balance ?? .zero)) on \(account.firstShortfallPoint?.date.formatted(.dateTime.month(.abbreviated).day()) ?? "the projected date").",
                     tone: .warning
                 )
+            } else if let warning = data.incomeWarning {
+                settingsNotice(warning.title, message: warning.message)
             } else if isStale {
                 NwInlineNotice(
                     "Projection data is stale",
@@ -381,7 +386,7 @@ struct ProjectionsView: View {
             if data.result.events.isEmpty {
                 NwInlineNotice(
                     "No known events",
-                    message: "Schedule paychecks and bills in YNAB.",
+                    message: "Add recurring income and bills in Settings.",
                     tone: .info
                 )
             } else {
@@ -455,9 +460,51 @@ struct ProjectionsView: View {
         let unfundedCardNames: [String]
         let excludedCategoryNames: [String]
         let limitedHistory: Bool
+        /// Nil on the YNAB path; detection is Plaid-first only.
+        let paycheckDetection: PaycheckDetection?
+        /// Payee of the manual recurring-income entry that overrides the
+        /// detected paycheck, when one matched.
+        let paycheckManualOverridePayee: String?
+        let hasManualIncome: Bool
 
         var setupIncomplete: Bool {
             !missingCardNames.isEmpty || !unfundedCardNames.isEmpty
+        }
+
+        /// Shown when the projection includes no future paychecks at all:
+        /// nothing detected and no manual recurring income to fall back on.
+        var incomeWarning: (title: String, message: String)? {
+            guard !hasManualIncome, let paycheckDetection else { return nil }
+            switch paycheckDetection {
+            case .detected:
+                return nil
+            case .staleHistory(let payeeName, let lastDepositDate):
+                return (
+                    "Income not projected",
+                    "No confirmed deposit from \(payeeName) since \(lastDepositDate.formatted(.dateTime.month(.abbreviated).day())). Confirm recent deposits or add recurring income in Settings."
+                )
+            case .depositsExcluded(let payeeName):
+                return (
+                    "Income not projected",
+                    "\(payeeName) deposits go to accounts left out of projections. Include that account or add recurring income in Settings."
+                )
+            case .insufficientHistory(let payeeName, let depositCount):
+                let source = payeeName.map { " from \($0)" } ?? ""
+                return (
+                    "Income not projected",
+                    "Only \(depositCount) confirmed deposit\(depositCount == 1 ? "" : "s")\(source) so far. Add recurring income in Settings or keep confirming deposits."
+                )
+            case .unstableCadence(let payeeName, _):
+                return (
+                    "Income not projected",
+                    "\(payeeName) deposits don't follow a steady schedule. Add recurring income in Settings."
+                )
+            case .noConfirmedIncome:
+                return (
+                    "Income not projected",
+                    "No confirmed income deposits yet. Add recurring income in Settings."
+                )
+            }
         }
 
         var canShowSpendingRoomDetails: Bool {
@@ -1018,6 +1065,7 @@ private struct ProjectionAssumptionsSheet: View {
                         }
                     }
                 }
+                incomeSection
                 Section("Everyday spending estimate") {
                     detail(
                         "Method",
@@ -1034,7 +1082,10 @@ private struct ProjectionAssumptionsSheet: View {
                     detail("Scheduled portion", CurrencyFormatter.compact(data.result.expectedSpend.scheduledMonthlyAmount))
                     detail("Everyday spending reserve", CurrencyFormatter.compact(data.result.expectedSpend.unscheduledMonthlyAmount))
                     detail("Spending observed", CurrencyFormatter.compact(data.result.expectedSpend.historicalOutflows))
-                    detail("Scheduled overlap removed", CurrencyFormatter.compact(data.result.expectedSpend.scheduledOutflows))
+                    if !data.result.expectedSpend.historicalRefunds.isZero {
+                        detail("Refunds netted", CurrencyFormatter.compact(data.result.expectedSpend.historicalRefunds))
+                    }
+                    detail("Overlap removed from reserve", CurrencyFormatter.compact(data.result.expectedSpend.scheduledOutflows))
                     detail("Average per day", CurrencyFormatter.compact(data.result.expectedSpend.dailyAmount))
                 }
                 if !data.result.expectedSpend.monthlySamples.isEmpty {
@@ -1089,6 +1140,77 @@ private struct ProjectionAssumptionsSheet: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var incomeSection: some View {
+        if let detection = data.paycheckDetection {
+            Section("Income") {
+                if let payee = data.paycheckManualOverridePayee {
+                    Text("Your recurring income entry for \(payee) overrides the detected paycheck.")
+                        .font(NwTypography.callout)
+                } else {
+                    switch detection {
+                    case .detected(let paycheck):
+                        detail("Payer", paycheck.displayName)
+                        detail("Cadence", paycheck.cadence.displayName)
+                        detail("Next paycheck", CurrencyFormatter.compact(paycheck.nextAmount))
+                        if paycheck.portions.count > 1 {
+                            let month = BudgetMonth(containing: paycheck.nextDate)
+                            ForEach(paycheck.portions, id: \.accountId) { portion in
+                                detail(
+                                    accountName(portion.accountId),
+                                    CurrencyFormatter.compact(
+                                        paycheck.amount(for: portion, in: month)
+                                    )
+                                )
+                            }
+                        }
+                        detail("Next deposit", paycheck.nextDate.formatted(.dateTime.month(.abbreviated).day()))
+                        detail("Confirmed deposits", "\(paycheck.confirmedDepositCount)")
+                        Text("Detected from confirmed deposits. Add recurring income in Settings to override.")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                    case .staleHistory(let payeeName, let lastDepositDate):
+                        incomeWarningText(
+                            "No confirmed deposit from \(payeeName) since \(lastDepositDate.formatted(.dateTime.month(.abbreviated).day())) — paychecks aren't projected until deposits resume."
+                        )
+                    case .depositsExcluded(let payeeName):
+                        incomeWarningText(
+                            "\(payeeName) deposits go to accounts left out of projections, so paychecks aren't projected."
+                        )
+                    case .insufficientHistory(let payeeName, let depositCount):
+                        incomeWarningText(
+                            "Only \(depositCount) confirmed deposit\(depositCount == 1 ? "" : "s")\(payeeName.map { " from \($0)" } ?? "") — not enough to project paychecks automatically."
+                        )
+                    case .unstableCadence(let payeeName, _):
+                        incomeWarningText(
+                            "\(payeeName) deposits don't follow a steady schedule, so paychecks aren't projected automatically."
+                        )
+                    case .noConfirmedIncome:
+                        incomeWarningText(
+                            "No confirmed income deposits yet, so paychecks aren't projected."
+                        )
+                    }
+                    if data.hasManualIncome {
+                        Text("Projections use your recurring income entries.")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func incomeWarningText(_ message: String) -> some View {
+        Text(message)
+            .font(NwTypography.callout)
+            .foregroundStyle(NwAppColors.caution)
+    }
+
+    private func accountName(_ accountId: String) -> String {
+        data.selectedCashAccounts.first { $0.id == accountId }?.name
+            ?? "Account"
     }
 
     private func detail(_ label: String, _ value: String) -> some View {
@@ -1158,18 +1280,22 @@ private struct MonthlySpendCategoryDetail: View {
             }
             Section("Transactions") {
                 ForEach(category.transactions) { transaction in
-                    transactionRow(transaction)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button {
-                                toggle(transaction)
-                            } label: {
-                                Label(
-                                    isExcluded(transaction) ? "Include" : "Exclude",
-                                    systemImage: isExcluded(transaction) ? "arrow.uturn.backward" : "minus.circle"
-                                )
+                    if transaction.recurring {
+                        transactionRow(transaction)
+                    } else {
+                        transactionRow(transaction)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button {
+                                    toggle(transaction)
+                                } label: {
+                                    Label(
+                                        isExcluded(transaction) ? "Include" : "Exclude",
+                                        systemImage: isExcluded(transaction) ? "arrow.uturn.backward" : "minus.circle"
+                                    )
+                                }
+                                .tint(isExcluded(transaction) ? NwAppColors.positive : NwAppColors.liability)
                             }
-                            .tint(isExcluded(transaction) ? NwAppColors.positive : NwAppColors.liability)
-                        }
+                    }
                 }
             }
         }
@@ -1179,13 +1305,14 @@ private struct MonthlySpendCategoryDetail: View {
 
     private var includedTotal: Money {
         category.transactions
-            .filter { !excludedIds.contains($0.id) }
+            .filter { !isExcluded($0) }
             .map(\.amount)
             .sum()
     }
 
     private func isExcluded(_ transaction: MonthlySpendTransaction) -> Bool {
-        excludedIds.contains(transaction.id)
+        !transaction.recurring
+            && (transaction.excluded || excludedIds.contains(transaction.id))
     }
 
     private func transactionRow(_ transaction: MonthlySpendTransaction) -> some View {
@@ -1197,6 +1324,11 @@ private struct MonthlySpendCategoryDetail: View {
                 Text(transaction.date, format: .dateTime.month(.abbreviated).day())
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
+                    if transaction.recurring {
+                    Text("Recurring · removed from everyday reserve")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(NwAppColors.accent)
+                }
             }
             Spacer()
             NwAmountText(
@@ -1350,7 +1482,14 @@ private actor ProjectionsDataActor {
             let id = usesPlaid ? ($0.canonicalAccountId ?? $0.accountId) : $0.accountId
             overrideMap[id] = $0.included
         }
-        let selectedCash = openCash.filter { overrideMap[$0.id] ?? $0.onBudget }
+        let goalReserveIds = Set(((try? context.fetch(
+            FetchDescriptor<DurableGoalReserveAccount>()
+        )) ?? []).filter(\.active).map(\.canonicalAccountId))
+        let selectedCash = ProjectionCashSelection.selectedAccounts(
+            openCash: openCash,
+            overrideMap: overrideMap,
+            goalReserveIds: goalReserveIds
+        )
         let selectedIds = Set(selectedCash.map(\.id))
 
         let openCards = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCreditCardLike }
@@ -1396,7 +1535,32 @@ private actor ProjectionsDataActor {
                 predicate: #Predicate { !$0.archived }
             )
         )) ?? []).map { $0.toCore() }
-        let scheduledSummaries = expectations.map { $0.toScheduledSummary() }
+        var scheduledSummaries = expectations.map { $0.toScheduledSummary() }
+        // Detected paycheck: confirmed Plaid income history projects future
+        // paydays as exact dated inflows (phase-priced, pool-scoped). A
+        // manual recurring-income expectation for the same payer always
+        // wins; the detection then only reports.
+        var paycheckDetection: PaycheckDetection?
+        var paycheckManualOverridePayee: String?
+        if usesPlaid {
+            let detection = IncomeAnalyzer().detectPaycheck(
+                confirmedTransactions: history,
+                selectedAccountIds: selectedIds,
+                asOf: .now
+            )
+            paycheckDetection = detection
+            if case .detected(let paycheck) = detection {
+                if let manual = IncomeAnalyzer.manualIncomeOverride(
+                    for: paycheck, expectations: expectations
+                ) {
+                    paycheckManualOverridePayee = manual.payeeName
+                } else {
+                    scheduledSummaries.append(contentsOf: paycheck.scheduledSummaries(
+                        asOf: .now, horizonDays: horizonDays
+                    ))
+                }
+            }
+        }
         // Exactly-once is id-based: historical actuals matched to an active
         // expectation are excluded from the ordinary-spending estimate (at
         // their real amounts), and EVERY expectation is exempt from the
@@ -1444,6 +1608,7 @@ private actor ProjectionsDataActor {
             excludedCategoryIds: excludedCategoryIds,
             excludedTransactionIds: Set(transactionExclusions.map(\.transactionId))
                 .union(expectationMatchedIds),
+            recurringMatchedTransactionIds: expectationMatchedIds,
             outflowOnlyExcludedCategoryIds: hiddenInternalCategoryIds,
             spendAccountIds: spendIds,
             lookbackDays: 365,
@@ -1461,7 +1626,29 @@ private actor ProjectionsDataActor {
                 .filter { !$0.deleted && excludedCategoryIds.contains($0.id) }
                 .map(\.name)
                 .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
-            limitedHistory: result.expectedSpend.historyDays < 30
+            limitedHistory: result.expectedSpend.historyDays < 30,
+            paycheckDetection: paycheckDetection,
+            paycheckManualOverridePayee: paycheckManualOverridePayee,
+            hasManualIncome: expectations.contains {
+                $0.treatment == .income && $0.amount.milliunits > 0
+            }
         )
+    }
+}
+
+/// Cash-pool membership for projections. Split out of the actor so the
+/// derived rule — an account actively backing Goals leaves the spendable
+/// pool, and the user's stored override survives untouched for when it
+/// stops backing goals — is unit-testable.
+enum ProjectionCashSelection {
+    static func selectedAccounts(
+        openCash: [AccountSnapshot],
+        overrideMap: [String: Bool],
+        goalReserveIds: Set<String>
+    ) -> [AccountSnapshot] {
+        openCash.filter {
+            !goalReserveIds.contains($0.id)
+                && (overrideMap[$0.id] ?? $0.onBudget)
+        }
     }
 }
