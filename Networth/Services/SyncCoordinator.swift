@@ -1063,6 +1063,53 @@ public final class PlaidTransactionSyncCoordinator {
         case error(String)
     }
 
+    public enum SplitReviewFailure: LocalizedError, Equatable {
+        case transactionUnavailable
+        case transactionPending
+        case needsTwoParts
+        case emptyPart
+        case amountsDoNotBalance
+        case contactUnavailable
+        case goalsUnavailable
+        case invalidType
+        case categoryUnavailable(String)
+        case categoryIncompatible(String)
+        case goalUnavailable
+        case encodingFailed
+        case saveFailed
+
+        public var errorDescription: String? {
+            switch self {
+            case .transactionUnavailable:
+                "This transaction is no longer available."
+            case .transactionPending:
+                "This transaction is still pending and cannot be edited yet."
+            case .needsTwoParts:
+                "A split transaction needs at least two parts."
+            case .emptyPart:
+                "Every split must have an amount."
+            case .amountsDoNotBalance:
+                "The split amounts do not equal the transaction total."
+            case .contactUnavailable:
+                "The selected contact could not be saved."
+            case .goalsUnavailable:
+                "Goals could not be loaded."
+            case .invalidType:
+                "One split has a type that does not match this deposit."
+            case .categoryUnavailable(let name):
+                "The category \"\(name)\" is no longer available."
+            case .categoryIncompatible(let name):
+                "The category \"\(name)\" cannot be used with that transaction type."
+            case .goalUnavailable:
+                "The selected goal is no longer active."
+            case .encodingFailed:
+                "The split details could not be prepared for saving."
+            case .saveFailed:
+                "The transaction could not be saved. Your changes are still on screen."
+            }
+        }
+    }
+
     public private(set) var phase: Phase = .idle
     public private(set) var lastSyncedAt: Date?
     public private(set) var pendingTransactionReviewCount: Int = 0
@@ -2417,6 +2464,14 @@ public final class PlaidTransactionSyncCoordinator {
             mainContext.insert(decision)
         }
         applyCanonicalDecision(decision, to: row)
+        do {
+            try GoalTransferRequestService(
+                context: mainContext
+            ).synchronize(for: row)
+        } catch {
+            mainContext.rollback()
+            return false
+        }
         advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
         applyCurrentCanonicalState()
@@ -2435,20 +2490,24 @@ public final class PlaidTransactionSyncCoordinator {
         displayName: String,
         payeeCanonicalId: String?,
         subtransactions: [SubTransactionSummary]
-    ) -> Bool {
+    ) -> Result<Void, SplitReviewFailure> {
         var descriptor = FetchDescriptor<CachedFinancialTransaction>(
             predicate: #Predicate { $0.id == id }
         )
         descriptor.fetchLimit = 1
-        guard let row = try? mainContext.fetch(descriptor).first,
-              !row.pending,
-              subtransactions.count >= 2,
-              subtransactions.allSatisfy({
-                  !$0.deleted && !$0.amount.isZero
-              }),
-              subtransactions.map(\.amount).sum().milliunits
-                  == row.amountMilliunits else {
-            return false
+        guard let row = try? mainContext.fetch(descriptor).first else {
+            return .failure(.transactionUnavailable)
+        }
+        guard !row.pending else { return .failure(.transactionPending) }
+        guard subtransactions.count >= 2 else {
+            return .failure(.needsTwoParts)
+        }
+        guard subtransactions.allSatisfy({
+            !$0.deleted && !$0.amount.isZero
+        }) else { return .failure(.emptyPart) }
+        guard subtransactions.map(\.amount).sum().milliunits
+                == row.amountMilliunits else {
+            return .failure(.amountsDoNotBalance)
         }
         let cleanedName = displayName.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -2459,12 +2518,12 @@ public final class PlaidTransactionSyncCoordinator {
                 preferredCanonicalId:
                     payeeCanonicalId ?? row.payeeCanonicalId
               ) else {
-            return false
+            return .failure(.contactUnavailable)
         }
         let isIncoming = row.amountMilliunits > 0
         guard let goals = try? mainContext.fetch(
             FetchDescriptor<DurableGoal>()
-        ) else { return false }
+        ) else { return .failure(.goalsUnavailable) }
         let activeGoalIDs = Set(goals.filter {
             !$0.archived && $0.completedAt == nil
         }.map(\.id))
@@ -2474,7 +2533,9 @@ public final class PlaidTransactionSyncCoordinator {
         var canonicalSplits: [SubTransactionSummary] = []
         for split in subtransactions {
             guard let treatment = split.forecastTreatment,
-                  allowedTypes.contains(treatment) else { return false }
+                  allowedTypes.contains(treatment) else {
+                return .failure(.invalidType)
+            }
             let category: DurableCanonicalCategory?
             if TransactionTypeRules.requiresCategory(treatment) {
                 let rawCategoryID = split.categoryCanonicalId
@@ -2486,10 +2547,17 @@ public final class PlaidTransactionSyncCoordinator {
                             : "ynab:\($0)"
                     },
                     name: split.categoryName
-                ), TransactionTypeRules.isValidCombination(
+                ) else {
+                    return .failure(.categoryUnavailable(
+                        split.categoryName ?? "Selected category"
+                    ))
+                }
+                guard TransactionTypeRules.isValidCombination(
                     treatment: treatment,
                     categoryRole: reportingRole(for: resolved)
-                ) else { return false }
+                ) else {
+                    return .failure(.categoryIncompatible(resolved.name))
+                }
                 category = resolved
             } else {
                 category = nil
@@ -2497,7 +2565,9 @@ public final class PlaidTransactionSyncCoordinator {
             let resolvedGoalId: UUID?
             if TransactionTypeRules.requiresGoal(treatment) {
                 guard let goalId = split.goalId,
-                      activeGoalIDs.contains(goalId) else { return false }
+                      activeGoalIDs.contains(goalId) else {
+                    return .failure(.goalUnavailable)
+                }
                 resolvedGoalId = goalId
             } else {
                 resolvedGoalId = nil
@@ -2519,7 +2589,7 @@ public final class PlaidTransactionSyncCoordinator {
         guard let splitData = try? JSONEncoder().encode(
             canonicalSplits
         ) else {
-            return false
+            return .failure(.encodingFailed)
         }
         let distinctTypes = Set(canonicalSplits.compactMap(\.forecastTreatment))
         let treatment = distinctTypes.count == 1
@@ -2551,6 +2621,14 @@ public final class PlaidTransactionSyncCoordinator {
         decision.provenanceRaw = ClassificationProvenance.user.rawValue
         decision.updatedAt = .now
         applyCanonicalDecision(decision, to: row)
+        do {
+            try GoalTransferRequestService(
+                context: mainContext
+            ).synchronize(for: row)
+        } catch {
+            mainContext.rollback()
+            return .failure(.saveFailed)
+        }
         advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
         applyCurrentCanonicalState()
@@ -2558,10 +2636,10 @@ public final class PlaidTransactionSyncCoordinator {
             source: "plaidTransactions.canonicalSplitReview"
         ) else {
             mainContext.rollback()
-            return false
+            return .failure(.saveFailed)
         }
         refreshCanonicalReviewCounts()
-        return true
+        return .success(())
     }
 
     private func resolveOrCreateCanonicalPayee(
@@ -3340,7 +3418,24 @@ public final class PlaidTransactionSyncCoordinator {
         payeeCanonicalId: String? = nil,
         subtransactions: [SubTransactionSummary]
     ) -> Bool {
-        return confirmCanonicalSplitTransaction(
+        switch reviewSplitTransactionResult(
+            id: id,
+            displayName: displayName,
+            payeeCanonicalId: payeeCanonicalId,
+            subtransactions: subtransactions
+        ) {
+        case .success: true
+        case .failure: false
+        }
+    }
+
+    public func reviewSplitTransactionResult(
+        id: String,
+        displayName: String,
+        payeeCanonicalId: String? = nil,
+        subtransactions: [SubTransactionSummary]
+    ) -> Result<Void, SplitReviewFailure> {
+        confirmCanonicalSplitTransaction(
             id: id,
             displayName: displayName,
             payeeCanonicalId: payeeCanonicalId,

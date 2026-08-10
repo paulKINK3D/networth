@@ -2,6 +2,47 @@ import Foundation
 import SwiftData
 import NetworthCore
 
+/// Goal-backed Plaid investments respect explicit duplicate/exclude decisions.
+/// A missing or pending treatment remains eligible because some connected
+/// cash accounts have no editable investment-reconciliation control.
+enum GoalReserveAccountEligibility {
+    static func canBackGoals(_ account: CachedFinancialAccount) -> Bool {
+        switch account.type {
+        case .checking, .savings, .cash:
+            true
+        case .investment:
+            !PlaidRetirementClassifier.isRetirement(
+                subtype: account.subtype
+            )
+        case .creditCard, .loan:
+            false
+        case .other:
+            (account.currentBalanceMilliunits ?? 0) >= 0
+        }
+    }
+
+    static func eligiblePlaidAccounts(
+        _ accounts: [CachedPlaidAccount],
+        treatments: [DurablePlaidAccountTreatment]
+    ) -> [CachedPlaidAccount] {
+        let treatmentById = Dictionary(
+            treatments.map { ($0.plaidAccountId, $0.treatment) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        return accounts.filter { account in
+            guard !PlaidRetirementClassifier.isRetirement(
+                subtype: account.subtype
+            ) else { return false }
+            return switch treatmentById[account.id] {
+            case .duplicateYNAB, .duplicateManualAsset, .excluded:
+                false
+            case .pendingReview, .included, nil:
+                true
+            }
+        }
+    }
+}
+
 /// Resolves one reserve account's conservative balance from either the
 /// source-neutral cash record or the Plaid investments record (taxable
 /// brokerage). Shared by the main-actor service and the off-main build actor,
@@ -30,6 +71,134 @@ enum ReserveBalance {
             return Money(milliunits: max(0, value))
         }
         return nil
+    }
+}
+
+@MainActor
+struct GoalTransferRequestService {
+    let context: ModelContext
+
+    @discardableResult
+    func synchronize(for transaction: CachedFinancialTransaction) throws
+        -> Bool {
+        let reserves = try context.fetch(
+            FetchDescriptor<DurableGoalReserveAccount>()
+        ).filter(\.active)
+        let reserveIds = Set(reserves.map(\.canonicalAccountId))
+        let accountName = try context.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        ).first { $0.canonicalAccountId == transaction.canonicalAccountId }?.name
+            ?? transaction.canonicalAccountId
+        let transactionAccount = try context.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        ).first { $0.canonicalAccountId == transaction.canonicalAccountId }
+        let knownCashflowId = transactionAccount?.type.isCashLike == true
+            ? transaction.canonicalAccountId : ""
+        let existing = try context.fetch(
+            FetchDescriptor<DurableGoalTransferRequest>()
+        ).filter { $0.transactionId == transaction.id }
+
+        struct Desired {
+            let key: String
+            let goalId: UUID
+            let direction: GoalTransferDirection
+            let amount: Int64
+        }
+        var desired: [Desired] = []
+        if !reserveIds.contains(transaction.canonicalAccountId) {
+            let legs = transaction.subtransactions.filter { !$0.deleted }
+            if !legs.isEmpty {
+                desired = legs.compactMap { leg in
+                    guard let goalId = leg.goalId,
+                          let type = leg.forecastTreatment else { return nil }
+                    let direction: GoalTransferDirection
+                    switch type {
+                    case .goalSpend: direction = .fundSpend
+                    case .goalRefund: direction = .returnRefund
+                    default: return nil
+                    }
+                    return Desired(
+                        key: "\(transaction.id)|\(leg.id)",
+                        goalId: goalId,
+                        direction: direction,
+                        amount: Swift.abs(leg.amount.milliunits)
+                    )
+                }
+            } else if let goalId = transaction.goalId {
+                let direction: GoalTransferDirection?
+                switch transaction.forecastTreatment {
+                case .goalSpend: direction = .fundSpend
+                case .goalRefund: direction = .returnRefund
+                default: direction = nil
+                }
+                if let direction {
+                    desired = [Desired(
+                        key: transaction.id,
+                        goalId: goalId,
+                        direction: direction,
+                        amount: Swift.abs(transaction.amountMilliunits)
+                    )]
+                }
+            }
+        }
+
+        let desiredKeys = Set(desired.map(\.key))
+        var changed = false
+        for request in existing where request.active
+            && !desiredKeys.contains(request.attributionKey) {
+            request.active = false
+            request.updatedAt = .now
+            changed = true
+        }
+        for item in desired {
+            if let request = existing.first(where: {
+                $0.attributionKey == item.key
+            }) {
+                if !request.active {
+                    request.active = true
+                    request.completedAt = nil
+                    request.matchedTransactionId = nil
+                    changed = true
+                }
+                if request.goalId != item.goalId
+                    || request.direction != item.direction
+                    || request.amountMilliunits != item.amount
+                    || request.transactionAccountId
+                        != transaction.canonicalAccountId {
+                    request.goalId = item.goalId
+                    request.direction = item.direction
+                    request.amountMilliunits = item.amount
+                    request.transactionAccountId = transaction.canonicalAccountId
+                    request.transactionAccountName = accountName
+                    request.cashflowAccountId = knownCashflowId
+                    request.cashflowAccountName = knownCashflowId.isEmpty
+                        ? "" : accountName
+                    request.goalAccountId = nil
+                    request.goalAccountName = nil
+                    request.completedAt = nil
+                    request.matchedTransactionId = nil
+                    request.updatedAt = .now
+                    changed = true
+                }
+            } else {
+                context.insert(DurableGoalTransferRequest(
+                    attributionKey: item.key,
+                    transactionId: transaction.id,
+                    transactionExternalId: transaction.externalId,
+                    transactionDate: transaction.postedDate,
+                    goalId: item.goalId,
+                    direction: item.direction,
+                    amountMilliunits: item.amount,
+                    transactionAccountId: transaction.canonicalAccountId,
+                    transactionAccountName: accountName,
+                    cashflowAccountId: knownCashflowId,
+                    cashflowAccountName: knownCashflowId.isEmpty
+                        ? "" : accountName
+                ))
+                changed = true
+            }
+        }
+        return changed
     }
 }
 
@@ -151,6 +320,7 @@ struct GoalLedgerService {
         case poolInShortfall
         case remainderNeedsDisposition(Money)
         case transferTargetInactive
+        case accountCannotBackGoals
 
         var errorDescription: String? {
             switch self {
@@ -168,6 +338,8 @@ struct GoalLedgerService {
                 "This goal still holds \(CurrencyFormatter.currency(balance)). Release it or move it to another goal first."
             case .transferTargetInactive:
                 "The receiving goal is archived or completed."
+            case .accountCannotBackGoals:
+                "Only asset accounts can back goals."
             }
         }
     }
@@ -213,22 +385,38 @@ struct GoalLedgerService {
         guard !reserves.isEmpty else { return .zero }
         let financialById = Dictionary(
             try context.fetch(FetchDescriptor<CachedFinancialAccount>())
+                .filter(GoalReserveAccountEligibility.canBackGoals)
                 .map { ($0.canonicalAccountId, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         let plaidById = Dictionary(
-            try context.fetch(FetchDescriptor<CachedPlaidAccount>())
+            try eligiblePlaidReserveAccounts()
                 .map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        let total = reserves.reduce(Int64(0)) { sum, reserve in
+        let liveTotal = reserves.reduce(Int64(0)) { sum, reserve in
             sum + (ReserveBalance.conservative(
                 canonicalAccountId: reserve.canonicalAccountId,
                 financialById: financialById,
                 plaidById: plaidById
             )?.milliunits ?? 0)
         }
-        return Money(milliunits: total)
+        let pendingAdjustment = try context.fetch(
+            FetchDescriptor<DurableGoalTransferRequest>()
+        ).filter {
+            $0.active && $0.completedAt == nil
+        }.map(\.pendingPoolAdjustment).sum().milliunits
+        return Money(milliunits: max(0, liveTotal + pendingAdjustment))
+    }
+
+    private func eligiblePlaidReserveAccounts() throws
+        -> [CachedPlaidAccount] {
+        GoalReserveAccountEligibility.eligiblePlaidAccounts(
+            try context.fetch(FetchDescriptor<CachedPlaidAccount>()),
+            treatments: try context.fetch(
+                FetchDescriptor<DurablePlaidAccountTreatment>()
+            )
+        )
     }
 
     func poolSummary() throws -> ReservePoolSummary {
@@ -544,6 +732,9 @@ struct GoalLedgerService {
     // MARK: - Reserve accounts and suggestions
 
     func addReserveAccount(_ account: CachedFinancialAccount) throws {
+        guard GoalReserveAccountEligibility.canBackGoals(account) else {
+            throw Failure.accountCannotBackGoals
+        }
         try addReserveAccount(
             canonicalAccountId: account.canonicalAccountId,
             accountName: account.name,

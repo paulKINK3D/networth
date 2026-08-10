@@ -59,6 +59,7 @@ public enum ModelContainerFactory {
             DurableGoal.self,
             DurableGoalLedgerEntry.self,
             DurableGoalReserveAccount.self,
+            DurableGoalTransferRequest.self,
         ])
 
         let cacheConfig = ModelConfiguration(
@@ -130,6 +131,7 @@ public enum ModelContainerFactory {
             DurableGoal.self,
             DurableGoalLedgerEntry.self,
             DurableGoalReserveAccount.self,
+            DurableGoalTransferRequest.self,
         ])
         return try ModelContainer(for: unified, configurations: [cacheConfig, durableConfig])
     }

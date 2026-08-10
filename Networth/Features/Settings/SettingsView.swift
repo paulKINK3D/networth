@@ -2992,7 +2992,22 @@ struct PlaidTransactionReviewEditor: View {
             // Show exactly what's stored. A part with no explicit choice and
             // no recognizable name stays UNSET — silently prefilling it as
             // Reimbursement converted income on the next save.
-            let splitTreatment = $0.forecastTreatment
+            let isLegacySyntheticReimbursement =
+                $0.forecastTreatment == .refund
+                && $0.categoryId == nil
+                && $0.categoryCanonicalId == nil
+                && $0.categoryName?.localizedCaseInsensitiveCompare(
+                    "Reimbursement"
+                ) == .orderedSame
+            // Before Reimbursement became its own transaction type, incoming
+            // reimbursement legs were persisted as Refund plus a synthetic
+            // category label and no category identity. Treat that exact old
+            // shape as Reimbursement so editing a different leg remains
+            // saveable and preserves the original meaning.
+            let splitTreatment: TransactionType? =
+                isLegacySyntheticReimbursement
+                    ? .reimbursement
+                    : $0.forecastTreatment
             return PlaidSplitDraft(
                 persistedID: $0.id,
                 categoryID: $0.categoryId,
@@ -3068,8 +3083,24 @@ struct PlaidTransactionReviewEditor: View {
                     NwIcon.confirm.image.foregroundStyle(NwAppColors.positive)
                 }
                 .accessibilityLabel("Save")
-                .disabled(!canSaveReview)
+                // Split validation explains an invalid draft when tapped.
+                // Non-split reviews retain their normal disabled state until
+                // every required selection is present.
+                .disabled(!isSplit && !canSaveReview)
             }
+        }
+        .alert(
+            "Couldn't Save Transaction",
+            isPresented: Binding(
+                get: { splitSaveError != nil },
+                set: { presented in
+                    if !presented { splitSaveError = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(splitSaveError ?? "Check the transaction and try again.")
         }
     }
 
@@ -3688,7 +3719,7 @@ struct PlaidTransactionReviewEditor: View {
                 && reviewedSplitTransactions != nil
         }
         return payeeCanonicalId != nil
-            && (treatment != .unknown)
+            && treatment != .unknown
             && (!TransactionTypeRules.requiresGoal(treatment)
                 || goalId != nil)
             && (!treatment.requiresCategory
@@ -3742,21 +3773,22 @@ struct PlaidTransactionReviewEditor: View {
         let cleanedName = displayName.trimmed.isEmpty
             ? transaction.rawDescription
             : displayName.trimmed
+        splitSaveError = nil
         if isSplit {
             guard let splitTransactions = reviewedSplitTransactions else {
-                splitSaveError = isIncomingSplit
-                    ? "Choose Income or Reimbursement for at least two amounts that equal the transaction total."
-                    : "Choose at least two categories whose amounts equal the transaction total."
+                splitSaveError = "Complete every split with an amount and "
+                    + "type, select a category or goal when required, and "
+                    + "make sure the amounts equal the transaction total."
                 return
             }
-            guard container.reviewPlaidSplitTransaction(
+            let result = container.reviewPlaidSplitTransactionResult(
                 id: selectedSplitTransaction.id,
                 displayName: cleanedName,
                 payeeCanonicalId: payeeCanonicalId,
                 subtransactions: splitTransactions
-            ) else {
-                splitSaveError =
-                    "The split could not be saved. Check the categories and amounts, then try again."
+            )
+            if case .failure(let failure) = result {
+                splitSaveError = failure.localizedDescription
                 return
             }
         } else {

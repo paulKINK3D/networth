@@ -1304,6 +1304,77 @@ public final class DurableGoalReserveAccount {
     }
 }
 
+public enum GoalTransferDirection: String, Codable, Sendable {
+    case fundSpend
+    case returnRefund
+}
+
+/// A Goal Spend/Refund made through a non-goal cashflow account. While this
+/// request is open, its signed amount adjusts the usable goal pool so the
+/// residual goal cannot absorb money that still needs to move between real
+/// accounts. Every field has a default for additive CloudKit compatibility.
+@Model
+public final class DurableGoalTransferRequest {
+    public var id: UUID = UUID()
+    public var attributionKey: String = ""
+    public var transactionId: String = ""
+    public var transactionExternalId: String = ""
+    public var transactionDate: Date = Date.now
+    public var goalId: UUID = UUID()
+    public var directionRaw: String = GoalTransferDirection.fundSpend.rawValue
+    public var amountMilliunits: Int64 = 0
+    public var transactionAccountId: String = ""
+    public var transactionAccountName: String = ""
+    public var cashflowAccountId: String = ""
+    public var cashflowAccountName: String = ""
+    public var goalAccountId: String? = nil
+    public var goalAccountName: String? = nil
+    public var matchedTransactionId: String? = nil
+    public var active: Bool = true
+    public var completedAt: Date? = nil
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        attributionKey: String = "",
+        transactionId: String = "",
+        transactionExternalId: String = "",
+        transactionDate: Date = .now,
+        goalId: UUID = UUID(),
+        direction: GoalTransferDirection = .fundSpend,
+        amountMilliunits: Int64 = 0,
+        transactionAccountId: String = "",
+        transactionAccountName: String = "",
+        cashflowAccountId: String = "",
+        cashflowAccountName: String = ""
+    ) {
+        self.id = id
+        self.attributionKey = attributionKey
+        self.transactionId = transactionId
+        self.transactionExternalId = transactionExternalId
+        self.transactionDate = transactionDate
+        self.goalId = goalId
+        self.directionRaw = direction.rawValue
+        self.amountMilliunits = amountMilliunits
+        self.transactionAccountId = transactionAccountId
+        self.transactionAccountName = transactionAccountName
+        self.cashflowAccountId = cashflowAccountId
+        self.cashflowAccountName = cashflowAccountName
+    }
+
+    public var direction: GoalTransferDirection {
+        get { GoalTransferDirection(rawValue: directionRaw) ?? .fundSpend }
+        set { directionRaw = newValue.rawValue }
+    }
+
+    public var pendingPoolAdjustment: Money {
+        let magnitude = Swift.abs(amountMilliunits)
+        return Money(milliunits: direction == .fundSpend
+            ? -magnitude : magnitude)
+    }
+}
+
 
 /// A user-confirmed fixed commitment for the monthly Budget. Confirmation is
 /// always explicit; detection only proposes candidates. Confirmed items stay

@@ -339,6 +339,20 @@ public final class AppContainerController {
         )
     }
 
+    public func reviewPlaidSplitTransactionResult(
+        id: String,
+        displayName: String,
+        payeeCanonicalId: String? = nil,
+        subtransactions: [SubTransactionSummary]
+    ) -> Result<Void, PlaidTransactionSyncCoordinator.SplitReviewFailure> {
+        plaidTransactionSyncCoordinator.reviewSplitTransactionResult(
+            id: id,
+            displayName: displayName,
+            payeeCanonicalId: payeeCanonicalId,
+            subtransactions: subtransactions
+        )
+    }
+
     @discardableResult
     public func createCanonicalPayee(name: String) -> Bool {
         plaidTransactionSyncCoordinator.createCanonicalPayee(name: name)

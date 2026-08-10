@@ -401,6 +401,7 @@ struct GoalReservePickerSheet: View {
     @SwiftUI.Environment(\.modelContext) private var context
     @Query private var accounts: [CachedFinancialAccount]
     @Query private var plaidAccounts: [CachedPlaidAccount]
+    @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
     @Query private var reserveRows: [DurableGoalReserveAccount]
     let model: GoalsModel?
 
@@ -408,10 +409,15 @@ struct GoalReservePickerSheet: View {
 
     /// Investment accounts use the dedicated Plaid investments cache.
     private var eligibleInvestmentAccounts: [CachedPlaidAccount] {
-        return plaidAccounts
+        GoalReserveAccountEligibility.eligiblePlaidAccounts(
+            plaidAccounts,
+            treatments: plaidTreatments
+        )
             .filter {
-                return $0.currentBalanceMilliunits != nil
-                    && ($0.isoCurrencyCode ?? "USD") == "USD"
+                if activeReserveIds.contains($0.id) { return true }
+                guard let balance = $0.currentBalanceMilliunits,
+                      balance != 0 else { return false }
+                return ($0.isoCurrencyCode ?? "USD") == "USD"
             }
             .sorted {
                 ($0.currentBalanceMilliunits ?? 0)
@@ -419,11 +425,12 @@ struct GoalReservePickerSheet: View {
             }
     }
 
-    /// Account type never decides whether money is for goals. The user does.
+    /// Any connected asset account can back goals; debts never can.
     private var eligibleAccounts: [CachedFinancialAccount] {
         accounts
             .filter {
-                !$0.deleted && $0.currentBalanceMilliunits != nil
+                GoalReserveAccountEligibility.canBackGoals($0)
+                    && !$0.deleted && $0.currentBalanceMilliunits != nil
                     && ($0.isoCurrencyCode ?? "USD") == "USD"
             }
             .sorted {
@@ -592,7 +599,7 @@ struct GoalReservePickerSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(reserve.displayName)
                         .font(NwTypography.body)
-                    Text("Disconnected · counted as $0")
+                    Text("Unavailable · counted as $0")
                         .font(NwTypography.caption)
                         .foregroundStyle(NwAppColors.caution)
                 }
@@ -901,5 +908,278 @@ struct GoalAllocateSheet: View {
         } catch {
             failure = error.localizedDescription
         }
+    }
+}
+
+// MARK: - Pending goal transfers
+
+struct GoalTransferRequestCard: View {
+    let transfer: GoalsModel.PendingTransferItem
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            NwCard(style: .secondary) {
+                HStack(spacing: NwSpacing.md) {
+                    NwIcon.warning.image
+                        .foregroundStyle(NwAppColors.caution)
+                    Text("Transfer needed")
+                        .font(NwTypography.headline)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                    Spacer()
+                    NwAmountText(
+                        transfer.amount,
+                        variant: .body,
+                        showCents: false,
+                        color: NwAppColors.caution
+                    )
+                    NwIcon.chevron.image.foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct GoalTransferRequestSheet: View {
+    @SwiftUI.Environment(\.modelContext) private var context
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @Query private var requests: [DurableGoalTransferRequest]
+    @Query private var reserves: [DurableGoalReserveAccount]
+    @Query private var transactions: [CachedFinancialTransaction]
+    @Query private var financialAccounts: [CachedFinancialAccount]
+    let requestId: UUID
+
+    @State private var matchCandidateId: String?
+    @State private var editingOriginal = false
+    @State private var failure: String?
+
+    private var request: DurableGoalTransferRequest? {
+        requests.first { $0.id == requestId && $0.active }
+    }
+
+    private var activeReserves: [DurableGoalReserveAccount] {
+        reserves.filter(\.active).sorted {
+            $0.accountName.localizedCaseInsensitiveCompare($1.accountName)
+                == .orderedAscending
+        }
+    }
+
+    private var candidates: [CachedFinancialTransaction] {
+        guard let request, !request.cashflowAccountId.isEmpty else {
+            return []
+        }
+        let expected = request.direction == .fundSpend
+            ? request.amountMilliunits : -request.amountMilliunits
+        return transactions.filter {
+            !$0.deleted && !$0.pending
+                && $0.id != request.transactionId
+                && $0.canonicalAccountId == request.cashflowAccountId
+                && $0.amountMilliunits == expected
+                && $0.postedDate >= request.transactionDate
+        }.sorted { $0.postedDate > $1.postedDate }
+    }
+
+    private var cashflowAccounts: [CachedFinancialAccount] {
+        financialAccounts.filter {
+            !$0.deleted && $0.type.isCashLike
+                && $0.currentBalanceMilliunits != nil
+                && ($0.isoCurrencyCode ?? "USD") == "USD"
+        }.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name)
+                == .orderedAscending
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let request {
+                    Section("Transfer") {
+                        LabeledContent("Amount") {
+                            NwAmountText(
+                                Money(milliunits: request.amountMilliunits),
+                                variant: .body,
+                                showCents: true
+                            )
+                        }
+                        LabeledContent(
+                            "Purchase account",
+                            value: request.transactionAccountName
+                        )
+                    }
+                    Section("Accounts") {
+                        Picker(
+                            request.direction == .fundSpend
+                                ? "Transfer from" : "Transfer into",
+                            selection: goalAccountBinding(request)
+                        ) {
+                            Text("Select Account").tag(String?.none)
+                            ForEach(activeReserves) { reserve in
+                                Text(reserve.accountName)
+                                    .tag(String?.some(
+                                        reserve.canonicalAccountId
+                                    ))
+                            }
+                        }
+                        Picker(
+                            request.direction == .fundSpend
+                                ? "Transfer into" : "Transfer from",
+                            selection: cashflowAccountBinding(request)
+                        ) {
+                            Text("Select Account").tag(String?.none)
+                            ForEach(cashflowAccounts) { account in
+                                Text(account.name).tag(String?.some(
+                                    account.canonicalAccountId
+                                ))
+                            }
+                        }
+                    }
+                    if request.goalAccountId != nil
+                        && !request.cashflowAccountId.isEmpty {
+                        Section {
+                            if candidates.isEmpty {
+                                Text("No exact transfer has arrived yet.")
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(candidates) { candidate in
+                                    Button {
+                                        matchCandidateId = candidate.id
+                                    } label: {
+                                        LabeledContent(
+                                            candidate.postedDate.formatted(
+                                                date: .abbreviated,
+                                                time: .omitted
+                                            )
+                                        ) {
+                                            NwAmountText(
+                                                Money(milliunits:
+                                                    candidate.amountMilliunits
+                                                ).absolute,
+                                                variant: .body,
+                                                showCents: true
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("Plaid matches")
+                        } footer: {
+                            Text("A match is never accepted automatically.")
+                        }
+                    }
+                    Section {
+                        Button("Change Transaction Type") {
+                            editingOriginal = true
+                        }
+                    } footer: {
+                        Text("Open the original transaction from its account "
+                             + "history to change its type.")
+                    }
+                }
+                if let failure {
+                    Section {
+                        NwInlineNotice(
+                            "Can't save", message: failure, tone: .caution
+                        )
+                    }
+                }
+            }
+            .navigationTitle("Pending Transfer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { dismiss() } label: {
+                        NwIcon.close.image
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                }
+            }
+            .alert(
+                "Confirm Plaid Match?",
+                isPresented: Binding(
+                    get: { matchCandidateId != nil },
+                    set: { if !$0 { matchCandidateId = nil } }
+                )
+            ) {
+                Button("Cancel", role: .cancel) {
+                    matchCandidateId = nil
+                }
+                Button("Confirm") { confirmMatch() }
+            } message: {
+                Text("Confirm that this is the internal transfer you made.")
+            }
+            .sheet(isPresented: $editingOriginal) {
+                if let original = transactions.first(where: {
+                    $0.id == request?.transactionId
+                }) {
+                    NavigationStack {
+                        PlaidTransactionReviewEditor(
+                            transaction: original,
+                            matchingTransactions: [original],
+                            dismissAfterSave: true,
+                            onSaved: { dismiss() }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func goalAccountBinding(
+        _ request: DurableGoalTransferRequest
+    ) -> Binding<String?> {
+        Binding(
+            get: { request.goalAccountId },
+            set: { accountId in
+                request.goalAccountId = accountId
+                request.goalAccountName = activeReserves.first {
+                    $0.canonicalAccountId == accountId
+                }?.accountName
+                request.updatedAt = .now
+                save(source: "goals.transferSource")
+            }
+        )
+    }
+
+    private func cashflowAccountBinding(
+        _ request: DurableGoalTransferRequest
+    ) -> Binding<String?> {
+        Binding(
+            get: {
+                request.cashflowAccountId.isEmpty
+                    ? nil : request.cashflowAccountId
+            },
+            set: { accountId in
+                request.cashflowAccountId = accountId ?? ""
+                request.cashflowAccountName = cashflowAccounts.first {
+                    $0.canonicalAccountId == accountId
+                }?.name ?? ""
+                request.updatedAt = .now
+                save(source: "goals.transferCashflowAccount")
+            }
+        )
+    }
+
+    private func confirmMatch() {
+        guard let request, let matchCandidateId else { return }
+        request.matchedTransactionId = matchCandidateId
+        request.completedAt = .now
+        request.updatedAt = .now
+        if save(source: "goals.transferMatch") { dismiss() }
+    }
+
+    @discardableResult
+    private func save(source: String) -> Bool {
+        if context.safeSave(source: source) {
+            failure = nil
+            return true
+        }
+        context.rollback()
+        failure = "The transfer could not be saved."
+        return false
     }
 }

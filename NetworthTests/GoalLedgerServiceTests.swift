@@ -104,6 +104,12 @@ struct GoalLedgerServiceTests {
         context.insert(DurableGoalReserveAccount(
             canonicalAccountId: "acct-1", accountName: "Savings"
         ))
+        context.insert(DurableGoalTransferRequest(
+            attributionKey: "transaction-1",
+            transactionId: "transaction-1",
+            goalId: goal.id,
+            amountMilliunits: 5_000
+        ))
         try context.save()
         #expect(try context.fetchCount(
             FetchDescriptor<DurableGoal>()
@@ -114,6 +120,9 @@ struct GoalLedgerServiceTests {
         #expect(try context.fetchCount(
             FetchDescriptor<DurableGoalReserveAccount>()
         ) == 1)
+        #expect(try context.fetchCount(
+            FetchDescriptor<DurableGoalTransferRequest>()
+        ) == 1)
     }
 
     // MARK: - Investment-backed reserve
@@ -122,7 +131,7 @@ struct GoalLedgerServiceTests {
         let context = try makeContext()
         _ = insertSavingsAccount(context, balance: 500_000)
         // A taxable brokerage lives only on the Plaid investments path.
-        context.insert(CachedPlaidAccount(
+        let brokerage = CachedPlaidAccount(
             id: "plaid-brokerage-1",
             itemId: "item-1",
             institutionName: "Fidelity",
@@ -132,6 +141,11 @@ struct GoalLedgerServiceTests {
             subtype: "brokerage",
             currentBalanceMilliunits: 100_000_000,
             isoCurrencyCode: "USD"
+        )
+        context.insert(brokerage)
+        context.insert(DurablePlaidAccountTreatment(
+            plaidAccountId: brokerage.id,
+            treatment: .included
         ))
         try context.save()
         let service = GoalLedgerService(context: context)
@@ -160,6 +174,135 @@ struct GoalLedgerServiceTests {
         )
         #expect(try service.poolSummary().unallocated
             == Money(milliunits: 50_500_000))
+    }
+
+    @Test func excludedInvestmentIsNotCountedAsAGoalAccount() async throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let account = CachedPlaidAccount(
+            id: "excluded-ira",
+            itemId: "item-1",
+            institutionName: "Vanguard",
+            name: "IRA",
+            mask: "0000",
+            typeRaw: "investment",
+            subtype: "ira",
+            currentBalanceMilliunits: 25_000_000,
+            isoCurrencyCode: "USD"
+        )
+        context.insert(account)
+        context.insert(DurablePlaidAccountTreatment(
+            plaidAccountId: account.id,
+            treatment: .excluded
+        ))
+        context.insert(DurableGoalReserveAccount(
+            canonicalAccountId: account.id,
+            accountName: account.name,
+            institutionName: account.institutionName,
+            mask: account.mask ?? ""
+        ))
+        try context.save()
+
+        let service = GoalLedgerService(context: context)
+        #expect(try service.reservePoolBalance() == .zero)
+
+        let model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        #expect(model.pool.pool == .zero)
+        #expect(model.unavailableReserves.map(\.canonicalAccountId)
+            == [account.id])
+    }
+
+    @Test func connectedCashAccountWithoutEditableTreatmentStillCounts() throws {
+        let context = try makeContext()
+        let account = CachedPlaidAccount(
+            id: "cash-plus",
+            itemId: "item-1",
+            institutionName: "Vanguard",
+            name: "Cash Plus",
+            mask: "8778",
+            typeRaw: "investment",
+            subtype: "cash management",
+            currentBalanceMilliunits: 136_993_000,
+            isoCurrencyCode: "USD"
+        )
+        context.insert(account)
+        context.insert(DurableGoalReserveAccount(
+            canonicalAccountId: account.id,
+            accountName: account.name,
+            institutionName: account.institutionName,
+            mask: account.mask ?? ""
+        ))
+        try context.save()
+
+        #expect(try GoalLedgerService(context: context).reservePoolBalance()
+            == Money(milliunits: 136_993_000))
+    }
+
+    @Test func debtAccountsCannotBackGoals() throws {
+        let context = try makeContext()
+        let card = CachedFinancialAccount(
+            canonicalAccountId: "credit-card",
+            externalId: "credit-card",
+            itemId: "item-1",
+            source: .plaid,
+            institutionName: "Test Bank",
+            name: "Credit Card",
+            officialName: nil,
+            mask: "1234",
+            type: .creditCard,
+            subtype: nil,
+            currentBalanceMilliunits: -1_000_000,
+            availableBalanceMilliunits: nil,
+            creditLimitMilliunits: 10_000_000,
+            isoCurrencyCode: "USD"
+        )
+        context.insert(card)
+        context.insert(DurableGoalReserveAccount(
+            canonicalAccountId: card.canonicalAccountId,
+            accountName: card.name
+        ))
+        try context.save()
+
+        let service = GoalLedgerService(context: context)
+        #expect(throws: GoalLedgerService.Failure.self) {
+            try service.addReserveAccount(card)
+        }
+        #expect(try service.reservePoolBalance() == .zero)
+    }
+
+    @Test func retirementAccountsCannotBackGoals() throws {
+        let context = try makeContext()
+        let ira = CachedPlaidAccount(
+            id: "ira",
+            itemId: "item-1",
+            institutionName: "Vanguard",
+            name: "IRA",
+            typeRaw: "investment",
+            subtype: "ira",
+            currentBalanceMilliunits: 100_000_000,
+            isoCurrencyCode: "USD"
+        )
+        context.insert(ira)
+        context.insert(DurablePlaidAccountTreatment(
+            plaidAccountId: ira.id,
+            treatment: .included
+        ))
+        context.insert(DurableGoalReserveAccount(
+            canonicalAccountId: ira.id,
+            accountName: ira.name
+        ))
+        try context.save()
+
+        #expect(GoalReserveAccountEligibility.eligiblePlaidAccounts(
+            [ira],
+            treatments: try context.fetch(
+                FetchDescriptor<DurablePlaidAccountTreatment>()
+            )
+        ).isEmpty)
+        #expect(try GoalLedgerService(context: context).reservePoolBalance()
+            == .zero)
     }
 
     // MARK: - Allocation invariants
@@ -203,6 +346,54 @@ struct GoalLedgerServiceTests {
         #expect(model.activeGoals.first {
             $0.goalUUID == investments.id
         }?.balance == Money(milliunits: 950_000))
+    }
+
+    @Test func movingMoneyAgainstResidualAdjustsOnlySelectedGoal() async throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let account = insertSavingsAccount(context, balance: 1_000_000)
+        let service = GoalLedgerService(context: context)
+        try service.addReserveAccount(account)
+        let emergency = try service.createGoal(
+            name: "Emergency", kind: .refillable
+        )
+        let remainder = try service.createGoal(
+            name: "Down Payment", kind: .oneTime
+        )
+        try service.applyAllocations(
+            [emergency.id: Money(milliunits: 300_000)],
+            residualGoalId: remainder.id
+        )
+
+        try service.moveBetweenGoals(
+            from: remainder,
+            to: emergency,
+            amount: Money(milliunits: 100_000)
+        )
+        var model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        #expect(model.activeGoals.first {
+            $0.goalUUID == emergency.id
+        }?.balance == Money(milliunits: 400_000))
+        #expect(model.activeGoals.first {
+            $0.goalUUID == remainder.id
+        }?.balance == Money(milliunits: 600_000))
+
+        try service.moveBetweenGoals(
+            from: emergency,
+            to: remainder,
+            amount: Money(milliunits: 50_000)
+        )
+        model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        #expect(model.activeGoals.first {
+            $0.goalUUID == emergency.id
+        }?.balance == Money(milliunits: 350_000))
+        #expect(model.activeGoals.first {
+            $0.goalUUID == remainder.id
+        }?.balance == Money(milliunits: 650_000))
     }
 
     @Test func allocationsRespectUnallocatedPool() throws {
@@ -405,6 +596,139 @@ struct GoalLedgerServiceTests {
             $0.goalUUID == goal.id
         })
         #expect(item.balance == Money(milliunits: 8_000_000))
+    }
+
+    @Test func pendingGoalSpendDoesNotFlowIntoResidualGoal() async throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let reserve = insertSavingsAccount(
+            context,
+            canonicalId: "goal-savings",
+            balance: 1_000_000
+        )
+        let service = GoalLedgerService(context: context)
+        try service.addReserveAccount(reserve)
+        let travel = try service.createGoal(name: "Travel", kind: .refillable)
+        let remainder = try service.createGoal(
+            name: "Remainder", kind: .refillable
+        )
+        try service.applyAllocations(
+            [travel.id: Money(milliunits: 300_000)],
+            residualGoalId: remainder.id
+        )
+        let spend = insertTransaction(
+            context,
+            id: "goal-spend-pending-transfer",
+            externalId: "goal-spend-pending-transfer",
+            accountId: "acct-checking",
+            amountMilliunits: -100_000,
+            treatment: .goalSpend
+        )
+        spend.goalId = travel.id
+        try context.save()
+        try GoalTransferRequestService(context: context).synchronize(for: spend)
+        try context.save()
+
+        let model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        #expect(model.activeGoals.first {
+            $0.goalUUID == travel.id
+        }?.balance == Money(milliunits: 200_000))
+        #expect(model.activeGoals.first {
+            $0.goalUUID == remainder.id
+        }?.balance == Money(milliunits: 700_000))
+        #expect(model.pendingTransfers.count == 1)
+        #expect(model.pendingTransferAdjustment
+            == Money(milliunits: -100_000))
+        #expect(try service.reservePoolBalance()
+            == Money(milliunits: 900_000))
+    }
+
+    @Test func goalRefundCreatesReversePendingAdjustment() throws {
+        let context = try makeContext()
+        let goal = DurableGoal(name: "Emergency", kind: .refillable)
+        context.insert(goal)
+        let refund = insertTransaction(
+            context,
+            id: "goal-refund-pending-transfer",
+            externalId: "goal-refund-pending-transfer",
+            amountMilliunits: 125_000,
+            treatment: .goalRefund
+        )
+        refund.goalId = goal.id
+        try context.save()
+
+        try GoalTransferRequestService(context: context)
+            .synchronize(for: refund)
+        try context.save()
+
+        let request = try #require(context.fetch(
+            FetchDescriptor<DurableGoalTransferRequest>()
+        ).first)
+        #expect(request.direction == .returnRefund)
+        #expect(request.pendingPoolAdjustment == Money(milliunits: 125_000))
+    }
+
+    @Test func spendingFromGoalAccountNeedsNoTransferRequest() throws {
+        let context = try makeContext()
+        let reserve = insertSavingsAccount(
+            context,
+            canonicalId: "goal-savings",
+            balance: 1_000_000
+        )
+        let goal = DurableGoal(name: "Travel", kind: .refillable)
+        context.insert(goal)
+        context.insert(DurableGoalReserveAccount(
+            canonicalAccountId: reserve.canonicalAccountId,
+            accountName: reserve.name
+        ))
+        let spend = insertTransaction(
+            context,
+            id: "direct-goal-spend",
+            externalId: "direct-goal-spend",
+            accountId: reserve.canonicalAccountId,
+            amountMilliunits: -75_000,
+            treatment: .goalSpend
+        )
+        spend.goalId = goal.id
+        try context.save()
+
+        try GoalTransferRequestService(context: context)
+            .synchronize(for: spend)
+        try context.save()
+
+        #expect(try context.fetchCount(
+            FetchDescriptor<DurableGoalTransferRequest>()
+        ) == 0)
+    }
+
+    @Test func changingGoalSpendTypeDeactivatesPendingRequest() throws {
+        let context = try makeContext()
+        let goal = DurableGoal(name: "Travel", kind: .refillable)
+        context.insert(goal)
+        let spend = insertTransaction(
+            context,
+            id: "reclassified-goal-spend",
+            externalId: "reclassified-goal-spend",
+            amountMilliunits: -100_000,
+            treatment: .goalSpend
+        )
+        spend.goalId = goal.id
+        try context.save()
+        let service = GoalTransferRequestService(context: context)
+        try service.synchronize(for: spend)
+        try context.save()
+
+        spend.forecastTreatmentRaw = TransactionType.ordinarySpending.rawValue
+        spend.goalId = nil
+        try service.synchronize(for: spend)
+        try context.save()
+
+        let request = try #require(context.fetch(
+            FetchDescriptor<DurableGoalTransferRequest>()
+        ).first)
+        #expect(!request.active)
     }
 
     // MARK: - Derived projection exclusion

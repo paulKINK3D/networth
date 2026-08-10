@@ -21,6 +21,7 @@ struct GoalsView: View {
     @State private var detailGoalId: UUID?
     @State private var showingReservePicker = false
     @State private var showingAllocate = false
+    @State private var transferRequestId: UUID?
 
     var body: some View {
         NavigationStack {
@@ -101,6 +102,10 @@ struct GoalsView: View {
             )
             .environment(container)
         }
+        .sheet(item: $transferRequestId) { requestId in
+            GoalTransferRequestSheet(requestId: requestId)
+                .environment(container)
+        }
     }
 
     // MARK: - Empty state
@@ -131,11 +136,10 @@ struct GoalsView: View {
     private func reserveCard(_ model: GoalsModel) -> some View {
         NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Goal Accounts")
+                VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                    Text("Available for Goals")
                         .font(NwTypography.headline)
                         .foregroundStyle(NwAppColors.textPrimary)
-                    Spacer()
                     NwAmountText(
                         model.pool.pool, variant: .large, showCents: false
                     )
@@ -162,8 +166,8 @@ struct GoalsView: View {
                 ForEach(model.unavailableReserves) { reserve in
                     NwInlineNotice(
                         "\(reserve.displayName) unavailable",
-                        message: "This account is disconnected; it counts "
-                            + "as $0 until you re-attach or remove it.",
+                        message: "This account is excluded or disconnected; "
+                            + "it counts as $0 until you re-attach or remove it.",
                         tone: .caution
                     )
                 }
@@ -197,6 +201,14 @@ struct GoalsView: View {
     private func goalsList(_ model: GoalsModel) -> some View {
         List {
             plainRow { reserveCard(model) }
+
+            ForEach(model.pendingTransfers) { transfer in
+                plainRow {
+                    GoalTransferRequestCard(transfer: transfer) {
+                        transferRequestId = transfer.id
+                    }
+                }
+            }
 
             if model.activeGoals.isEmpty {
                 plainRow {
@@ -292,8 +304,16 @@ struct GoalsModel: Sendable {
         var id: UUID { rowId }
     }
 
+    struct PendingTransferItem: Sendable, Identifiable {
+        let id: UUID
+        let amount: Money
+    }
+
     let pool: ReservePoolSummary
+    let liveReserveBalance: Money
+    let pendingTransferAdjustment: Money
     let reserves: [ReserveItem]
+    let pendingTransfers: [PendingTransferItem]
     let activeGoals: [GoalItem]
     let archivedGoals: [GoalItem]
 
@@ -322,6 +342,12 @@ actor GoalsBuildActor {
         let plaidAccounts = try modelContext.fetch(
             FetchDescriptor<CachedPlaidAccount>()
         )
+        let plaidTreatments = try modelContext.fetch(
+            FetchDescriptor<DurablePlaidAccountTreatment>()
+        )
+        let transferRequests = try modelContext.fetch(
+            FetchDescriptor<DurableGoalTransferRequest>()
+        ).filter { $0.active && $0.completedAt == nil }
         let allTransactionRows = try modelContext.fetch(
             FetchDescriptor<CachedFinancialTransaction>(
                 predicate: #Predicate { !$0.deleted }
@@ -332,11 +358,17 @@ actor GoalsBuildActor {
         }
 
         let financialById = Dictionary(
-            accounts.map { ($0.canonicalAccountId, $0) },
+            accounts
+                .filter(GoalReserveAccountEligibility.canBackGoals)
+                .map { ($0.canonicalAccountId, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         let plaidById = Dictionary(
-            plaidAccounts.map { ($0.id, $0) },
+            GoalReserveAccountEligibility.eligiblePlaidAccounts(
+                plaidAccounts,
+                treatments: plaidTreatments
+            )
+                .map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         let activeReserves = reserveRows.filter(\.active)
@@ -363,7 +395,13 @@ actor GoalsBuildActor {
             )
         }
 
-        let reserveBalance = Money(milliunits: poolMilliunits)
+        let liveReserveBalance = Money(milliunits: poolMilliunits)
+        let pendingTransferAdjustment = transferRequests
+            .map(\.pendingPoolAdjustment).sum()
+        let reserveBalance = max(
+            .zero,
+            liveReserveBalance + pendingTransferAdjustment
+        )
         let balances = GoalBalanceCalculator.effectiveBalances(
             goals: goalRows,
             ledgerEntries: ledgerRows,
@@ -396,10 +434,19 @@ actor GoalsBuildActor {
             reserveBalance: reserveBalance,
             activeGoalBalances: active.map(\.balance)
         )
+        let pendingTransfers = transferRequests.map { request in
+            GoalsModel.PendingTransferItem(
+                id: request.id,
+                amount: Money(milliunits: request.amountMilliunits)
+            )
+        }.sorted { $0.amount > $1.amount }
 
         return GoalsModel(
             pool: pool,
+            liveReserveBalance: liveReserveBalance,
+            pendingTransferAdjustment: pendingTransferAdjustment,
             reserves: reserveItems,
+            pendingTransfers: pendingTransfers,
             activeGoals: active,
             archivedGoals: archived
         )

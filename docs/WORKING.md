@@ -1,10 +1,52 @@
 # WORKING
 
+## Stabilization checkpoint (2026-08-09)
+
+- `ux-cleanup` contains focused commits for retired Fresh Start removal,
+  atomic category deletion, YNAB reference-only categories, type-driven
+  Spending, simplified groups, explicit goal transaction types, direct goal
+  allocations, and removal of the fixed category taxonomy.
+- The pending goal-transfer slice is intentionally confirm-first. A Goal
+  Spend/Refund made through a cashflow account creates a durable reminder,
+  adjusts the pool until the real account balances catch up, lets the user
+  choose both accounts later, and clears only after an exact Plaid candidate
+  is explicitly confirmed. The Goals tab does not rescan transaction history
+  when opened; requests are updated with the reviewed transaction mutation.
+- Manual device checks passed for Goal Spend, Goal Refund, split attribution,
+  transfer-account selection persistence, explicit match confirmation,
+  projection exclusion, card-autopay uniqueness, and Net Worth reconciliation.
+- Known correctness work still open:
+  - Targeted repair of legacy synthetic reimbursements that remain stored as
+    Refund and therefore appear in Spending. The editor recognizes that exact
+    legacy split shape so it can be saved, but a general data repair is not yet
+    implemented.
+  - Standalone Plaid investment accounts contribute to Net Worth but are not
+    rendered by All Accounts.
+  - The Investments screen presents Plaid IRAs as brokerage accounts even
+    though Net Worth classifies their balances as retirement.
+  - Independently rounded Spending group rows can differ by one dollar from
+    the rounded monthly headline.
+- Known UX work still open:
+  - Goal allocation editing needs a deliberate redesign. The committed staged
+    sheet remains temporarily; the rejected per-goal Add/Remove experiment was
+    not retained.
+  - Spending group rename/edit controls need native list-row management.
+  - Investment reconciliation controls should not appear for ordinary banking
+    accounts where they do not control banking or Goals behavior.
+- A connected Cash Plus account temporarily lacked a usable live balance until
+  Plaid reconnect completed. The exact stale-cache/recovery cause remains open.
+- Checkpoint validation: NetworthCore 211/211; generic-device Debug and Release
+  builds pass; the app test bundle compiles with `build-for-testing`. App tests
+  were not run because simulator execution was not requested.
+- `Networth/Features/Projections/ProjectionsView.swift` contains an unrelated
+  user-owned worktree change and must remain outside stabilization commits.
+
 ## Goals overhaul (2026-08-09)
 
-- Goal accounts are explicitly selected regardless of account type. Their
-  conservative live balances form the pool and remain excluded from the
-  Projections cash pool while selected.
+- Goal accounts are explicitly selected eligible asset accounts. Debt and
+  retirement accounts are excluded; selected cash, checking, savings, and
+  non-retirement investment balances form the pool and remain excluded from
+  the Projections cash pool while selected.
 - The allocation sheet stages every goal amount and commits all changes in one
   save. One optional goal receives the live remainder after all fixed
   allocations, so account growth automatically flows to it.
@@ -17,8 +59,9 @@
 - The legacy synthetic Goal Purchases report path is removed. Historical
   allocation rows remain readable as the backing representation for current
   fixed allocations, but they are not exposed as a user timeline.
-- Validation: NetworthCore tests plus generic-device Debug build-for-testing
-  and Release build. On-device interaction pass remains.
+- Initial validation: NetworthCore tests plus generic-device Debug
+  build-for-testing and Release build. The later on-device interaction findings
+  and remaining work are recorded in the stabilization checkpoint above.
 
 ## Paycheck detection in Cash Projections (2026-08-06)
 
