@@ -5,7 +5,10 @@
 - `ux-cleanup` contains focused commits for retired Fresh Start removal,
   atomic category deletion, YNAB reference-only categories, type-driven
   Spending, simplified groups, explicit goal transaction types, direct goal
-  allocations, and removal of the fixed category taxonomy.
+  allocations, removal of the fixed category taxonomy, confirm-first goal
+  transfer reminders, and the verified reimbursement repair. The agreed
+  behavior-level redesign is implemented; the branch is now in correctness,
+  performance, and interaction-polish work and has not yet merged to `main`.
 - The pending goal-transfer slice is intentionally confirm-first. A Goal
   Spend/Refund made through a cashflow account creates a durable reminder,
   adjusts the pool until the real account balances catch up, lets the user
@@ -25,18 +28,22 @@
   and the Spending pipeline excludes them defensively. Post-install inspection
   of the active iPhone app-group stores confirmed the repair completed and the
   retired representation no longer contributes to Spending.
-- Known correctness work still open:
-  - Standalone Plaid investment accounts contribute to Net Worth but are not
-    rendered by All Accounts.
-  - The Investments screen presents Plaid IRAs as brokerage accounts even
-    though Net Worth classifies their balances as retirement.
-  - Independently rounded Spending group rows can differ by one dollar from
-    the rounded monthly headline.
+- The first P0 stabilization item is closed: Reimbursement is a top-level
+  transaction type, its legacy phone data is repaired, and it no longer enters
+  monthly Spending. Remaining P0 correctness work, in order:
+  1. Standalone Plaid investment accounts contribute to Net Worth but are not
+     rendered by All Accounts.
+  2. The Investments screen presents Plaid IRAs as brokerage accounts even
+     though Net Worth classifies their balances as retirement.
+  3. Independently rounded Spending group rows can differ by one dollar from
+     the rounded monthly headline.
 - Known UX work still open:
   - Goal allocation editing needs a deliberate redesign. The committed staged
     sheet remains temporarily; the rejected per-goal Add/Remove experiment was
     not retained.
   - Spending group rename/edit controls need native list-row management.
+  - The Goals tab transition can stall the Liquid Glass tab indicator even
+    though scrolling after the transition is smooth.
   - Investment reconciliation controls should not appear for ordinary banking
     accounts where they do not control banking or Goals behavior.
 - A connected Cash Plus account temporarily lacked a usable live balance until
