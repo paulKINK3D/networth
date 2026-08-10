@@ -28,6 +28,13 @@
   and the Spending pipeline excludes them defensively. Post-install inspection
   of the active iPhone app-group stores confirmed the repair completed and the
   retired representation no longer contributes to Spending.
+- Post-repair device testing exposed one mixed-split regression: historical
+  paychecks with Income and Reimbursement legs had a valid aggregate
+  `.unknown` parent, which the projection adapter rejected before reading the
+  legs and transaction lists mislabeled as Needs review. Fully classified
+  mixed splits now pass through to projections and display as Split. Existing
+  phone data required no additional migration; income and labels were verified
+  on-device after installing the fix.
 - The first P0 stabilization item is closed: Reimbursement is a top-level
   transaction type, its legacy phone data is repaired, and it no longer enters
   monthly Spending. Remaining P0 correctness work, in order:

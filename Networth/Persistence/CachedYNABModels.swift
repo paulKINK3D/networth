@@ -767,6 +767,14 @@ public final class CachedFinancialTransaction {
         // Investment contributions stay out of the historical ordinary-spend
         // estimate; their dated cash-outflow modeling arrives with recurring
         // expectations (Phase 1 step 4).
+        let activeSplitLegs = subtransactions.filter { !$0.deleted }
+        let isFullyClassifiedSplit = activeSplitLegs.count >= 2
+            && activeSplitLegs.allSatisfy {
+                guard let treatment = $0.forecastTreatment else {
+                    return false
+                }
+                return treatment != .unknown
+            }
         guard !deleted, !pending, !requiresReview,
               !subtransactionsDecodeFailed,
               forecastTreatment != .excluded,
@@ -775,7 +783,7 @@ public final class CachedFinancialTransaction {
               forecastTreatment != .reimbursement,
               forecastTreatment != .goalSpend,
               forecastTreatment != .goalRefund,
-              forecastTreatment != .unknown,
+              forecastTreatment != .unknown || isFullyClassifiedSplit,
               forecastTreatment != .cardPayment else {
             return nil
         }

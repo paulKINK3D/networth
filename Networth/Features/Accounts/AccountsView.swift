@@ -1253,7 +1253,9 @@ private func financialTransactionSubtitle(
     _ transaction: CachedFinancialTransaction
 ) -> String {
     let classification: String
-    if transaction.forecastTreatment.requiresCategory {
+    if transaction.isSplit {
+        classification = transaction.categoryDisplayName
+    } else if transaction.forecastTreatment.requiresCategory {
         let categoryName = transaction.categoryName?.trimmingCharacters(
             in: .whitespacesAndNewlines
         ) ?? ""

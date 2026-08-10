@@ -111,9 +111,9 @@ struct ProjectionsView: View {
     private func content(_ data: ProjectionData) -> some View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                    priorityNotice(data)
-
                     if data.selectedCashAccounts.isEmpty {
+                        priorityNotice(data)
+
                         NwEmptyState(
                             title: availableAccountSnapshots.isEmpty ? "Sync your accounts" : "Choose your cash accounts",
                             message: availableAccountSnapshots.isEmpty
@@ -123,7 +123,10 @@ struct ProjectionsView: View {
                         )
                         .frame(minHeight: 300)
                     } else {
+                        // Lead with the answer (the Outlook number), then the
+                        // caveat beneath it — reassurance on arrival, detail after.
                         cashChart(data)
+                        priorityNotice(data)
                         timeline(data)
                     }
                 }

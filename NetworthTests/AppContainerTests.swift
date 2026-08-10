@@ -2190,6 +2190,12 @@ struct AppContainerTests {
             decision.subtransactions.map(\.forecastTreatment)
                 == [.income, .reimbursement]
         )
+        let projection = try #require(row.toProjectionSummary())
+        #expect(projection.forecastTreatment == .unknown)
+        #expect(
+            projection.subtransactions.map(\.forecastTreatment)
+                == [.income, .reimbursement]
+        )
     }
 
     @Test func legacySyntheticReimbursementSplitRepairIsTargetedAndIdempotent()

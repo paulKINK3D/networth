@@ -1910,9 +1910,11 @@ struct PlaidClassificationReviewSheet: View {
     private func reviewSubtitle(
         for transaction: CachedFinancialTransaction
     ) -> String {
-        let classification = transaction.forecastTreatment.requiresCategory
+        let classification = transaction.isSplit
             ? transaction.categoryDisplayName
-            : transaction.forecastTreatment.displayName
+            : transaction.forecastTreatment.requiresCategory
+                ? transaction.categoryDisplayName
+                : transaction.forecastTreatment.displayName
         let account = plaidTransactionAccountLabel(
             for: transaction,
             financialAccounts: financialAccounts
@@ -2632,7 +2634,11 @@ struct TransactionSearchReclassifySheet: View {
         if let category = row.categoryName, !category.isEmpty {
             parts.append(category)
         }
-        parts.append(row.forecastTreatment.displayName)
+        parts.append(
+            row.isSplit
+                ? row.categoryDisplayName
+                : row.forecastTreatment.displayName
+        )
         if row.requiresReview { parts.append("Unreviewed") }
         return parts.joined(separator: " · ")
     }
@@ -3295,8 +3301,8 @@ struct PlaidTransactionReviewEditor: View {
             VStack(spacing: 0) {
                 if isSplit {
                     // Per-part classifications rule a split; the stored
-                    // whole-transaction treatment (Reimbursement for any
-                    // mixed split) reads as data loss if shown here.
+                    // aggregate treatment for a mixed split reads as data
+                    // loss if shown here.
                     HStack {
                         Text("Transaction type")
                         Spacer()
@@ -3953,9 +3959,11 @@ private struct PlaidTransactionHistoryPane: View {
     private func classificationLabel(
         for item: CachedFinancialTransaction
     ) -> String {
-        item.forecastTreatment.requiresCategory
+        item.isSplit
             ? item.categoryDisplayName
-            : item.forecastTreatment.displayName
+            : item.forecastTreatment.requiresCategory
+                ? item.categoryDisplayName
+                : item.forecastTreatment.displayName
     }
 }
 
