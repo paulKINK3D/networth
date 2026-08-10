@@ -1044,6 +1044,186 @@ public final class PlaidSyncCoordinator {
 
 // MARK: - Plaid banking transactions
 
+enum LegacySyntheticReimbursement {
+    static func matches(_ leg: SubTransactionSummary) -> Bool {
+        leg.amount > .zero
+            && leg.forecastTreatment == .refund
+            && leg.categoryId == nil
+            && leg.categoryCanonicalId == nil
+            && leg.goalId == nil
+            && isSyntheticName(leg.categoryName)
+    }
+
+    static func matchesWholeTransaction(
+        treatmentRaw: String,
+        amountSign: Int,
+        categoryCanonicalId: String?,
+        categoryName: String?,
+        goalId: UUID?
+    ) -> Bool {
+        treatmentRaw == TransactionType.refund.rawValue
+            && amountSign > 0
+            && categoryCanonicalId == nil
+            && goalId == nil
+            && isSyntheticName(categoryName)
+    }
+
+    static func repaired(_ leg: SubTransactionSummary) -> SubTransactionSummary {
+        SubTransactionSummary(
+            id: leg.id,
+            amount: leg.amount,
+            categoryId: nil,
+            categoryName: nil,
+            categoryCanonicalId: nil,
+            goalId: nil,
+            forecastTreatment: .reimbursement,
+            transferAccountId: leg.transferAccountId,
+            payeeName: leg.payeeName,
+            memo: leg.memo,
+            deleted: leg.deleted
+        )
+    }
+
+    static func parentTreatment(
+        for legs: [SubTransactionSummary]
+    ) -> TransactionType {
+        let types = Set(legs.compactMap(\.forecastTreatment))
+        return types.count == 1 ? types.first ?? .unknown : .unknown
+    }
+
+    private static func isSyntheticName(_ value: String?) -> Bool {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare("Reimbursement") == .orderedSame
+    }
+}
+
+@MainActor
+struct LegacyReimbursementRepairService {
+    struct Result: Equatable {
+        var cachedTransactions = 0
+        var durableDecisions = 0
+        var durableOverrides = 0
+        var undecodablePayloads = 0
+
+        var repairedRecords: Int {
+            cachedTransactions + durableDecisions + durableOverrides
+        }
+    }
+
+    private enum SplitRepair {
+        case unchanged
+        case repaired(Data, TransactionType)
+        case undecodable
+    }
+
+    let context: ModelContext
+
+    func repair() throws -> Result {
+        var result = Result()
+
+        for row in try context.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        ) {
+            if let data = row.subtransactionsData, !data.isEmpty {
+                switch try repairSplitData(data) {
+                case .unchanged:
+                    break
+                case .undecodable:
+                    result.undecodablePayloads += 1
+                case .repaired(let repairedData, let parentTreatment):
+                    row.subtransactionsData = repairedData
+                    row.forecastTreatmentRaw = parentTreatment.rawValue
+                    row.updatedAt = .now
+                    result.cachedTransactions += 1
+                }
+            } else if LegacySyntheticReimbursement.matchesWholeTransaction(
+                treatmentRaw: row.forecastTreatmentRaw,
+                amountSign: Int(row.amountMilliunits.signum()),
+                categoryCanonicalId: row.categoryCanonicalId,
+                categoryName: row.categoryName,
+                goalId: row.goalId
+            ) {
+                row.forecastTreatmentRaw = TransactionType.reimbursement.rawValue
+                row.categoryName = nil
+                row.updatedAt = .now
+                result.cachedTransactions += 1
+            }
+        }
+
+        for decision in try context.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        ) {
+            if let data = decision.subtransactionsData, !data.isEmpty {
+                switch try repairSplitData(data) {
+                case .unchanged:
+                    break
+                case .undecodable:
+                    result.undecodablePayloads += 1
+                case .repaired(let repairedData, let parentTreatment):
+                    decision.subtransactionsData = repairedData
+                    decision.forecastTreatmentRaw = parentTreatment.rawValue
+                    decision.updatedAt = .now
+                    result.durableDecisions += 1
+                }
+            } else if LegacySyntheticReimbursement.matchesWholeTransaction(
+                treatmentRaw: decision.forecastTreatmentRaw,
+                amountSign: decision.amountSign,
+                categoryCanonicalId: decision.categoryCanonicalId,
+                categoryName: decision.categoryNameSnapshot,
+                goalId: decision.goalId
+            ) {
+                decision.forecastTreatment = .reimbursement
+                decision.categoryNameSnapshot = nil
+                decision.updatedAt = .now
+                result.durableDecisions += 1
+            }
+        }
+
+        for override in try context.fetch(
+            FetchDescriptor<DurableTransactionOverride>()
+        ) {
+            guard let data = override.subtransactionsData, !data.isEmpty else {
+                continue
+            }
+            switch try repairSplitData(data) {
+            case .unchanged:
+                break
+            case .undecodable:
+                result.undecodablePayloads += 1
+            case .repaired(let repairedData, let parentTreatment):
+                override.subtransactionsData = repairedData
+                override.forecastTreatmentRaw = parentTreatment.rawValue
+                override.updatedAt = .now
+                result.durableOverrides += 1
+            }
+        }
+
+        return result
+    }
+
+    private func repairSplitData(_ data: Data) throws -> SplitRepair {
+        guard let legs = try? JSONDecoder().decode(
+            [SubTransactionSummary].self,
+            from: data
+        ) else {
+            return .undecodable
+        }
+        var changed = false
+        let repairedLegs = legs.map { leg in
+            guard LegacySyntheticReimbursement.matches(leg) else {
+                return leg
+            }
+            changed = true
+            return LegacySyntheticReimbursement.repaired(leg)
+        }
+        guard changed else { return .unchanged }
+        return .repaired(
+            try JSONEncoder().encode(repairedLegs),
+            LegacySyntheticReimbursement.parentTreatment(for: repairedLegs)
+        )
+    }
+}
+
 /// Pulls transaction deltas through the private Worker, normalizes them into
 /// the provider-neutral cache, and advances each Plaid cursor only after the
 /// matching SwiftData page has been saved successfully.
@@ -1152,6 +1332,7 @@ public final class PlaidTransactionSyncCoordinator {
             return
         }
         resetDerivedTransactionDataIfNeeded()
+        guard repairLegacyReimbursements() else { return }
         if markOrphanedTransactionsDeleted(),
            !mainContext.safeSave(
                source: "plaidTransactions.orphanedTransactions"
@@ -1168,6 +1349,48 @@ public final class PlaidTransactionSyncCoordinator {
         }
         reconcileHistoryIfNeeded()
         refreshCanonicalReviewCounts()
+    }
+
+    private func repairLegacyReimbursements() -> Bool {
+        let markerKey = "legacyReimbursementRepair:v1"
+        do {
+            let marker = try mainContext.fetch(
+                FetchDescriptor<SyncCursor>(
+                    predicate: #Predicate { $0.key == markerKey }
+                )
+            )
+            guard marker.isEmpty else { return true }
+            let result = try LegacyReimbursementRepairService(
+                context: mainContext
+            ).repair()
+            mainContext.insert(SyncCursor(
+                key: markerKey,
+                serverKnowledge: 1
+            ))
+            if !mainContext.safeSave(
+                source: "plaidTransactions.legacyReimbursementRepair"
+            ) {
+                mainContext.rollback()
+                return false
+            }
+            if result.repairedRecords > 0 {
+                logger.info(
+                    "Repaired \(result.repairedRecords) legacy reimbursement records."
+                )
+            }
+            if result.undecodablePayloads > 0 {
+                logger.error(
+                    "Preserved \(result.undecodablePayloads) undecodable split payloads during reimbursement repair."
+                )
+            }
+            return true
+        } catch {
+            mainContext.rollback()
+            logger.error(
+                "Legacy reimbursement repair failed: \(error.localizedDescription, privacy: .private)"
+            )
+            return false
+        }
     }
 
     /// One-time cache repair: civil dates were historically parsed at

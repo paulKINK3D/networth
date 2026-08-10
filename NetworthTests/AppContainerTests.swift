@@ -2127,8 +2127,8 @@ struct AppContainerTests {
                 id: "reimbursement",
                 amount: Money.dollars(20),
                 categoryId: nil,
-                categoryName: "Reimbursement",
-                forecastTreatment: .refund,
+                categoryName: nil,
+                forecastTreatment: .reimbursement,
                 payeeName: nil,
                 memo: nil,
                 deleted: false
@@ -2149,8 +2149,8 @@ struct AppContainerTests {
                 id: "reimbursement",
                 amount: Money.dollars(20),
                 categoryId: nil,
-                categoryName: "Reimbursement",
-                forecastTreatment: .refund,
+                categoryName: nil,
+                forecastTreatment: .reimbursement,
                 payeeName: nil,
                 memo: nil,
                 deleted: false
@@ -2184,12 +2184,209 @@ struct AppContainerTests {
         #expect(row.subtransactions.count == 2)
         #expect(
             row.subtransactions.map(\.forecastTreatment)
-                == [.income, .refund]
+                == [.income, .reimbursement]
         )
         #expect(
             decision.subtransactions.map(\.forecastTreatment)
-                == [.income, .refund]
+                == [.income, .reimbursement]
         )
+    }
+
+    @Test func legacySyntheticReimbursementSplitRepairIsTargetedAndIdempotent()
+        throws {
+        let summary = try #require(
+            PlaidTransactionDTO(
+                id: "legacy-reimbursement-split",
+                accountId: "checking-1",
+                date: "2026-07-31",
+                amount: -100,
+                name: "DEPOSIT"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        let legacyLegs = [
+            SubTransactionSummary(
+                id: "income",
+                amount: Money.dollars(80),
+                categoryId: nil,
+                categoryName: "Income",
+                forecastTreatment: .income,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+            SubTransactionSummary(
+                id: "reimbursement",
+                amount: Money.dollars(20),
+                categoryId: nil,
+                categoryName: "Reimbursement",
+                forecastTreatment: .refund,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            )
+        ]
+        let legacyData = try JSONEncoder().encode(legacyLegs)
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let row = CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassifier().classify(
+                summary,
+                rules: []
+            ),
+            subtransactionsData: legacyData
+        )
+        let decision = DurableCanonicalTransactionDecision(
+            transactionExternalId: summary.externalId,
+            categoryNameSnapshot: "Split",
+            amountSign: 1,
+            forecastTreatment: .unknown,
+            subtransactionsData: legacyData,
+            reviewed: true,
+            provenance: .user
+        )
+        let override = DurableTransactionOverride(
+            transactionExternalId: summary.externalId,
+            displayName: "Deposit",
+            categoryName: "Split",
+            forecastTreatment: .unknown,
+            subtransactionsData: legacyData,
+            provenance: .user
+        )
+        context.insert(row)
+        context.insert(decision)
+        context.insert(override)
+        try context.save()
+
+        let service = LegacyReimbursementRepairService(context: context)
+        let first = try service.repair()
+        try context.save()
+
+        #expect(first.cachedTransactions == 1)
+        #expect(first.durableDecisions == 1)
+        #expect(first.durableOverrides == 1)
+        #expect(first.undecodablePayloads == 0)
+        #expect(row.subtransactions.map(\.forecastTreatment)
+            == [.income, .reimbursement])
+        #expect(row.subtransactions[1].categoryName == nil)
+        #expect(decision.subtransactions.map(\.forecastTreatment)
+            == [.income, .reimbursement])
+        #expect(override.subtransactions.map(\.forecastTreatment)
+            == [.income, .reimbursement])
+        #expect(row.forecastTreatment == .unknown)
+
+        let second = try service.repair()
+        #expect(second.repairedRecords == 0)
+        #expect(second.undecodablePayloads == 0)
+    }
+
+    @Test func legacyWholeReimbursementRepairPreservesRealCategoryRefunds()
+        throws {
+        let syntheticSummary = try #require(
+            PlaidTransactionDTO(
+                id: "legacy-whole-reimbursement",
+                accountId: "checking-1",
+                date: "2026-07-31",
+                amount: -20,
+                name: "REIMBURSEMENT"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        let realRefundSummary = try #require(
+            PlaidTransactionDTO(
+                id: "real-category-refund",
+                accountId: "checking-1",
+                date: "2026-07-31",
+                amount: -15,
+                name: "STORE REFUND"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let synthetic = CachedFinancialTransaction(
+            summary: syntheticSummary,
+            classification: TransactionClassification(
+                displayName: "Reimbursement",
+                categoryName: "Reimbursement",
+                treatment: .refund,
+                confidence: .high,
+                provenance: .user,
+                requiresReview: false
+            )
+        )
+        let durableSynthetic = DurableCanonicalTransactionDecision(
+            transactionExternalId: syntheticSummary.externalId,
+            categoryNameSnapshot: "Reimbursement",
+            amountSign: 1,
+            forecastTreatment: .refund,
+            reviewed: true,
+            provenance: .user
+        )
+        let realRefund = CachedFinancialTransaction(
+            summary: realRefundSummary,
+            classification: TransactionClassification(
+                displayName: "Store Refund",
+                categoryName: "Reimbursement",
+                treatment: .refund,
+                confidence: .high,
+                provenance: .user,
+                requiresReview: false
+            )
+        )
+        realRefund.categoryCanonicalId = "networth:reimbursement-category"
+        context.insert(synthetic)
+        context.insert(durableSynthetic)
+        context.insert(realRefund)
+        try context.save()
+
+        let result = try LegacyReimbursementRepairService(
+            context: context
+        ).repair()
+        try context.save()
+
+        #expect(result.cachedTransactions == 1)
+        #expect(result.durableDecisions == 1)
+        #expect(synthetic.forecastTreatment == .reimbursement)
+        #expect(synthetic.categoryName == nil)
+        #expect(durableSynthetic.forecastTreatment == .reimbursement)
+        #expect(durableSynthetic.categoryNameSnapshot == nil)
+        #expect(realRefund.forecastTreatment == .refund)
+        #expect(realRefund.categoryCanonicalId
+            == "networth:reimbursement-category")
+    }
+
+    @Test func legacyReimbursementRepairPreservesUndecodableSplitData()
+        throws {
+        let summary = try #require(
+            PlaidTransactionDTO(
+                id: "undecodable-reimbursement",
+                accountId: "checking-1",
+                date: "2026-07-31",
+                amount: -20,
+                name: "DEPOSIT"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        let invalidData = Data("not-json".utf8)
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let row = CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassifier().classify(
+                summary,
+                rules: []
+            ),
+            subtransactionsData: invalidData
+        )
+        context.insert(row)
+        try context.save()
+
+        let result = try LegacyReimbursementRepairService(
+            context: context
+        ).repair()
+
+        #expect(result.repairedRecords == 0)
+        #expect(result.undecodablePayloads == 1)
+        #expect(row.subtransactionsData == invalidData)
+        #expect(row.subtransactionsDecodeFailed)
     }
 
     @Test(.disabled("Replaced by canonical transaction decision coverage"))

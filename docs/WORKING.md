@@ -15,11 +15,12 @@
 - Manual device checks passed for Goal Spend, Goal Refund, split attribution,
   transfer-account selection persistence, explicit match confirmation,
   projection exclusion, card-autopay uniqueness, and Net Worth reconciliation.
+- A one-time local repair converts only the legacy positive Refund shape that
+  used the synthetic `Reimbursement` label without a category identity. It
+  updates cached transactions, canonical decisions, and legacy overrides;
+  preserves real category refunds and undecodable split payloads; and records
+  a disposable local marker so the full scan does not repeat every launch.
 - Known correctness work still open:
-  - Targeted repair of legacy synthetic reimbursements that remain stored as
-    Refund and therefore appear in Spending. The editor recognizes that exact
-    legacy split shape so it can be saved, but a general data repair is not yet
-    implemented.
   - Standalone Plaid investment accounts contribute to Net Worth but are not
     rendered by All Accounts.
   - The Investments screen presents Plaid IRAs as brokerage accounts even
