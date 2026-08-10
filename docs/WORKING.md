@@ -15,11 +15,16 @@
 - Manual device checks passed for Goal Spend, Goal Refund, split attribution,
   transfer-account selection persistence, explicit match confirmation,
   projection exclusion, card-autopay uniqueness, and Net Worth reconciliation.
-- A one-time local repair converts only the legacy positive Refund shape that
-  used the synthetic `Reimbursement` label without a category identity. It
-  updates cached transactions, canonical decisions, and legacy overrides;
-  preserves real category refunds and undecodable split payloads; and records
-  a disposable local marker so the full scan does not repeat every launch.
+- A one-time local repair converts both legacy reimbursement representations:
+  expenses assigned to the retired built-in `reimbursements` category and
+  incoming Refunds using the synthetic Reimbursement label. It updates cached
+  transactions, canonical decisions, legacy overrides, rules, and reference
+  suggestions; preserves unrelated refunds and undecodable split payloads;
+  and records a disposable local marker so the full scan does not repeat.
+  Cache rebuilds normalize the retired forms at their application boundary,
+  and the Spending pipeline excludes them defensively. Post-install inspection
+  of the active iPhone app-group stores confirmed the repair completed and the
+  retired representation no longer contributes to Spending.
 - Known correctness work still open:
   - Standalone Plaid investment accounts contribute to Net Worth but are not
     rendered by All Accounts.

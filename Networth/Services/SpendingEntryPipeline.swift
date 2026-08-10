@@ -69,6 +69,16 @@ enum SpendingEntryPipeline {
                 || (!row.isSplit && row.forecastTreatment == .unknown) {
                 continue
             }
+            if !row.isSplit,
+               LegacyReimbursementRepresentation.matchesWholeTransaction(
+                   treatmentRaw: row.forecastTreatmentRaw,
+                   categoryCanonicalId: row.categoryCanonicalId,
+                   categoryRaw: row.nativeCategoryRaw,
+                   categoryName: row.categoryName,
+                   goalId: row.goalId
+               ) {
+                continue
+            }
             if row.forecastTreatment == .reimbursement
                 || row.forecastTreatment == .goalSpend
                 || row.forecastTreatment == .goalRefund {
@@ -128,6 +138,13 @@ enum SpendingEntryPipeline {
                     let group = context.resolvedGroup(
                         categoryCanonicalId: legCanonicalId
                     )
+                    let treatment = LegacyReimbursementRepresentation
+                        .matches(leg)
+                        ? TransactionType.reimbursement
+                        : leg.forecastTreatment
+                            ?? (row.amountMilliunits < 0
+                                ? row.forecastTreatment
+                                : nil)
                     entries.append(SpendingHistoryEntry(
                         transactionId: row.id,
                         date: row.postedDate,
@@ -136,10 +153,7 @@ enum SpendingEntryPipeline {
                         // inherit the whole-transaction Reimbursement label
                         // and offset spending; nil excludes it. Outgoing
                         // splits are ordinary spending either way.
-                        treatment: leg.forecastTreatment
-                            ?? (row.amountMilliunits < 0
-                                ? row.forecastTreatment
-                                : nil),
+                        treatment: treatment,
                         reportingRole: .spending,
                         groupIdentity: group.identity,
                         groupName: group.name,

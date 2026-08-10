@@ -2992,13 +2992,11 @@ struct PlaidTransactionReviewEditor: View {
             // Show exactly what's stored. A part with no explicit choice and
             // no recognizable name stays UNSET — silently prefilling it as
             // Reimbursement converted income on the next save.
-            // Before Reimbursement became its own transaction type, incoming
-            // reimbursement legs were persisted as Refund plus a synthetic
-            // category label and no category identity. Treat that exact old
-            // shape as Reimbursement so editing a different leg remains
-            // saveable and preserves the original meaning.
+            // Before Reimbursement became its own transaction type, both
+            // reimbursable expenses and incoming repayments used the retired
+            // Reimbursement(s) category. Preserve that meaning when editing.
             let splitTreatment: TransactionType? =
-                LegacySyntheticReimbursement.matches($0)
+                LegacyReimbursementRepresentation.matches($0)
                     ? .reimbursement
                     : $0.forecastTreatment
             return PlaidSplitDraft(

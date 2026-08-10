@@ -1044,28 +1044,41 @@ public final class PlaidSyncCoordinator {
 
 // MARK: - Plaid banking transactions
 
-enum LegacySyntheticReimbursement {
+enum LegacyReimbursementRepresentation {
+    /// The former YNAB reimbursement envelope found in the single-user data.
+    /// It is now represented by TransactionType.reimbursement, never by a
+    /// spending category.
+    static let retiredYNABCategoryID =
+        "66ebfc38-ecbe-4f5c-89ab-43ef07edb560"
+    static let retiredCanonicalCategoryID =
+        "ynab:\(retiredYNABCategoryID)"
+
     static func matches(_ leg: SubTransactionSummary) -> Bool {
-        leg.amount > .zero
-            && leg.forecastTreatment == .refund
-            && leg.categoryId == nil
-            && leg.categoryCanonicalId == nil
-            && leg.goalId == nil
-            && isSyntheticName(leg.categoryName)
+        leg.goalId == nil
+            && isLegacyTreatment(leg.forecastTreatment)
+            && isRetiredCategory(
+                categoryId: leg.categoryId,
+                categoryCanonicalId: leg.categoryCanonicalId,
+                rawValue: nil,
+                name: leg.categoryName
+            )
     }
 
     static func matchesWholeTransaction(
         treatmentRaw: String,
-        amountSign: Int,
         categoryCanonicalId: String?,
+        categoryRaw: String?,
         categoryName: String?,
         goalId: UUID?
     ) -> Bool {
-        treatmentRaw == TransactionType.refund.rawValue
-            && amountSign > 0
-            && categoryCanonicalId == nil
-            && goalId == nil
-            && isSyntheticName(categoryName)
+        goalId == nil
+            && isLegacyTreatment(TransactionType(rawValue: treatmentRaw))
+            && isRetiredCategory(
+                categoryId: nil,
+                categoryCanonicalId: categoryCanonicalId,
+                rawValue: categoryRaw,
+                name: categoryName
+            )
     }
 
     static func repaired(_ leg: SubTransactionSummary) -> SubTransactionSummary {
@@ -1091,9 +1104,34 @@ enum LegacySyntheticReimbursement {
         return types.count == 1 ? types.first ?? .unknown : .unknown
     }
 
-    private static func isSyntheticName(_ value: String?) -> Bool {
-        value?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .localizedCaseInsensitiveCompare("Reimbursement") == .orderedSame
+    private static func isLegacyTreatment(_ value: TransactionType?) -> Bool {
+        value == nil || value == .ordinarySpending || value == .refund
+    }
+
+    private static func isRetiredCategory(
+        categoryId: String?,
+        categoryCanonicalId: String?,
+        rawValue: String?,
+        name: String?
+    ) -> Bool {
+        if categoryId == retiredYNABCategoryID
+            || categoryCanonicalId == retiredCanonicalCategoryID {
+            return true
+        }
+        if rawValue?.localizedCaseInsensitiveCompare("reimbursements")
+            == .orderedSame {
+            return true
+        }
+        return isRetiredCategoryName(name)
+    }
+
+    static func isRetiredCategoryName(_ name: String?) -> Bool {
+        let normalizedName = name?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return normalizedName == "reimbursement"
+            || normalizedName == "reimbursements"
+            || normalizedName == "reimbursement - $5k"
     }
 }
 
@@ -1103,10 +1141,15 @@ struct LegacyReimbursementRepairService {
         var cachedTransactions = 0
         var durableDecisions = 0
         var durableOverrides = 0
+        var merchantRules = 0
+        var referenceSuggestions = 0
+        var canonicalCategories = 0
         var undecodablePayloads = 0
 
         var repairedRecords: Int {
             cachedTransactions + durableDecisions + durableOverrides
+                + merchantRules + referenceSuggestions
+                + canonicalCategories
         }
     }
 
@@ -1136,14 +1179,17 @@ struct LegacyReimbursementRepairService {
                     row.updatedAt = .now
                     result.cachedTransactions += 1
                 }
-            } else if LegacySyntheticReimbursement.matchesWholeTransaction(
+            } else if LegacyReimbursementRepresentation
+                .matchesWholeTransaction(
                 treatmentRaw: row.forecastTreatmentRaw,
-                amountSign: Int(row.amountMilliunits.signum()),
                 categoryCanonicalId: row.categoryCanonicalId,
+                categoryRaw: row.nativeCategoryRaw,
                 categoryName: row.categoryName,
                 goalId: row.goalId
             ) {
                 row.forecastTreatmentRaw = TransactionType.reimbursement.rawValue
+                row.nativeCategoryRaw = "other"
+                row.categoryCanonicalId = nil
                 row.categoryName = nil
                 row.updatedAt = .now
                 result.cachedTransactions += 1
@@ -1165,14 +1211,16 @@ struct LegacyReimbursementRepairService {
                     decision.updatedAt = .now
                     result.durableDecisions += 1
                 }
-            } else if LegacySyntheticReimbursement.matchesWholeTransaction(
+            } else if LegacyReimbursementRepresentation
+                .matchesWholeTransaction(
                 treatmentRaw: decision.forecastTreatmentRaw,
-                amountSign: decision.amountSign,
                 categoryCanonicalId: decision.categoryCanonicalId,
+                categoryRaw: nil,
                 categoryName: decision.categoryNameSnapshot,
                 goalId: decision.goalId
             ) {
                 decision.forecastTreatment = .reimbursement
+                decision.categoryCanonicalId = nil
                 decision.categoryNameSnapshot = nil
                 decision.updatedAt = .now
                 result.durableDecisions += 1
@@ -1182,20 +1230,94 @@ struct LegacyReimbursementRepairService {
         for override in try context.fetch(
             FetchDescriptor<DurableTransactionOverride>()
         ) {
-            guard let data = override.subtransactionsData, !data.isEmpty else {
-                continue
-            }
-            switch try repairSplitData(data) {
-            case .unchanged:
-                break
-            case .undecodable:
-                result.undecodablePayloads += 1
-            case .repaired(let repairedData, let parentTreatment):
-                override.subtransactionsData = repairedData
-                override.forecastTreatmentRaw = parentTreatment.rawValue
+            if let data = override.subtransactionsData, !data.isEmpty {
+                switch try repairSplitData(data) {
+                case .unchanged:
+                    break
+                case .undecodable:
+                    result.undecodablePayloads += 1
+                case .repaired(let repairedData, let parentTreatment):
+                    override.subtransactionsData = repairedData
+                    override.forecastTreatmentRaw = parentTreatment.rawValue
+                    override.updatedAt = .now
+                    result.durableOverrides += 1
+                }
+            } else if LegacyReimbursementRepresentation
+                .matchesWholeTransaction(
+                    treatmentRaw: override.forecastTreatmentRaw,
+                    categoryCanonicalId: nil,
+                    categoryRaw: override.categoryRaw,
+                    categoryName: override.categoryName,
+                    goalId: nil
+                ) {
+                override.forecastTreatmentRaw =
+                    TransactionType.reimbursement.rawValue
+                override.categoryRaw = "other"
+                override.categoryName = nil
                 override.updatedAt = .now
                 result.durableOverrides += 1
             }
+        }
+
+        for rule in try context.fetch(
+            FetchDescriptor<DurableMerchantRule>()
+        ) where LegacyReimbursementRepresentation.matchesWholeTransaction(
+            treatmentRaw: rule.forecastTreatmentRaw,
+            categoryCanonicalId: nil,
+            categoryRaw: rule.categoryRaw,
+            categoryName: rule.categoryName,
+            goalId: nil
+        ) {
+            rule.forecastTreatmentRaw = TransactionType.reimbursement.rawValue
+            rule.categoryRaw = "other"
+            rule.categoryName = nil
+            rule.categoryReusable = false
+            rule.updatedAt = .now
+            result.merchantRules += 1
+        }
+
+        for suggestion in try context.fetch(
+            FetchDescriptor<YNABReferenceSuggestion>()
+        ) {
+            if let data = suggestion.subtransactionsData, !data.isEmpty {
+                switch try repairSplitData(data) {
+                case .unchanged:
+                    break
+                case .undecodable:
+                    result.undecodablePayloads += 1
+                case .repaired(let repairedData, let parentTreatment):
+                    suggestion.subtransactionsData = repairedData
+                    suggestion.forecastTreatmentRaw = parentTreatment.rawValue
+                    result.referenceSuggestions += 1
+                }
+            } else if LegacyReimbursementRepresentation
+                .matchesWholeTransaction(
+                    treatmentRaw: suggestion.forecastTreatmentRaw,
+                    categoryCanonicalId: suggestion.categoryCanonicalId,
+                    categoryRaw: nil,
+                    categoryName: suggestion.categoryNameSnapshot,
+                    goalId: nil
+                ) {
+                suggestion.forecastTreatmentRaw =
+                    TransactionType.reimbursement.rawValue
+                suggestion.categoryCanonicalId = nil
+                suggestion.categoryNameSnapshot = nil
+                result.referenceSuggestions += 1
+            }
+        }
+
+        for category in try context.fetch(
+            FetchDescriptor<DurableCanonicalCategory>()
+        ) where category.canonicalId
+            == LegacyReimbursementRepresentation.retiredCanonicalCategoryID
+            || LegacyReimbursementRepresentation
+                .isRetiredCategoryName(category.name)
+            || LegacyReimbursementRepresentation
+                .isRetiredCategoryName(category.sourceName) {
+            category.hidden = true
+            category.categoryGroupIdentity = nil
+            category.updatedAt = .now
+            result.canonicalCategories += 1
         }
 
         return result
@@ -1210,16 +1332,18 @@ struct LegacyReimbursementRepairService {
         }
         var changed = false
         let repairedLegs = legs.map { leg in
-            guard LegacySyntheticReimbursement.matches(leg) else {
+            guard LegacyReimbursementRepresentation.matches(leg) else {
                 return leg
             }
             changed = true
-            return LegacySyntheticReimbursement.repaired(leg)
+            return LegacyReimbursementRepresentation.repaired(leg)
         }
         guard changed else { return .unchanged }
         return .repaired(
             try JSONEncoder().encode(repairedLegs),
-            LegacySyntheticReimbursement.parentTreatment(for: repairedLegs)
+            LegacyReimbursementRepresentation.parentTreatment(
+                for: repairedLegs
+            )
         )
     }
 }
@@ -1352,7 +1476,9 @@ public final class PlaidTransactionSyncCoordinator {
     }
 
     private func repairLegacyReimbursements() -> Bool {
-        let markerKey = "legacyReimbursementRepair:v1"
+        // v4 targets the actual historical YNAB envelope identity found in
+        // the device store. v1-v3 matched only generic names/raw codes.
+        let markerKey = "legacyReimbursementRepair:v4"
         do {
             let marker = try mainContext.fetch(
                 FetchDescriptor<SyncCursor>(
@@ -2417,6 +2543,7 @@ public final class PlaidTransactionSyncCoordinator {
             ClassificationProvenance.historicalMatch.rawValue
         row.requiresNameReview = suggestion.payeeCanonicalId == nil
         row.requiresReview = true
+        normalizeLegacyReimbursement(in: row)
         row.updatedAt = .now
     }
 
@@ -2439,7 +2566,48 @@ public final class PlaidTransactionSyncCoordinator {
         row.classificationProvenanceRaw = decision.provenanceRaw
         row.requiresNameReview = decision.payeeCanonicalId == nil
         row.requiresReview = !decision.reviewed
+        normalizeLegacyReimbursement(in: row)
         row.updatedAt = .now
+    }
+
+    /// Enforces Reimbursement as a transaction type at the cache boundary.
+    /// This prevents old expense/refund category data from being restored by
+    /// a durable or reference replay after the one-time repair has run.
+    private func normalizeLegacyReimbursement(
+        in row: CachedFinancialTransaction
+    ) {
+        if let data = row.subtransactionsData, !data.isEmpty,
+           let legs = try? JSONDecoder().decode(
+               [SubTransactionSummary].self,
+               from: data
+           ) {
+            var changed = false
+            let repairedLegs = legs.map { leg in
+                guard LegacyReimbursementRepresentation.matches(leg) else {
+                    return leg
+                }
+                changed = true
+                return LegacyReimbursementRepresentation.repaired(leg)
+            }
+            guard changed,
+                  let repairedData = try? JSONEncoder().encode(repairedLegs)
+            else { return }
+            row.subtransactionsData = repairedData
+            row.forecastTreatmentRaw = LegacyReimbursementRepresentation
+                .parentTreatment(for: repairedLegs).rawValue
+            return
+        }
+        guard LegacyReimbursementRepresentation.matchesWholeTransaction(
+            treatmentRaw: row.forecastTreatmentRaw,
+            categoryCanonicalId: row.categoryCanonicalId,
+            categoryRaw: row.nativeCategoryRaw,
+            categoryName: row.categoryName,
+            goalId: row.goalId
+        ) else { return }
+        row.forecastTreatmentRaw = TransactionType.reimbursement.rawValue
+        row.nativeCategoryRaw = "other"
+        row.categoryCanonicalId = nil
+        row.categoryName = nil
     }
 
     private func latestCanonicalDecisionsByTransactionID(
@@ -3524,6 +3692,8 @@ public final class PlaidTransactionSyncCoordinator {
             in: .whitespacesAndNewlines
         )
         guard !cleanedName.isEmpty else { return nil }
+        guard !LegacyReimbursementRepresentation
+            .isRetiredCategoryName(cleanedName) else { return nil }
         let canonicalId = "networth:\(UUID().uuidString.lowercased())"
         mainContext.insert(DurableCanonicalCategory(
             canonicalId: canonicalId,
@@ -3567,7 +3737,10 @@ public final class PlaidTransactionSyncCoordinator {
         let cleanedGroup = groupName.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        guard !cleanedName.isEmpty, !cleanedGroup.isEmpty else {
+        guard !cleanedName.isEmpty,
+              !cleanedGroup.isEmpty,
+              !LegacyReimbursementRepresentation
+                .isRetiredCategoryName(cleanedName) else {
             return false
         }
         category.name = cleanedName
@@ -4107,6 +4280,7 @@ public final class PlaidTransactionSyncCoordinator {
         row.requiresReview = classification.requiresReview
         row.requiresNameReview = requiresNameReview
             && !preservesCompletedHistoricalNameReview
+        normalizeLegacyReimbursement(in: row)
         // Never resurrect: local deletion only ever comes from a bank removal
         // or a posted transaction superseding its pending authorization, and
         // Plaid never un-removes an id. A later added/modified redelivery for

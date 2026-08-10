@@ -2280,7 +2280,7 @@ struct AppContainerTests {
         #expect(second.undecodablePayloads == 0)
     }
 
-    @Test func legacyWholeReimbursementRepairPreservesRealCategoryRefunds()
+    @Test func legacyWholeReimbursementRepairIncludesExpensesAndPreservesOtherRefunds()
         throws {
         let syntheticSummary = try #require(
             PlaidTransactionDTO(
@@ -2300,6 +2300,15 @@ struct AppContainerTests {
                 name: "STORE REFUND"
             ).financialSummary(canonicalAccountId: "canonical-checking")
         )
+        let expenseSummary = try #require(
+            PlaidTransactionDTO(
+                id: "legacy-reimbursement-expense",
+                accountId: "checking-1",
+                date: "2026-07-30",
+                amount: 50,
+                name: "WORK EXPENSE"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
         let container = try ModelContainerFactory.makeContainer(inMemory: true)
         let context = container.mainContext
         let synthetic = CachedFinancialTransaction(
@@ -2315,9 +2324,11 @@ struct AppContainerTests {
         )
         let durableSynthetic = DurableCanonicalTransactionDecision(
             transactionExternalId: syntheticSummary.externalId,
-            categoryNameSnapshot: "Reimbursement",
+            categoryCanonicalId: LegacyReimbursementRepresentation
+                .retiredCanonicalCategoryID,
+            categoryNameSnapshot: "Reimbursement - $5K",
             amountSign: 1,
-            forecastTreatment: .refund,
+            forecastTreatment: .ordinarySpending,
             reviewed: true,
             provenance: .user
         )
@@ -2325,17 +2336,100 @@ struct AppContainerTests {
             summary: realRefundSummary,
             classification: TransactionClassification(
                 displayName: "Store Refund",
-                categoryName: "Reimbursement",
+                categoryName: "Shopping",
                 treatment: .refund,
                 confidence: .high,
                 provenance: .user,
                 requiresReview: false
             )
         )
-        realRefund.categoryCanonicalId = "networth:reimbursement-category"
+        realRefund.categoryCanonicalId = "networth:shopping"
+        let legacyExpense = CachedFinancialTransaction(
+            summary: expenseSummary,
+            classification: TransactionClassification(
+                displayName: "Work Expense",
+                categoryName: nil,
+                treatment: .ordinarySpending,
+                confidence: .high,
+                provenance: .user,
+                requiresReview: false
+            )
+        )
+        legacyExpense.nativeCategoryRaw = "other"
+        legacyExpense.categoryCanonicalId = LegacyReimbursementRepresentation
+            .retiredCanonicalCategoryID
+        legacyExpense.categoryName = "Reimbursement - $5K"
+        let legacyOverride = DurableTransactionOverride(
+            transactionExternalId: "legacy-override",
+            displayName: "Expense",
+            categoryName: "Reimbursements",
+            forecastTreatment: .ordinarySpending,
+            provenance: .user
+        )
+        legacyOverride.categoryRaw = "reimbursements"
+        let legacyRule = DurableMerchantRule(
+            fingerprint: "legacy-reimbursement-rule",
+            preferredName: "Expense",
+            categoryName: nil,
+            forecastTreatment: .ordinarySpending,
+            categoryReusable: true,
+            confirmed: true
+        )
+        legacyRule.categoryRaw = "reimbursements"
+        let legacySuggestion = YNABReferenceSuggestion(
+            plaidTransactionId: "legacy-suggestion",
+            ynabTransactionId: "ynab-legacy-suggestion",
+            categoryCanonicalId: LegacyReimbursementRepresentation
+                .retiredCanonicalCategoryID,
+            categoryNameSnapshot: "Reimbursement - $5K",
+            forecastTreatment: .ordinarySpending,
+            confidence: .high,
+            strong: true
+        )
+        let legacySplitSuggestion = YNABReferenceSuggestion(
+            plaidTransactionId: "legacy-split-suggestion",
+            ynabTransactionId: "ynab-legacy-split-suggestion",
+            forecastTreatment: .ordinarySpending,
+            subtransactionsData: try JSONEncoder().encode([
+                SubTransactionSummary(
+                    id: "legacy-reimbursement-leg",
+                    amount: Money(milliunits: -25_000),
+                    categoryId: LegacyReimbursementRepresentation
+                        .retiredYNABCategoryID,
+                    categoryName: "Reimbursement - $5K",
+                    categoryCanonicalId: LegacyReimbursementRepresentation
+                        .retiredCanonicalCategoryID,
+                    forecastTreatment: .ordinarySpending,
+                    payeeName: "Work Expense",
+                    memo: nil,
+                    deleted: false
+                )
+            ]),
+            confidence: .high,
+            strong: true
+        )
+        let legacyCategory = DurableCanonicalCategory(
+            canonicalId: LegacyReimbursementRepresentation
+                .retiredCanonicalCategoryID,
+            ynabCategoryId: LegacyReimbursementRepresentation
+                .retiredYNABCategoryID,
+            name: "Reimbursement - $5K",
+            groupName: "Other",
+            sourceName: "Reimbursement - $5K",
+            sourceGroupName: "Other",
+            categoryGroupIdentity: "group:other",
+            hidden: false,
+            userEdited: true
+        )
         context.insert(synthetic)
         context.insert(durableSynthetic)
         context.insert(realRefund)
+        context.insert(legacyExpense)
+        context.insert(legacyOverride)
+        context.insert(legacyRule)
+        context.insert(legacySuggestion)
+        context.insert(legacySplitSuggestion)
+        context.insert(legacyCategory)
         try context.save()
 
         let result = try LegacyReimbursementRepairService(
@@ -2343,15 +2437,45 @@ struct AppContainerTests {
         ).repair()
         try context.save()
 
-        #expect(result.cachedTransactions == 1)
+        #expect(result.cachedTransactions == 2)
         #expect(result.durableDecisions == 1)
+        #expect(result.durableOverrides == 1)
+        #expect(result.merchantRules == 1)
+        #expect(result.referenceSuggestions == 2)
+        #expect(result.canonicalCategories == 1)
         #expect(synthetic.forecastTreatment == .reimbursement)
         #expect(synthetic.categoryName == nil)
         #expect(durableSynthetic.forecastTreatment == .reimbursement)
         #expect(durableSynthetic.categoryNameSnapshot == nil)
+        #expect(legacyExpense.forecastTreatment == .reimbursement)
+        #expect(legacyExpense.nativeCategoryRaw == "other")
+        #expect(legacyExpense.categoryCanonicalId == nil)
+        #expect(legacyExpense.categoryName == nil)
+        #expect(legacyOverride.forecastTreatmentRaw
+            == TransactionType.reimbursement.rawValue)
+        #expect(legacyOverride.categoryRaw == "other")
+        #expect(legacyOverride.categoryName == nil)
+        #expect(legacyRule.forecastTreatmentRaw
+            == TransactionType.reimbursement.rawValue)
+        #expect(legacyRule.categoryRaw == "other")
+        #expect(legacyRule.categoryName == nil)
+        #expect(!legacyRule.categoryReusable)
+        #expect(legacySuggestion.forecastTreatment
+            == TransactionType.reimbursement)
+        #expect(legacySuggestion.categoryCanonicalId == nil)
+        #expect(legacySuggestion.categoryNameSnapshot == nil)
+        #expect(legacySplitSuggestion.subtransactions.count == 1)
+        #expect(legacySplitSuggestion.subtransactions[0].forecastTreatment
+            == .reimbursement)
+        #expect(legacySplitSuggestion.subtransactions[0].categoryId == nil)
+        #expect(legacySplitSuggestion.subtransactions[0].categoryCanonicalId
+            == nil)
+        #expect(legacySplitSuggestion.subtransactions[0].categoryName == nil)
+        #expect(legacyCategory.hidden)
+        #expect(legacyCategory.categoryGroupIdentity == nil)
         #expect(realRefund.forecastTreatment == .refund)
         #expect(realRefund.categoryCanonicalId
-            == "networth:reimbursement-category")
+            == "networth:shopping")
     }
 
     @Test func legacyReimbursementRepairPreservesUndecodableSplitData()

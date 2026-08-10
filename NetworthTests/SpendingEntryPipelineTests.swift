@@ -117,6 +117,81 @@ struct SpendingEntryPipelineTests {
         #expect(entries.map(\.transactionId) == ["ordinary"])
     }
 
+    @Test func legacySyntheticReimbursementSplitStaysOutsideSpending() throws {
+        let context = SpendingEntryPipeline.Context(
+            groups: [],
+            categories: [],
+            accounts: [account(id: "checking", type: .checking)]
+        )
+        let row = transaction(
+            id: "legacy-split",
+            accountID: "checking",
+            treatment: .unknown
+        )
+        row.amountMilliunits = 100_000
+        row.subtransactionsData = try JSONEncoder().encode([
+            SubTransactionSummary(
+                id: "income",
+                amount: Money(milliunits: 80_000),
+                categoryId: nil,
+                categoryName: "Income",
+                forecastTreatment: .income,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+            SubTransactionSummary(
+                id: "reimbursement",
+                amount: Money(milliunits: 20_000),
+                categoryId: nil,
+                categoryName: "Reimbursement",
+                forecastTreatment: .refund,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            )
+        ])
+
+        let entries = SpendingEntryPipeline.assembleEntries(
+            rows: [row],
+            context: context
+        )
+
+        #expect(entries.map(\.treatment) == [.income, .reimbursement])
+        let months = SpendingHistoryBuilder.build(
+            entries: entries,
+            monthsBack: 1,
+            now: row.postedDate,
+            calendar: Calendar(identifier: .gregorian)
+        )
+        #expect(months.count == 1)
+        #expect(months[0].totalMilliunits == 0)
+    }
+
+    @Test func legacyReimbursementExpenseStaysOutsideSpending() {
+        let context = SpendingEntryPipeline.Context(
+            groups: [],
+            categories: [],
+            accounts: [account(id: "checking", type: .checking)]
+        )
+        let row = transaction(
+            id: "legacy-expense",
+            accountID: "checking",
+            treatment: .ordinarySpending
+        )
+        row.nativeCategoryRaw = "other"
+        row.categoryCanonicalId = LegacyReimbursementRepresentation
+            .retiredCanonicalCategoryID
+        row.categoryName = "Reimbursement - $5K"
+
+        let entries = SpendingEntryPipeline.assembleEntries(
+            rows: [row],
+            context: context
+        )
+
+        #expect(entries.isEmpty)
+    }
+
     @Test func unknownTypesAndUnreadableSplitsFailClosed() {
         let context = SpendingEntryPipeline.Context(
             groups: [],
