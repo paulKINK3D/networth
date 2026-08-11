@@ -363,4 +363,58 @@ struct SpendingHistoryTests {
         #expect(group?.spentMilliunits == Money.dollars(15).milliunits)
     }
 
+    @Test func wholeDollarGroupRowsReconcileUpToRoundedHeadline() {
+        let month = SpendingHistoryBuilder.build(
+            entries: [
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(Decimal(string: "-10.49")!),
+                    group: ("g:a", "A")
+                ),
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(Decimal(string: "-10.49")!),
+                    group: ("g:b", "B")
+                )
+            ],
+            monthsBack: 1,
+            now: day(2026, 8, 4),
+            calendar: calendar
+        )[0]
+
+        let display = month.wholeDollarDisplay
+        #expect(display.ordinaryHeadline == Money.dollars(21))
+        #expect(display.groupAmountsByID["g:a"] == Money.dollars(11))
+        #expect(display.groupAmountsByID["g:b"] == Money.dollars(10))
+        #expect(display.groupAmountsByID.values.sum()
+            == display.ordinaryHeadline)
+    }
+
+    @Test func wholeDollarGroupRowsReconcileDownToRoundedHeadline() {
+        let month = SpendingHistoryBuilder.build(
+            entries: [
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(Decimal(string: "-10.51")!),
+                    group: ("g:a", "A")
+                ),
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(Decimal(string: "-10.51")!),
+                    group: ("g:b", "B")
+                )
+            ],
+            monthsBack: 1,
+            now: day(2026, 8, 4),
+            calendar: calendar
+        )[0]
+
+        let display = month.wholeDollarDisplay
+        #expect(display.ordinaryHeadline == Money.dollars(21))
+        #expect(display.groupAmountsByID["g:a"] == Money.dollars(11))
+        #expect(display.groupAmountsByID["g:b"] == Money.dollars(10))
+        #expect(display.groupAmountsByID.values.sum()
+            == display.ordinaryHeadline)
+    }
+
 }

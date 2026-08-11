@@ -1975,7 +1975,7 @@ private struct PlaidSplitDraft: Identifiable {
     }
 }
 
-/// One cluster of unreviewed historical transactions sharing the same
+/// One cluster of unreviewed transactions sharing the same
 /// suggested payee, category, and type. Approving writes an authoritative
 /// user decision for every member in a single save.
 struct HistoricalReviewCluster: Identifiable {
@@ -2037,9 +2037,19 @@ struct HistoricalReviewCluster: Identifiable {
             ) == .orderedAscending
         }
     }
+
+    static func pending(in context: ModelContext) -> [HistoricalReviewCluster] {
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.requiresReview && !$0.deleted && !$0.pending
+            }
+        )
+        let rows = (try? context.fetch(descriptor)) ?? []
+        return build(from: rows)
+    }
 }
 
-/// Grouped review of imported history: one row per suggested payee/category
+/// Grouped review of pending transactions: one row per suggested payee/category
 /// cluster with a large always-visible Approve target; anything that needs
 /// edits drills into the individual type-first editor, whose corrections
 /// become new training evidence.
@@ -2064,8 +2074,8 @@ struct GroupedHistoricalReviewSheet: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if clusters.isEmpty {
                     NwEmptyState(
-                        title: "History reviewed",
-                        message: "Every imported transaction has been approved.",
+                        title: "Transactions reviewed",
+                        message: "Every pending transaction has been approved.",
                         icon: .success
                     )
                 } else {
@@ -2111,7 +2121,7 @@ struct GroupedHistoricalReviewSheet: View {
                     .listStyle(.insetGrouped)
                 }
             }
-            .navigationTitle("Review History")
+            .navigationTitle("Review Transactions")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -2348,14 +2358,7 @@ struct GroupedHistoricalReviewSheet: View {
 
     private func reload() {
         let ctx = container.modelContainer.mainContext
-        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
-            predicate: #Predicate {
-                $0.requiresReview && !$0.deleted && !$0.pending
-            }
-        )
-        let rows = (try? ctx.fetch(descriptor)) ?? []
-        let historical = rows.filter { $0.reviewOriginRaw == "historical" }
-        clusters = HistoricalReviewCluster.build(from: historical)
+        clusters = HistoricalReviewCluster.pending(in: ctx)
         loaded = true
     }
 }

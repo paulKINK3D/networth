@@ -65,6 +65,14 @@ struct PlaidInvestmentsTests {
         #expect(account.usesSupportedCurrency == false)
     }
 
+    @Test func retirementClassifierRecognizesPlaidIRASubtypes() {
+        #expect(PlaidRetirementClassifier.isRetirement(subtype: "ira"))
+        #expect(PlaidRetirementClassifier.isRetirement(subtype: " Roth "))
+        #expect(PlaidRetirementClassifier.isRetirement(subtype: "401K"))
+        #expect(!PlaidRetirementClassifier.isRetirement(subtype: "brokerage"))
+        #expect(!PlaidRetirementClassifier.isRetirement(subtype: nil))
+    }
+
     private func itemDTO() -> PlaidItemDTO {
         PlaidItemDTO(
             id: "item-1",

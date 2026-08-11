@@ -131,6 +131,64 @@ public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
     public var ordinaryTotal: Money {
         Money(milliunits: ordinaryTotalMilliunits)
     }
+
+    /// Whole-dollar amounts for the compact Spending summary. Positive
+    /// ordinary groups use largest-remainder allocation so their displayed
+    /// dollars add exactly to the displayed ordinary headline. Exact
+    /// milliunit totals remain unchanged for charts and detail views.
+    public var wholeDollarDisplay: SpendingHistoryWholeDollarDisplay {
+        var groupAmounts = Dictionary(uniqueKeysWithValues: groups.map {
+            ($0.id, Money(milliunits: Self.roundedWholeDollar($0.spentMilliunits)))
+        })
+        let ordinaryGroups = groups.filter {
+            $0.isOrdinarySpending && $0.spentMilliunits > 0
+        }
+        let headlineMilliunits = Self.roundedWholeDollar(
+            ordinaryTotalMilliunits
+        )
+        let baseMilliunits = ordinaryGroups.reduce(Int64(0)) {
+            $0 + ($1.spentMilliunits / 1_000) * 1_000
+        }
+        let awardCount = max(
+            0,
+            min(
+                ordinaryGroups.count,
+                Int((headlineMilliunits - baseMilliunits) / 1_000)
+            )
+        )
+        let awardIDs = Set(ordinaryGroups.sorted {
+            let lhsRemainder = $0.spentMilliunits % 1_000
+            let rhsRemainder = $1.spentMilliunits % 1_000
+            if lhsRemainder != rhsRemainder {
+                return lhsRemainder > rhsRemainder
+            }
+            return $0.id < $1.id
+        }.prefix(awardCount).map(\.id))
+
+        for group in ordinaryGroups {
+            let base = (group.spentMilliunits / 1_000) * 1_000
+            groupAmounts[group.id] = Money(
+                milliunits: base + (awardIDs.contains(group.id) ? 1_000 : 0)
+            )
+        }
+        return SpendingHistoryWholeDollarDisplay(
+            ordinaryHeadline: Money(milliunits: headlineMilliunits),
+            groupAmountsByID: groupAmounts
+        )
+    }
+
+    private static func roundedWholeDollar(_ milliunits: Int64) -> Int64 {
+        let whole = milliunits / 1_000
+        let remainder = milliunits % 1_000
+        if remainder >= 500 { return (whole + 1) * 1_000 }
+        if remainder <= -500 { return (whole - 1) * 1_000 }
+        return whole * 1_000
+    }
+}
+
+public struct SpendingHistoryWholeDollarDisplay: Sendable, Hashable {
+    public let ordinaryHeadline: Money
+    public let groupAmountsByID: [String: Money]
 }
 
 /// Builds the Spending History months from approved activity.

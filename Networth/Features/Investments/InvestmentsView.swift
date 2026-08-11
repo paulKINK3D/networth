@@ -57,8 +57,13 @@ private enum InvestmentHolding: Identifiable {
         case .ynab: return "YNAB Investment"
         case .manual(let asset): return asset.kind.displayName
         case .plaid(let account):
-            return account.mask.map { "\(account.institutionName) •••• \($0)" }
-                ?? account.institutionName
+            let kind = PlaidRetirementClassifier.isRetirement(
+                subtype: account.subtype
+            ) ? "Retirement" : "Brokerage"
+            let institution = account.mask.map {
+                "\(account.institutionName) •••• \($0)"
+            } ?? account.institutionName
+            return "\(kind) · \(institution)"
         }
     }
 
@@ -72,8 +77,10 @@ private enum InvestmentHolding: Identifiable {
             case .crypto: return .crypto
             default: return .otherAsset
             }
-        case .plaid:
-            return .brokerage
+        case .plaid(let account):
+            return PlaidRetirementClassifier.isRetirement(
+                subtype: account.subtype
+            ) ? .retirement : .brokerage
         }
     }
 
@@ -472,15 +479,33 @@ struct InvestmentsView: View {
             ))
         }
 
-        let plaidTotal = plaidResolver.contributingPlaidAccounts
+        let connectedRetirementTotal = plaidResolver.contributingPlaidAccounts
+            .filter {
+                PlaidRetirementClassifier.isRetirement(subtype: $0.subtype)
+            }
             .compactMap(\.currentBalance)
             .sum()
-        if !plaidTotal.isZero {
+        if !connectedRetirementTotal.isZero {
             result.append(InvestmentAllocation(
-                id: "plaid",
-                title: "Connected Investments",
+                id: "plaid-retirement",
+                title: "Connected Retirement",
+                icon: .retirement,
+                amount: connectedRetirementTotal
+            ))
+        }
+
+        let connectedBrokerageTotal = plaidResolver.contributingPlaidAccounts
+            .filter {
+                !PlaidRetirementClassifier.isRetirement(subtype: $0.subtype)
+            }
+            .compactMap(\.currentBalance)
+            .sum()
+        if !connectedBrokerageTotal.isZero {
+            result.append(InvestmentAllocation(
+                id: "plaid-brokerage",
+                title: "Connected Brokerage",
                 icon: .brokerage,
-                amount: plaidTotal
+                amount: connectedBrokerageTotal
             ))
         }
 
@@ -739,7 +764,7 @@ private struct InvestmentAccountDetailView: View {
     }
 }
 
-private struct PlaidInvestmentAccountDetailView: View {
+struct PlaidInvestmentAccountDetailView: View {
     let account: CachedPlaidAccount
     @Query private var holdings: [CachedPlaidHolding]
     @Query private var securities: [CachedPlaidSecurity]

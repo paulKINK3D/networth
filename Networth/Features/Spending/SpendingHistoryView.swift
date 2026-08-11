@@ -169,7 +169,7 @@ struct SpendingHistoryView: View {
                     .foregroundStyle(.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: NwSpacing.sm) {
                     NwAmountText(
-                        month.ordinaryTotal,
+                        month.wholeDollarDisplay.ordinaryHeadline,
                         variant: .hero,
                         showCents: false
                     )
@@ -253,6 +253,7 @@ struct SpendingHistoryView: View {
         model: SpendingHistoryModel
     ) -> some View {
         let groups = orderedGroups(in: month)
+        let displayAmounts = month.wholeDollarDisplay.groupAmountsByID
         let currentTotal = Double(max(0, month.ordinaryTotalMilliunits))
         let typical = typicalMonthlySpend(model)
             .map { Double($0.milliunits) } ?? currentTotal
@@ -287,7 +288,12 @@ struct SpendingHistoryView: View {
                     Divider().padding(.leading, NwSpacing.md)
                     ForEach(Array(groups.enumerated()), id: \.element.id) {
                         index, group in
-                        legendRow(group, month: month)
+                        legendRow(
+                            group,
+                            month: month,
+                            displayAmount: displayAmounts[group.id]
+                                ?? group.spent
+                        )
                         if index < groups.count - 1 {
                             Divider().padding(.leading, NwSpacing.md)
                         }
@@ -318,7 +324,8 @@ struct SpendingHistoryView: View {
     /// menu keeps the quick reorder action available.
     private func legendRow(
         _ group: SpendingHistoryGroupTotal,
-        month: SpendingHistoryMonth
+        month: SpendingHistoryMonth,
+        displayAmount: Money
     ) -> some View {
         let isSelected = selectedChartSeriesID == group.id
         let isSpending = group.isOrdinarySpending
@@ -346,7 +353,7 @@ struct SpendingHistoryView: View {
                     .lineLimit(1)
                 Spacer(minLength: NwSpacing.sm)
                 NwAmountText(
-                    group.spent,
+                    displayAmount,
                     variant: .body,
                     showCents: false,
                     color: group.spentMilliunits < 0

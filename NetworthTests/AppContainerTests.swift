@@ -368,14 +368,64 @@ struct AppContainerTests {
         let scheduler = SnapshotScheduler(mainContext: context)
 
         #expect(scheduler.computeBreakdown().investments == .zero)
+        #expect(PlaidContributionResolver(
+            plaidAccounts: [account],
+            treatments: [treatment],
+            manualAssets: []
+        ).standalonePlaidAccounts.isEmpty)
 
         treatment.treatment = .duplicateYNAB
         try context.save()
         #expect(scheduler.computeBreakdown().investments == .zero)
+        #expect(PlaidContributionResolver(
+            plaidAccounts: [account],
+            treatments: [treatment],
+            manualAssets: []
+        ).standalonePlaidAccounts.isEmpty)
 
         treatment.treatment = .included
         try context.save()
         #expect(scheduler.computeBreakdown().investments == Money.dollars(25_000))
+        #expect(PlaidContributionResolver(
+            plaidAccounts: [account],
+            treatments: [treatment],
+            manualAssets: []
+        ).standalonePlaidAccounts.map(\.id) == [account.id])
+    }
+
+    @Test func groupedReviewIncludesNewPostedTransactions() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let summary = try #require(
+            PlaidTransactionDTO(
+                id: "new-review",
+                accountId: "checking-1",
+                date: "2026-08-11",
+                amount: 24.50,
+                name: "MARKET",
+                merchantName: "Market"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        context.insert(CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassification(
+                displayName: "Market",
+                categoryName: "Groceries",
+                treatment: .ordinarySpending,
+                confidence: .high,
+                provenance: .plaidEnrichment,
+                requiresReview: true
+            ),
+            reviewOriginRaw: "new"
+        ))
+        try context.save()
+
+        let clusters = HistoricalReviewCluster.pending(in: context)
+
+        #expect(clusters.count == 1)
+        #expect(clusters.first?.transactionIDs == [summary.id])
     }
 
     @Test func plaidManualMatchReplacesCurrentValueWithoutDoubleCounting() throws {

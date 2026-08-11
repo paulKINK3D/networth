@@ -226,33 +226,14 @@ struct AccountsView: View {
                             HStack(spacing: NwSpacing.md) {
                                 NwIcon.warning.image
                                     .foregroundStyle(NwAppColors.caution)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Review imported history")
-                                        .foregroundStyle(NwAppColors.textPrimary)
-                                    Text("Approve suggested groups in one tap; open a group to fix anything first.")
-                                        .font(NwTypography.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
+                                Text("Review Transactions")
+                                    .foregroundStyle(NwAppColors.textPrimary)
                                 Spacer()
                                 NwStatusBadge(
                                     "\(pendingClassificationReviewCount)",
                                     style: .caution,
                                     icon: .warning
                                 )
-                                NwIcon.chevron.image
-                                    .foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        Button {
-                            showingClassificationReview = true
-                        } label: {
-                            HStack(spacing: NwSpacing.md) {
-                                NwIcon.confirm.image
-                                    .foregroundStyle(NwAppColors.primary)
-                                Text("Review one by one")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                                Spacer()
                                 NwIcon.chevron.image
                                     .foregroundStyle(.secondary)
                             }
@@ -315,6 +296,24 @@ struct AccountsView: View {
                     }
                 }
 
+                if !standalonePlaidInvestmentAccounts.isEmpty {
+                    Section {
+                        ForEach(standalonePlaidInvestmentAccounts) { account in
+                            NavigationLink {
+                                PlaidInvestmentAccountDetailView(account: account)
+                            } label: {
+                                plaidInvestmentAccountRow(account)
+                            }
+                        }
+                    } header: {
+                        sectionHeader(
+                            "Connected Investments",
+                            total: standalonePlaidInvestmentTotal,
+                            isLiability: false
+                        )
+                    }
+                }
+
                 if let linkedDocument = container.linkedIBRLoanDocument {
                     Section {
                         NavigationLink {
@@ -344,6 +343,7 @@ struct AccountsView: View {
 
                 if accountSections.isEmpty &&
                     financialAccountSections.isEmpty &&
+                    standalonePlaidInvestmentAccounts.isEmpty &&
                     assets.isEmpty &&
                     container.linkedIBRLoanDocument == nil {
                     NwEmptyState(
@@ -492,6 +492,38 @@ struct AccountsView: View {
                 variant: .body,
                 color: isLiability ? NwAppColors.liability : nil
             )
+        }
+    }
+
+    private var standalonePlaidInvestmentAccounts: [CachedPlaidAccount] {
+        plaidResolver.standalonePlaidAccounts.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private var standalonePlaidInvestmentTotal: Money {
+        standalonePlaidInvestmentAccounts.compactMap(\.currentBalance).sum()
+    }
+
+    private func plaidInvestmentAccountRow(
+        _ account: CachedPlaidAccount
+    ) -> some View {
+        let icon: NwIcon = PlaidRetirementClassifier.isRetirement(
+            subtype: account.subtype
+        ) ? .retirement : .brokerage
+        let mask = account.mask.map { " •••• \($0)" } ?? ""
+        return HStack(spacing: NwSpacing.md) {
+            icon.image
+                .foregroundStyle(NwAppColors.primary)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(account.name).font(NwTypography.body)
+                Text("\(account.institutionName)\(mask)")
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            NwAmountText(account.currentBalance ?? .zero, variant: .body)
         }
     }
 

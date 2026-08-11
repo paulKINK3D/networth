@@ -1,6 +1,6 @@
 # WORKING
 
-## Stabilization checkpoint (2026-08-09)
+## Stabilization checkpoint (2026-08-11)
 
 - `ux-cleanup` contains focused commits for retired Fresh Start removal,
   atomic category deletion, YNAB reference-only categories, type-driven
@@ -9,6 +9,23 @@
   transfer reminders, and the verified reimbursement repair. The agreed
   behavior-level redesign is implemented; the branch is now in correctness,
   performance, and interaction-polish work and has not yet merged to `main`.
+- On 2026-08-11, All Accounts began rendering standalone Plaid investment
+  accounts from the same reconciliation resolver used by Net Worth. Only
+  explicitly included, supported-currency accounts with a live balance appear;
+  duplicate, manual-asset-matched, excluded, and pending-review rows remain
+  hidden. Rows reuse the holdings-aware Plaid investment detail screen.
+- Investments now applies the same Plaid retirement-subtype classifier as Net
+  Worth. IRA-style accounts use retirement labels/icons and a separate
+  Connected Retirement allocation instead of appearing as brokerage.
+- Spending's whole-dollar summary uses deterministic largest-remainder display
+  allocation across positive ordinary groups. The displayed rows now add
+  exactly to the displayed headline while underlying milliunit totals, charts,
+  and cent-precise detail remain unchanged.
+- The Accounts review entry is now one concise `Review Transactions` action.
+  Its grouped sheet loads every posted row represented by the pending badge,
+  including new transactions as well as unresolved historical imports; the
+  prior historical-only filter could show a nonzero badge followed by an
+  incorrect all-reviewed empty state.
 - The pending goal-transfer slice is intentionally confirm-first. A Goal
   Spend/Refund made through a cashflow account creates a durable reminder,
   adjusts the pool until the real account balances catch up, lets the user
@@ -35,16 +52,15 @@
   mixed splits now pass through to projections and display as Split. Existing
   phone data required no additional migration; income and labels were verified
   on-device after installing the fix.
-- The first P0 stabilization item is closed: Reimbursement is a top-level
-  transaction type, its legacy phone data is repaired, and it no longer enters
-  monthly Spending. Remaining P0 correctness work, in order:
-  1. Standalone Plaid investment accounts contribute to Net Worth but are not
-     rendered by All Accounts.
-  2. The Investments screen presents Plaid IRAs as brokerage accounts even
-     though Net Worth classifies their balances as retirement.
-  3. Independently rounded Spending group rows can differ by one dollar from
-     the rounded monthly headline.
+- All identified P0 stabilization correctness items are closed: reimbursement
+  classification and repair, standalone Plaid accounts in All Accounts, Plaid
+  IRA retirement presentation, and reconciled Spending whole-dollar display.
 - Known UX work still open:
+  - Review Transactions needs a focused polish pass: shrink or remove the
+    oversized instructional card, use correct singular/plural transaction
+    counts, and make the row actions consistent and self-explanatory when a
+    suggestion cannot yet be approved (the missing green confirmation action
+    currently shifts alignment without explaining why editing is required).
   - Goal allocation editing needs a deliberate redesign. The committed staged
     sheet remains temporarily; the rejected per-goal Add/Remove experiment was
     not retained.
@@ -55,11 +71,9 @@
     accounts where they do not control banking or Goals behavior.
 - A connected Cash Plus account temporarily lacked a usable live balance until
   Plaid reconnect completed. The exact stale-cache/recovery cause remains open.
-- Checkpoint validation: NetworthCore 211/211; generic-device Debug and Release
+- Checkpoint validation: NetworthCore 214/214; generic-device Debug and Release
   builds pass; the app test bundle compiles with `build-for-testing`. App tests
   were not run because simulator execution was not requested.
-- `Networth/Features/Projections/ProjectionsView.swift` contains an unrelated
-  user-owned worktree change and must remain outside stabilization commits.
 
 ## Goals overhaul (2026-08-09)
 
