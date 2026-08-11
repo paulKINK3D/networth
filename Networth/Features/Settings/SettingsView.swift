@@ -36,6 +36,10 @@ struct SettingsView: View {
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
     @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
+    @Query(sort: \DurableCanonicalPayee.name)
+    private var canonicalPayees: [DurableCanonicalPayee]
+    @Query(sort: \DurableCanonicalCategory.name)
+    private var canonicalCategories: [DurableCanonicalCategory]
     @Query(sort: \DurableRecurringExpectation.nextOccurrenceAt)
     private var recurringExpectations: [DurableRecurringExpectation]
 
@@ -59,6 +63,7 @@ struct SettingsView: View {
     @State private var showingClaudeConsent = false
     @State private var plaidItemToRemove: CachedPlaidItem?
     @State private var plaidManagedManualAsset: DurableManualAsset?
+    @State private var manualAssetToDelete: DurableManualAsset?
     @State private var showingRemovePlaidConfirm = false
     @State private var plaidActionError: String?
 
@@ -149,6 +154,30 @@ struct SettingsView: View {
                     .disabled(!container.biometricGate.isAvailable || !(settings?.faceIDEnabled ?? false))
                 } header: {
                     Text("Authentication")
+                }
+            }
+
+            if page == .connections {
+                Section {
+                    NavigationLink {
+                        CanonicalPayeeListView()
+                    } label: {
+                        LabeledContent(
+                            "Contacts",
+                            value: "\(canonicalPayees.filter { !$0.archived }.count)"
+                        )
+                    }
+
+                    NavigationLink {
+                        CanonicalCategoryListView()
+                    } label: {
+                        LabeledContent(
+                            "Categories",
+                            value: "\(canonicalCategories.filter { !$0.hidden }.count)"
+                        )
+                    }
+                } header: {
+                    Text("Transaction Organization")
                 }
             }
 
@@ -548,11 +577,13 @@ struct SettingsView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(asset.name.isEmpty ? "Untitled" : asset.name)
                                             .foregroundStyle(NwAppColors.textPrimary)
-                                        if !replacementAccounts.isEmpty {
-                                            Text("Live from Plaid")
-                                                .font(NwTypography.footnote)
-                                                .foregroundStyle(.secondary)
-                                        }
+                                        Text(
+                                            replacementAccounts.isEmpty
+                                                ? asset.kind.displayName
+                                                : "\(asset.kind.displayName) · Live from Plaid"
+                                        )
+                                        .font(NwTypography.footnote)
+                                        .foregroundStyle(.secondary)
                                     }
                                 } icon: {
                                     icon(for: asset.kind).image.foregroundStyle(NwAppColors.accent)
@@ -564,14 +595,30 @@ struct SettingsView: View {
                                 )
                             }
                         }
-                        .swipeActions(allowsFullSwipe: false) {
+                        .swipeActions(
+                            edge: .leading,
+                            allowsFullSwipe: false
+                        ) {
+                            if replacementAccounts.isEmpty {
+                                Button {
+                                    showingAssetForm = asset
+                                } label: {
+                                    Label("Edit", systemImage: "pencil")
+                                }
+                                .tint(NwAppColors.info)
+                            }
+                        }
+                        .swipeActions(
+                            edge: .trailing,
+                            allowsFullSwipe: false
+                        ) {
                             if replacementAccounts.isEmpty {
                                 Button(role: .destructive) {
-                                    asset.deleted = true
-                                    container.modelContainer.mainContext.safeSave(source: "settings.deleteAsset")
+                                    manualAssetToDelete = asset
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
+                                .tint(NwAppColors.liability)
                             }
                         }
                     }
@@ -641,20 +688,7 @@ struct SettingsView: View {
                             }
                             .contentShape(Rectangle())
                         }
-                        .swipeActions(allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                let prior = expectation.archived
-                                expectation.archived = true
-                                expectation.updatedAt = .now
-                                if !container.modelContainer.mainContext
-                                    .safeSave(source: "settings.archiveExpectation") {
-                                    // Revert so the row doesn't look deleted
-                                    // while the store still has it.
-                                    expectation.archived = prior
-                                }
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
                             Button {
                                 let prior = expectation.nextOccurrenceAt
                                 expectation.nextOccurrenceAt =
@@ -672,6 +706,22 @@ struct SettingsView: View {
                                 Label("Skip Next", systemImage: "arrow.uturn.forward")
                             }
                             .tint(NwAppColors.info)
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                let prior = expectation.archived
+                                expectation.archived = true
+                                expectation.updatedAt = .now
+                                if !container.modelContainer.mainContext
+                                    .safeSave(source: "settings.archiveExpectation") {
+                                    // Revert so the row doesn't look deleted
+                                    // while the store still has it.
+                                    expectation.archived = prior
+                                }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .tint(NwAppColors.liability)
                         }
                     }
                 } header: {
@@ -769,6 +819,25 @@ struct SettingsView: View {
             } message: {
                 Text("Re-imports all banking transactions from Plaid. Chart history, assets, and settings stay intact.")
             }
+            .alert(
+                "Delete Manual Asset?",
+                isPresented: Binding(
+                    get: { manualAssetToDelete != nil },
+                    set: { if !$0 { manualAssetToDelete = nil } }
+                ),
+                presenting: manualAssetToDelete
+            ) { asset in
+                Button("Cancel", role: .cancel) {
+                    manualAssetToDelete = nil
+                }
+                Button("Delete", role: .destructive) {
+                    deleteManualAsset(asset)
+                }
+            } message: { asset in
+                Text(
+                    "Removes \(asset.name.isEmpty ? "this manual asset" : asset.name) and its saved value history from Net Worth."
+                )
+            }
             .alert("Remove Connection?", isPresented: $showingRemovePlaidConfirm, presenting: plaidItemToRemove) { item in
                 Button("Cancel", role: .cancel) {}
                 Button("Remove", role: .destructive) {
@@ -798,6 +867,18 @@ struct SettingsView: View {
             } message: { asset in
                 Text("Plaid supplies the current value for \(asset.name.isEmpty ? "this asset" : asset.name). Change its match before editing or deleting; manual history stays intact.")
             }
+    }
+
+    private func deleteManualAsset(_ asset: DurableManualAsset) {
+        manualAssetToDelete = nil
+        let context = container.modelContainer.mainContext
+        let wasDeleted = asset.deleted
+        asset.deleted = true
+        guard context.safeSave(source: "settings.deleteAsset") else {
+            asset.deleted = wasDeleted
+            return
+        }
+        container.recordDailySnapshot()
     }
 
     private var isSyncing: Bool {
@@ -893,6 +974,7 @@ struct SettingsView: View {
             } label: {
                 Label("Remove", systemImage: NwIcon.delete.rawValue)
             }
+            .tint(NwAppColors.liability)
         }
     }
 
@@ -1338,6 +1420,7 @@ private struct PlaidBankingConnectionSheet: View {
                                 } label: {
                                     Label("Remove", systemImage: NwIcon.delete.rawValue)
                                 }
+                                .tint(NwAppColors.liability)
                             }
                         }
                     } header: {
@@ -1796,7 +1879,6 @@ struct PlaidClassificationReviewSheet: View {
         return NavigationLink {
             PlaidTransactionReviewEditor(
                 transaction: transaction,
-                matchingTransactions: [transaction],
                 dismissAfterSave: true,
                 onSaved: {
                     removeCompletedReview(transaction.id)
@@ -1993,9 +2075,48 @@ struct HistoricalReviewCluster: Identifiable {
 
     var canBatchApprove: Bool {
         guard !displayName.isEmpty else { return false }
+        guard treatment != .unknown,
+              !TransactionTypeRules.requiresGoal(treatment) else {
+            return false
+        }
         guard treatment.requiresCategory else { return true }
         return categoryCanonicalId != nil
             || categoryName?.isEmpty == false
+    }
+
+    var canApproveAsShown: Bool {
+        isSplit ? !displayName.isEmpty : canBatchApprove
+    }
+
+    var transactionCountText: String {
+        transactionIDs.count == 1
+            ? "1 transaction"
+            : "\(transactionIDs.count) transactions"
+    }
+
+    var approvalRequirement: String? {
+        guard !canApproveAsShown else { return nil }
+        let needsPayee = displayName.isEmpty
+        let needsCategory = treatment.requiresCategory
+            && categoryCanonicalId == nil
+            && categoryName?.isEmpty != false
+
+        if needsPayee && needsCategory {
+            return "Add a payee and choose a category to approve."
+        }
+        if needsPayee {
+            return "Add a payee to approve."
+        }
+        if treatment == .unknown {
+            return "Choose a transaction type to approve."
+        }
+        if TransactionTypeRules.requiresGoal(treatment) {
+            return "Open each transaction to choose a goal."
+        }
+        if needsCategory {
+            return "Choose a category to approve."
+        }
+        return "Edit the details before approving."
     }
 
     static func build(
@@ -2050,7 +2171,7 @@ struct HistoricalReviewCluster: Identifiable {
 }
 
 /// Grouped review of pending transactions: one row per suggested payee/category
-/// cluster with a large always-visible Approve target; anything that needs
+/// cluster with always-aligned edit and approval actions. Anything that needs
 /// edits drills into the individual type-first editor, whose corrections
 /// become new training evidence.
 struct GroupedHistoricalReviewSheet: View {
@@ -2088,11 +2209,8 @@ struct GroupedHistoricalReviewSheet: View {
                             )
                             .listRowBackground(Color.clear)
                         }
-                        Section {
-                            if isSelecting {
-                                Text("Tap groups to select, then Approve — each is approved exactly as shown.")
-                                    .font(NwTypography.footnote)
-                                    .foregroundStyle(.secondary)
+                        if isSelecting {
+                            Section {
                                 Button(allApprovableSelected
                                     ? "Deselect All"
                                     : "Select All") {
@@ -2108,10 +2226,8 @@ struct GroupedHistoricalReviewSheet: View {
                                             .foregroundStyle(.secondary)
                                     }
                                 }
-                            } else {
-                                Text("✓ approves the group exactly as shown. ✎ changes the payee, type, or category first. Tap a row to review transactions one by one.")
-                                    .font(NwTypography.footnote)
-                                    .foregroundStyle(.secondary)
+                            } footer: {
+                                Text("Select groups to approve as shown. Groups with an editing instruction cannot be selected.")
                             }
                         }
                         ForEach(clusters) { cluster in
@@ -2159,7 +2275,7 @@ struct GroupedHistoricalReviewSheet: View {
     }
 
     private var approvableClusters: [HistoricalReviewCluster] {
-        clusters.filter { $0.canBatchApprove || $0.isSplit }
+        clusters.filter(\.canApproveAsShown)
     }
 
     private var allApprovableSelected: Bool {
@@ -2170,7 +2286,7 @@ struct GroupedHistoricalReviewSheet: View {
     @ViewBuilder
     private func clusterRow(_ cluster: HistoricalReviewCluster) -> some View {
         if isSelecting {
-            let selectable = cluster.canBatchApprove || cluster.isSplit
+            let selectable = cluster.canApproveAsShown
             Button {
                 guard selectable else { return }
                 if selectedClusterIDs.contains(cluster.id) {
@@ -2189,19 +2305,11 @@ struct GroupedHistoricalReviewSheet: View {
                                 ? NwAppColors.positive
                                 : Color.secondary
                         )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(cluster.displayName.isEmpty
-                            ? "Unnamed merchant"
-                            : cluster.displayName)
-                            .font(NwTypography.body.weight(.semibold))
-                        Text(clusterSubtitle(cluster))
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                    clusterLabel(cluster)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
-                .opacity(selectable ? 1 : 0.4)
+                .opacity(selectable ? 1 : 0.65)
             }
             .buttonStyle(.plain)
         } else {
@@ -2213,46 +2321,51 @@ struct GroupedHistoricalReviewSheet: View {
     private func standardClusterRow(
         _ cluster: HistoricalReviewCluster
     ) -> some View {
-        HStack(spacing: NwSpacing.md) {
-            NavigationLink {
-                clusterDetail(cluster)
-            } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(cluster.displayName.isEmpty
-                        ? "Unnamed merchant"
-                        : cluster.displayName)
-                        .font(NwTypography.body.weight(.semibold))
-                    Text(clusterSubtitle(cluster))
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 0)
+        NavigationLink {
+            clusterDetail(cluster)
+        } label: {
+            clusterLabel(cluster)
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
             // Reclassify the whole group before approving — e.g. a payee
             // whose suggested type is wrong for every member.
             Button {
                 editingCluster = cluster
             } label: {
-                Image(systemName: "pencil.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(NwAppColors.info)
+                Label("Edit", systemImage: "pencil")
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(
-                "Edit and approve \(cluster.transactionIDs.count) transactions"
-            )
-            if cluster.canBatchApprove {
+            .tint(NwAppColors.info)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if cluster.canApproveAsShown {
                 Button {
                     approve(cluster)
                 } label: {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(NwAppColors.positive)
+                    Label("Approve", systemImage: "checkmark")
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(
-                    "Approve \(cluster.transactionIDs.count) transactions"
+                .tint(NwAppColors.positive)
+            }
+        }
+    }
+
+    private func clusterLabel(
+        _ cluster: HistoricalReviewCluster
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(cluster.displayName.isEmpty
+                ? "Unnamed merchant"
+                : cluster.displayName)
+                .font(NwTypography.body.weight(.semibold))
+            Text(clusterSubtitle(cluster))
+                .font(NwTypography.footnote)
+                .foregroundStyle(.secondary)
+            if let requirement = cluster.approvalRequirement {
+                Label(
+                    "Edit required: \(requirement)",
+                    systemImage: "exclamationmark.circle.fill"
                 )
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(NwAppColors.caution)
             }
         }
     }
@@ -2271,7 +2384,7 @@ struct GroupedHistoricalReviewSheet: View {
            !categoryName.isEmpty {
             parts.append(categoryName)
         }
-        parts.append("\(cluster.transactionIDs.count) transactions")
+        parts.append(cluster.transactionCountText)
         parts.append(
             CurrencyFormatter.currency(
                 Money(milliunits: cluster.totalMilliunits).absolute
@@ -2351,7 +2464,10 @@ struct GroupedHistoricalReviewSheet: View {
             approveError = "This group could not be approved. Open it and review a transaction to fix the details."
         } else if cluster.isSplit,
                   approved < cluster.transactionIDs.count {
-            approveError = "\(approved) approved; \(cluster.transactionIDs.count - approved) splits need individual review."
+            let remaining = cluster.transactionIDs.count - approved
+            approveError = remaining == 1
+                ? "\(approved) approved; 1 transaction needs individual review."
+                : "\(approved) approved; \(remaining) transactions need individual review."
         }
         reload()
     }
@@ -2404,7 +2520,6 @@ struct ClusterTransactionsDetail: View {
                     NavigationLink {
                         PlaidTransactionReviewEditor(
                             transaction: row,
-                            matchingTransactions: [],
                             dismissAfterSave: true,
                             onSaved: {
                                 reloadRows()
@@ -2713,13 +2828,13 @@ struct ClusterBatchEditSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("Applies to all \(cluster.transactionIDs.count) transactions in this group.")
+                    Text("Applies to \(cluster.transactionCountText) in this group.")
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                     if isApproving {
                         HStack(spacing: NwSpacing.sm) {
                             ProgressView().controlSize(.small)
-                            Text("Approving \(cluster.transactionIDs.count) transactions…")
+                            Text("Approving \(cluster.transactionCountText)…")
                                 .font(NwTypography.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -2733,7 +2848,7 @@ struct ClusterBatchEditSheet: View {
                     }
                 }
                 Section {
-                    Picker("Transaction type", selection: $treatment) {
+                    Picker("Type", selection: $treatment) {
                         ForEach(
                             TransactionType.allCases.filter {
                                 !TransactionTypeRules.requiresGoal($0)
@@ -2767,8 +2882,6 @@ struct ClusterBatchEditSheet: View {
                     }
                 } header: {
                     Text("Type")
-                } footer: {
-                    Text(typeConsequenceFootnote(for: treatment))
                 }
                 Section("Details") {
                     TextField("Payee", text: $displayName)
@@ -2823,7 +2936,7 @@ struct ClusterBatchEditSheet: View {
                             )
                     }
                     .accessibilityLabel(
-                        "Approve all \(cluster.transactionIDs.count)"
+                        "Approve all \(cluster.transactionCountText)"
                     )
                     .disabled(!canApprove || isApproving)
                 }
@@ -2941,7 +3054,6 @@ struct PlaidTransactionReviewEditor: View {
     @Query(sort: \DurableGoal.name)
     private var goalRows: [DurableGoal]
     let transaction: CachedFinancialTransaction
-    let matchingTransactions: [CachedFinancialTransaction]
     let dismissAfterSave: Bool
     let canMovePrevious: Bool
     let canMoveNext: Bool
@@ -2962,14 +3074,12 @@ struct PlaidTransactionReviewEditor: View {
     @State private var activeCategoryByName: [String: PlaidCategoryOption] = [:]
     @State private var isSplit: Bool
     @State private var splitDrafts: [PlaidSplitDraft]
-    @State private var splitTransactionID: String
     @State private var splitSaveError: String?
     @State private var ynabEvidence: String?
     @FocusState private var splitAmountFocusedID: UUID?
 
     init(
         transaction: CachedFinancialTransaction,
-        matchingTransactions: [CachedFinancialTransaction],
         dismissAfterSave: Bool = false,
         canMovePrevious: Bool = false,
         canMoveNext: Bool = false,
@@ -2978,7 +3088,6 @@ struct PlaidTransactionReviewEditor: View {
         onSaved: @escaping () -> Void
     ) {
         self.transaction = transaction
-        self.matchingTransactions = matchingTransactions
         self.dismissAfterSave = dismissAfterSave
         self.canMovePrevious = canMovePrevious
         self.canMoveNext = canMoveNext
@@ -3037,7 +3146,6 @@ struct PlaidTransactionReviewEditor: View {
         }
         _isSplit = State(initialValue: transaction.isSplit)
         _splitDrafts = State(initialValue: initialDrafts)
-        _splitTransactionID = State(initialValue: transaction.id)
         _splitSaveError = State(
             initialValue: transaction.subtransactionsDecodeFailed
                 ? "The saved split data could not be read. Rebuild every split before saving."
@@ -3047,13 +3155,7 @@ struct PlaidTransactionReviewEditor: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 0) {
-                reviewControls
-
-                Divider()
-
-                transactionHistory
-            }
+            reviewControls
         }
         .scrollDismissesKeyboard(.interactively)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -3153,14 +3255,6 @@ struct PlaidTransactionReviewEditor: View {
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
                 reviewSectionTitle("Type")
                 typeControls
-                Text(typeConsequenceFootnote(for: treatment))
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-                if let classificationFooter {
-                    Text(classificationFooter)
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
@@ -3307,7 +3401,7 @@ struct PlaidTransactionReviewEditor: View {
                     // aggregate treatment for a mixed split reads as data
                     // loss if shown here.
                     HStack {
-                        Text("Transaction type")
+                        Text("Type")
                         Spacer()
                         Text("Split")
                             .foregroundStyle(.secondary)
@@ -3328,17 +3422,23 @@ struct PlaidTransactionReviewEditor: View {
     }
 
     private var typePicker: some View {
-        Picker("Transaction type", selection: $treatment) {
-            ForEach(TransactionType.allCases.filter {
-                TransactionTypeRules.isValidAmountSign(
-                    $0,
-                    amountMilliunits: transaction.amountMilliunits
-                )
-            }, id: \.self) {
-                Text($0.displayName).tag($0)
+        HStack {
+            Text("Type")
+            Spacer()
+            Picker("", selection: $treatment) {
+                ForEach(TransactionType.allCases.filter {
+                    TransactionTypeRules.isValidAmountSign(
+                        $0,
+                        amountMilliunits: transaction.amountMilliunits
+                    )
+                }, id: \.self) {
+                    Text($0.displayName).tag($0)
+                }
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .tint(NwAppColors.textSecondary)
         }
-        .pickerStyle(.menu)
         .padding(NwSpacing.md)
         .onChange(of: treatment) {
             // A type change invalidates a selected category whose
@@ -3440,16 +3540,6 @@ struct PlaidTransactionReviewEditor: View {
                 }
             }
         }
-    }
-
-    private var classificationFooter: String? {
-        if isSplit {
-            return "A split applies only to the selected transaction. Networth will reuse the merchant name, but future transactions return for category review."
-        }
-        if transaction.reviewOriginRaw == "new" {
-            return "This is a new posted transaction. Networth prefilled its best match, but every new transaction still requires confirmation."
-        }
-        return "This historical transaction did not have one unique exact YNAB match. This confirmation improves future suggestions."
     }
 
     private var activeGoals: [DurableGoal] {
@@ -3615,13 +3705,6 @@ struct PlaidTransactionReviewEditor: View {
         }
     }
 
-    private var transactionHistory: some View {
-        PlaidTransactionHistoryPane(
-            transactions: matchingTransactions,
-            financialAccounts: financialAccounts
-        )
-    }
-
     private func reviewSectionTitle(_ title: String) -> some View {
         Text(title.uppercased())
             .font(NwTypography.caption)
@@ -3629,9 +3712,7 @@ struct PlaidTransactionReviewEditor: View {
     }
 
     private var selectedSplitTransaction: CachedFinancialTransaction {
-        matchingTransactions.first {
-            $0.id == splitTransactionID
-        } ?? transaction
+        transaction
     }
 
     private var isIncomingSplit: Bool {
@@ -3891,82 +3972,6 @@ struct PlaidTransactionReviewEditor: View {
             options: [.caseInsensitive, .diacriticInsensitive],
             locale: .current
         )
-    }
-}
-
-private struct PlaidTransactionHistoryPane: View {
-    let transactions: [CachedFinancialTransaction]
-    let financialAccounts: [CachedFinancialAccount]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: NwSpacing.sm) {
-            Text(
-                transactions.count == 1
-                    ? "TRANSACTION"
-                    : "\(transactions.count) TRANSACTIONS"
-            )
-            .font(NwTypography.caption)
-            .foregroundStyle(.secondary)
-
-            LazyVStack(spacing: 0) {
-                ForEach(transactions) { item in
-                    transactionRow(item)
-                    if item.id != transactions.last?.id {
-                        Divider()
-                    }
-                }
-            }
-            .nwCardStyle(.primary, padding: 0)
-        }
-        .padding(.horizontal, NwSpacing.screenPadding)
-        .padding(.top, NwSpacing.md)
-        .padding(.bottom, NwSpacing.sm)
-    }
-
-    private func transactionRow(
-        _ item: CachedFinancialTransaction
-    ) -> some View {
-        VStack(alignment: .leading, spacing: NwSpacing.xs) {
-            HStack(alignment: .firstTextBaseline, spacing: NwSpacing.md) {
-                Text(item.rawDescription)
-                    .font(NwTypography.bodyEmphasis)
-                    .foregroundStyle(NwAppColors.textPrimary)
-                Spacer(minLength: NwSpacing.sm)
-                NwAmountText(
-                    Money(milliunits: item.amountMilliunits),
-                    variant: .body,
-                    color: item.amountMilliunits < 0
-                        ? NwAppColors.liability
-                        : NwAppColors.positive
-                )
-            }
-            HStack(spacing: NwSpacing.sm) {
-                Text(
-                    "\(classificationLabel(for: item)) · \(plaidTransactionAccountLabel(for: item, financialAccounts: financialAccounts))"
-                )
-                .lineLimit(1)
-                Spacer(minLength: NwSpacing.sm)
-                Text(
-                    item.postedDate.formatted(
-                        date: .abbreviated,
-                        time: .omitted
-                    )
-                )
-            }
-            .font(NwTypography.footnote)
-            .foregroundStyle(.secondary)
-        }
-        .padding(NwSpacing.md)
-    }
-
-    private func classificationLabel(
-        for item: CachedFinancialTransaction
-    ) -> String {
-        item.isSplit
-            ? item.categoryDisplayName
-            : item.forecastTreatment.requiresCategory
-                ? item.categoryDisplayName
-                : item.forecastTreatment.displayName
     }
 }
 
@@ -4327,37 +4332,6 @@ func noCategoryLabel(for treatment: ForecastTreatment) -> String {
     switch treatment {
     case .internalTransfer, .cardPayment: "Uses the account relationship"
     default: "Not needed for this type"
-    }
-}
-
-/// One sentence on what choosing this type DOES to the money — the
-/// difference between an expense and a card payment is whether $70k of
-/// history counts as spending, so the consequence must be visible at the
-/// moment of choice.
-func typeConsequenceFootnote(for treatment: ForecastTreatment) -> String {
-    switch treatment {
-    case .ordinarySpending:
-        "Counts as spending in its category."
-    case .refund:
-        "Reduces spending in its category."
-    case .income:
-        "Money in. Never counts as spending."
-    case .reimbursement:
-        "Money paid or received for reimbursement. Excluded from spending."
-    case .goalSpend:
-        "Paid from the selected goal. Excluded from regular monthly spending."
-    case .goalRefund:
-        "Returned to the selected goal. Excluded from regular monthly spending."
-    case .internalTransfer:
-        "Money moving between your own accounts. Excluded from spending."
-    case .cardPayment:
-        "Paying a card bill. Excluded from spending — the card purchases are the spending."
-    case .investmentContribution:
-        "Money into investments. Excluded from spending; appears in cash projections."
-    case .excluded:
-        "Ignored by spending totals and projections."
-    case .unknown:
-        "This saved type is not recognized and must be reviewed."
     }
 }
 

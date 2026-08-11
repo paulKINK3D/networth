@@ -1,5 +1,83 @@
 # WORKING
 
+## Resume here — ordered next work (2026-08-11)
+
+### Repository handoff
+
+- Active branch: `ux-cleanup`.
+- Prior checkpoint: `e6a8e73` (`Close remaining stabilization correctness
+  gaps`). The current checkpoint completes the approved UX cleanup below.
+- Review Transactions UX polish is complete: the oversized
+  normal-state instruction row is gone, counts pluralize correctly, tapping a
+  row opens detail, and Edit/Approve are swipe actions. Incomplete suggestions
+  show the exact edit required before approval. Transaction editing now uses
+  the same left-label/right-value layout for Type, Contact, and Category; the
+  prior type-consequence and suggestion-explanation paragraphs are removed,
+  along with the redundant transaction-summary card below the editor.
+- The same primary-tap/secondary-swipe cleanup is applied to Spending Groups:
+  tapping opens categories, while Rename and confirmed Delete are swipe
+  actions. Spending legend names now select the chart series, amounts open
+  detail, and the misaligning chevrons are removed. The Goals remainder badge
+  is removed. Generic-device Debug `build-for-testing` passes.
+- Net Worth Balance Sheet categories now drill into their contributing
+  accounts, and each account opens its source-specific detail. The redundant
+  All Accounts card is removed; Contacts and Categories moved to Settings →
+  Accounts & Sync. All Transactions remains on Net Worth and now has a
+  searchable category filter. Spending retains its selected-month category
+  transaction list and adds View All History from that screen, opening the
+  same shared history prefiltered across all cached months. Split rows show
+  only the amount assigned to the selected category.
+- All identified P0 correctness items are closed: reimbursement repair,
+  standalone Plaid accounts in Net Worth drill-downs, transaction-review queue
+  alignment, Plaid IRA retirement presentation, and reconciled whole-dollar
+  Spending display.
+- Latest UX validation: a fresh generic-device Debug `build-for-testing`
+  passes, including compilation of the app test bundle. App tests were not run
+  because simulator execution was not requested. The prior stabilization
+  checkpoint also passed NetworthCore 214/214 and a generic-device Release
+  build.
+- Immediate next step: **agree on the Goal allocation editing interaction**
+  before implementing it. Review Transactions has no live pending rows for a
+  device check, so its polish is closed on code review and build validation.
+
+### Ordered backlog
+
+1. **Review Transactions UX polish — complete**
+   - Remove or sharply reduce the oversized instructional card.
+   - Fix singular/plural copy (`1 transaction`, not `1 transactions`).
+   - Keep row actions aligned and make it obvious why some suggestions require
+     editing before the green approval action is available.
+   - Preserve grouped approval, batch selection, and individual transaction
+     review behavior.
+2. **Goal allocation editing redesign**
+   - The current staged all-goals sheet is functional but temporary.
+   - The per-goal Add/Remove experiment was rejected and must not be restored.
+   - Agree on the replacement interaction with the user before implementation;
+     preserve atomic saves, the live remainder goal, and pool constraints.
+3. **Spending group management controls — complete**
+   - Replace the current rename/edit affordances with native list-row
+     management and swipe actions while preserving explicit ordering.
+4. **Scope investment reconciliation controls correctly**
+   - Hide investment reconciliation controls for ordinary banking accounts;
+     they do not affect banking, Spending, Projections, or Goals behavior.
+5. **Goals tab transition stall**
+   - Diagnose the occasional Liquid Glass tab-indicator stall when entering
+     Goals. Scrolling after the transition is already smooth.
+   - This is a physical-device observation; do not launch a simulator unless
+     the user explicitly requests it.
+6. **Cash Plus stale-balance investigation**
+   - A connected Cash Plus account temporarily had no usable live balance
+     until Plaid reconnect completed. Determine the stale-cache/recovery path
+     without weakening reconciliation or persistence safeguards.
+7. **Required projection-audit CSV export**
+   - This remains the next larger product milestone. Follow the complete
+     privacy, input-row, forecast-event, and total-reconciliation contract in
+     `docs/PLAN.md`; the shorter implementation checklist also remains below
+     in this file.
+8. **Lower-priority candidate: preserve YNAB memos in reference suggestions**
+   - Memos would make transfer identification easier. Keep this behind the
+     required work above.
+
 ## Stabilization checkpoint (2026-08-11)
 
 - `ux-cleanup` contains focused commits for retired Fresh Start removal,
@@ -9,8 +87,8 @@
   transfer reminders, and the verified reimbursement repair. The agreed
   behavior-level redesign is implemented; the branch is now in correctness,
   performance, and interaction-polish work and has not yet merged to `main`.
-- On 2026-08-11, All Accounts began rendering standalone Plaid investment
-  accounts from the same reconciliation resolver used by Net Worth. Only
+- On 2026-08-11, Net Worth account drill-downs began rendering standalone
+  Plaid investment accounts from the same reconciliation resolver used by Net Worth. Only
   explicitly included, supported-currency accounts with a live balance appear;
   duplicate, manual-asset-matched, excluded, and pending-review rows remain
   hidden. Rows reuse the holdings-aware Plaid investment detail screen.
@@ -53,24 +131,9 @@
   phone data required no additional migration; income and labels were verified
   on-device after installing the fix.
 - All identified P0 stabilization correctness items are closed: reimbursement
-  classification and repair, standalone Plaid accounts in All Accounts, Plaid
+  classification and repair, standalone Plaid accounts in Net Worth drill-downs, Plaid
   IRA retirement presentation, and reconciled Spending whole-dollar display.
-- Known UX work still open:
-  - Review Transactions needs a focused polish pass: shrink or remove the
-    oversized instructional card, use correct singular/plural transaction
-    counts, and make the row actions consistent and self-explanatory when a
-    suggestion cannot yet be approved (the missing green confirmation action
-    currently shifts alignment without explaining why editing is required).
-  - Goal allocation editing needs a deliberate redesign. The committed staged
-    sheet remains temporarily; the rejected per-goal Add/Remove experiment was
-    not retained.
-  - Spending group rename/edit controls need native list-row management.
-  - The Goals tab transition can stall the Liquid Glass tab indicator even
-    though scrolling after the transition is smooth.
-  - Investment reconciliation controls should not appear for ordinary banking
-    accounts where they do not control banking or Goals behavior.
-- A connected Cash Plus account temporarily lacked a usable live balance until
-  Plaid reconnect completed. The exact stale-cache/recovery cause remains open.
+- Remaining work is consolidated and ordered in `Resume here` above.
 - Checkpoint validation: NetworthCore 214/214; generic-device Debug and Release
   builds pass; the app test bundle compiles with `build-for-testing`. App tests
   were not run because simulator execution was not requested.

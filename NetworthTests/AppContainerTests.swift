@@ -428,6 +428,26 @@ struct AppContainerTests {
         #expect(clusters.first?.transactionIDs == [summary.id])
     }
 
+    @Test func groupedReviewExplainsIncompleteSingleTransaction() {
+        let cluster = HistoricalReviewCluster(
+            id: "incomplete",
+            displayName: "Market",
+            payeeCanonicalId: nil,
+            categoryName: nil,
+            categoryCanonicalId: nil,
+            treatment: .ordinarySpending,
+            transactionIDs: ["plaid:one"],
+            totalMilliunits: Money.dollars(-24.50).milliunits
+        )
+
+        #expect(cluster.transactionCountText == "1 transaction")
+        #expect(!cluster.canApproveAsShown)
+        #expect(
+            cluster.approvalRequirement
+                == "Choose a category to approve."
+        )
+    }
+
     @Test func plaidManualMatchReplacesCurrentValueWithoutDoubleCounting() throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let context = modelContainer.mainContext
@@ -1267,6 +1287,130 @@ struct AppContainerTests {
         #expect(Set(first.map(\.id)).isDisjoint(with: Set(second.map(\.id))))
         #expect(first.first?.externalId == "page-119")
         #expect(second.first?.externalId == "page-69")
+    }
+
+    @Test func categoryHistoryIncludesReviewedWholeAndSplitTransactions() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let categoryID = "networth:groceries"
+
+        func transaction(
+            id: String,
+            name: String,
+            amount: Money,
+            requiresReview: Bool,
+            splits: [SubTransactionSummary] = []
+        ) throws -> CachedFinancialTransaction {
+            let summary = FinancialTransactionSummary(
+                id: id,
+                externalId: id,
+                source: .plaid,
+                accountId: "checking",
+                postedDate: Date(
+                    timeIntervalSinceReferenceDate:
+                        id == "whole" ? 200_000 : 100_000
+                ),
+                authorizedDate: nil,
+                amount: amount,
+                pending: false,
+                pendingTransactionId: nil,
+                rawDescription: name,
+                originalDescription: nil,
+                providerMerchantName: name,
+                merchantEntityId: nil,
+                counterpartyName: nil,
+                counterpartyType: nil,
+                counterpartyEntityId: nil,
+                counterpartyConfidence: nil,
+                paymentChannel: nil,
+                providerCategoryPrimary: nil,
+                providerCategoryDetailed: nil,
+                providerCategoryConfidence: nil,
+                transactionCode: nil
+            )
+            let row = CachedFinancialTransaction(
+                summary: summary,
+                classification: TransactionClassification(
+                    displayName: name,
+                    categoryName: splits.isEmpty ? "Groceries" : nil,
+                    treatment: .ordinarySpending,
+                    confidence: .high,
+                    provenance: .user,
+                    requiresReview: requiresReview
+                ),
+                subtransactionsData: splits.isEmpty
+                    ? nil
+                    : try JSONEncoder().encode(splits),
+                requiresNameReview: false
+            )
+            if splits.isEmpty {
+                row.categoryCanonicalId = categoryID
+            }
+            return row
+        }
+
+        let splitLegs = [
+            SubTransactionSummary(
+                id: "split-groceries",
+                amount: Money.dollars(-60),
+                categoryId: nil,
+                categoryName: "Groceries",
+                categoryCanonicalId: categoryID,
+                forecastTreatment: .ordinarySpending,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+            SubTransactionSummary(
+                id: "split-household",
+                amount: Money.dollars(-40),
+                categoryId: nil,
+                categoryName: "Household",
+                categoryCanonicalId: "networth:household",
+                forecastTreatment: .ordinarySpending,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            )
+        ]
+        context.insert(try transaction(
+            id: "whole",
+            name: "Market",
+            amount: Money.dollars(-25),
+            requiresReview: false
+        ))
+        context.insert(try transaction(
+            id: "split",
+            name: "Big Store",
+            amount: Money.dollars(-100),
+            requiresReview: false,
+            splits: splitLegs
+        ))
+        context.insert(try transaction(
+            id: "unreviewed",
+            name: "Suggested Market",
+            amount: Money.dollars(-15),
+            requiresReview: true
+        ))
+        try context.save()
+
+        let filter = FinancialTransactionCategoryFilter(
+            key: categoryID,
+            name: "Groceries"
+        )
+        let rows = try FinancialTransactionPageFetcher.fetch(
+            accountID: nil,
+            offset: 0,
+            categoryFilter: filter,
+            context: context
+        )
+        let split = try #require(rows.first { $0.id == "split" })
+
+        #expect(rows.map(\.id) == ["whole", "split"])
+        #expect(filter.matchingAmountMilliunits(in: split)
+            == Money.dollars(-60).milliunits)
     }
 
     @Test func plaidHistoricalReconciliationRunsOnceAfterImport() async throws {

@@ -56,6 +56,15 @@ private struct NetWorthEntry: Identifiable {
     let subtitle: String
     let amount: Money
     let updatedAt: Date?
+    let destination: NetWorthEntryDestination
+}
+
+private enum NetWorthEntryDestination {
+    case legacyAccount(CachedAccount)
+    case financialAccount(CachedFinancialAccount)
+    case manualAsset(DurableManualAsset)
+    case plaidInvestment(CachedPlaidAccount)
+    case linkedIBR(SharedIBRLoanDocument)
 }
 
 private struct NetWorthTrendPoint: Identifiable, Sendable {
@@ -169,7 +178,6 @@ struct NetWorthView: View {
                         heroCard
                         chartCard
                         balanceSheet
-                        allAccountsLink
                         allTransactionsLink
                     } else {
                         // Cold load: the breakdown computes off the render
@@ -297,29 +305,6 @@ struct NetWorthView: View {
             cachedBreakdown = model.breakdown
             cachedTrendPoints = model.trendPoints
         }
-    }
-
-    /// Accounts left the tab bar for Budget; this is its home now.
-    private var allAccountsLink: some View {
-        NavigationLink {
-            AccountsView(embedded: true)
-        } label: {
-            NwCard(style: .primary) {
-                HStack(spacing: NwSpacing.sm) {
-                    NwIcon.accounts.image
-                        .font(NwTypography.headline)
-                        .foregroundStyle(NwAppColors.primary)
-                    Text("All Accounts")
-                        .font(NwTypography.headline)
-                        .foregroundStyle(NwAppColors.textPrimary)
-                    Spacer()
-                    NwIcon.chevron.image
-                        .font(NwTypography.footnoteEm)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .buttonStyle(.plain)
     }
 
     private var allTransactionsLink: some View {
@@ -694,7 +679,8 @@ struct NetWorthView: View {
                 name: account.name,
                 subtitle: accountKindLabel(account.kind),
                 amount: category.isLiability ? account.balance.absolute : account.balance,
-                updatedAt: nil
+                updatedAt: nil,
+                destination: .legacyAccount(account)
             )
         }
 
@@ -726,7 +712,8 @@ struct NetWorthView: View {
                     name: account.name,
                     subtitle: "\(account.institutionName ?? accountKindLabel(account.kind))\(mask)",
                     amount: category.isLiability ? account.balance.absolute : account.balance,
-                    updatedAt: account.updatedAt
+                    updatedAt: account.updatedAt,
+                    destination: .financialAccount(account)
                 )
             }
         } else {
@@ -744,7 +731,8 @@ struct NetWorthView: View {
                     name: asset.name.isEmpty ? "Untitled Asset" : asset.name,
                     subtitle: asset.kind.displayName,
                     amount: plaidResolver.effectiveValue(for: asset),
-                    updatedAt: asset.lastUpdatedAt
+                    updatedAt: asset.lastUpdatedAt,
+                    destination: .manualAsset(asset)
                 )
             }
 
@@ -764,7 +752,8 @@ struct NetWorthView: View {
                     name: account.name,
                     subtitle: "\(account.institutionName)\(mask)",
                     amount: balance,
-                    updatedAt: nil
+                    updatedAt: nil,
+                    destination: .plaidInvestment(account)
                 )
             }
         } else {
@@ -772,13 +761,16 @@ struct NetWorthView: View {
         }
 
         var combined = ynabEntries + financialEntries + durableEntries + plaidEntries
-        if category == .loans, let loan = container.linkedIBRLoanDocument?.current {
+        if category == .loans,
+           let document = container.linkedIBRLoanDocument {
+            let loan = document.current
             combined.append(NetWorthEntry(
                 id: "ibr:primary",
                 name: "Student Loans",
                 subtitle: "Student Loan, linked from IBR",
                 amount: loan.totalBalance,
-                updatedAt: loan.asOf
+                updatedAt: loan.asOf,
+                destination: .linkedIBR(document)
             ))
         }
 
@@ -891,26 +883,32 @@ private struct NetWorthCategoryDetailView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(entries) { entry in
-                        HStack(spacing: NwSpacing.md) {
-                            category.icon.image
-                                .foregroundStyle(
-                                    category.isLiability
+                        NavigationLink {
+                            destination(for: entry)
+                        } label: {
+                            HStack(spacing: NwSpacing.md) {
+                                category.icon.image
+                                    .foregroundStyle(
+                                        category.isLiability
+                                            ? NwAppColors.liability
+                                            : NwAppColors.primary
+                                    )
+                                    .frame(width: 28)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.name)
+                                    Text(entrySubtitle(entry))
+                                        .font(NwTypography.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                NwAmountText(
+                                    entry.amount,
+                                    variant: .body,
+                                    color: category.isLiability
                                         ? NwAppColors.liability
-                                        : NwAppColors.primary
+                                        : nil
                                 )
-                                .frame(width: 28)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.name)
-                                Text(entrySubtitle(entry))
-                                    .font(NwTypography.footnote)
-                                    .foregroundStyle(.secondary)
                             }
-                            Spacer()
-                            NwAmountText(
-                                entry.amount,
-                                variant: .body,
-                                color: category.isLiability ? NwAppColors.liability : nil
-                            )
                         }
                     }
                 }
@@ -918,6 +916,22 @@ private struct NetWorthCategoryDetailView: View {
         }
         .navigationTitle(category.title)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private func destination(for entry: NetWorthEntry) -> some View {
+        switch entry.destination {
+        case .legacyAccount(let account):
+            AccountDetailView(account: account)
+        case .financialAccount(let account):
+            FinancialAccountDetailView(account: account)
+        case .manualAsset(let asset):
+            ManualAssetDetailView(asset: asset)
+        case .plaidInvestment(let account):
+            PlaidInvestmentAccountDetailView(account: account)
+        case .linkedIBR(let document):
+            LinkedIBRLoanDetailView(document: document)
+        }
     }
 
     private func entrySubtitle(_ entry: NetWorthEntry) -> String {

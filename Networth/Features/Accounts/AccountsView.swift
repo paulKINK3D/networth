@@ -87,25 +87,6 @@ struct AccountsView: View {
 
     private var accountsList: some View {
             List {
-                Section("Networth Data") {
-                    NavigationLink {
-                        CanonicalPayeeListView()
-                    } label: {
-                        LabeledContent(
-                            "Contacts",
-                            value: "\(canonicalPayees.filter { !$0.archived }.count)"
-                        )
-                    }
-                    NavigationLink {
-                        CanonicalCategoryListView()
-                    } label: {
-                        LabeledContent(
-                            "Categories",
-                            value: "\(canonicalCategories.filter { !$0.hidden }.count)"
-                        )
-                    }
-                }
-
                 if hasTransactionConnection && !usesPlaidTransactions {
                     Section {
                         Button {
@@ -765,7 +746,7 @@ struct AccountsView: View {
     }
 }
 
-private struct LinkedIBRLoanDetailView: View {
+struct LinkedIBRLoanDetailView: View {
     @Environment(AppContainerController.self) private var container
     @Environment(\.openURL) private var openURL
     @State private var historyStartDateDraft = Date.now
@@ -990,7 +971,7 @@ private struct LinkedIBRLoanDetailView: View {
     }
 }
 
-private struct FinancialAccountDetailView: View {
+struct FinancialAccountDetailView: View {
     let account: CachedFinancialAccount
     @Query private var recentTransactions: [CachedFinancialTransaction]
 
@@ -1076,7 +1057,6 @@ private struct FinancialAccountDetailView: View {
                                 NavigationLink {
                                     PlaidTransactionReviewEditor(
                                         transaction: transaction,
-                                        matchingTransactions: [transaction],
                                         dismissAfterSave: true,
                                         onSaved: {}
                                     )
@@ -1152,9 +1132,81 @@ private struct FinancialAccountDetailView: View {
 
 /// Paged posted-transaction history for one account, or for every account
 /// when `account` is nil (the Net Worth tab's "All Transactions" entry).
+struct FinancialTransactionCategoryFilter: Equatable {
+    let key: String
+    let name: String
+    let isInvestmentContribution: Bool
+
+    init(
+        key: String,
+        name: String,
+        isInvestmentContribution: Bool = false
+    ) {
+        self.key = key
+        self.name = name
+        self.isInvestmentContribution = isInvestmentContribution
+    }
+
+    func matchingAmountMilliunits(
+        in transaction: CachedFinancialTransaction,
+        cashAccountIDs: Set<String> = []
+    ) -> Int64? {
+        guard !transaction.requiresReview else { return nil }
+        if isInvestmentContribution {
+            guard transaction.forecastTreatment == .investmentContribution,
+                  cashAccountIDs.contains(transaction.canonicalAccountId) else {
+                return nil
+            }
+            return transaction.amountMilliunits
+        }
+
+        if transaction.isSplit {
+            let matchingLegs = transaction.subtransactions.filter {
+                !$0.deleted && matches(
+                    canonicalID: $0.categoryCanonicalId ?? $0.categoryId,
+                    categoryName: $0.categoryName
+                )
+            }
+            guard !matchingLegs.isEmpty else { return nil }
+            return matchingLegs.map(\.amount.milliunits).reduce(0, +)
+        }
+
+        guard matches(
+            canonicalID: transaction.categoryCanonicalId,
+            categoryName: transaction.categoryName
+        ) else { return nil }
+        return transaction.amountMilliunits
+    }
+
+    private func matches(
+        canonicalID: String?,
+        categoryName: String?
+    ) -> Bool {
+        if key.hasPrefix("name:") {
+            let expectedName = String(key.dropFirst("name:".count))
+            let cleanedName = categoryName?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ) ?? ""
+            let actualName = cleanedName.isEmpty
+                ? "Uncategorized"
+                : cleanedName
+            return FinancialTransactionSummary.normalizedDescription(
+                actualName
+            ) == FinancialTransactionSummary.normalizedDescription(
+                expectedName
+            )
+        }
+        return canonicalID == key
+    }
+}
+
 struct FinancialAccountTransactionHistoryView: View {
     @Environment(\.modelContext) private var modelContext
-    var account: CachedFinancialAccount? = nil
+    @Query(sort: [
+        SortDescriptor(\DurableCanonicalCategory.groupName),
+        SortDescriptor(\DurableCanonicalCategory.name)
+    ]) private var categories: [DurableCanonicalCategory]
+    let account: CachedFinancialAccount?
 
     @State private var transactions: [CachedFinancialTransaction] = []
     @State private var isLoading = false
@@ -1162,16 +1214,32 @@ struct FinancialAccountTransactionHistoryView: View {
     @State private var loadError: String?
     @State private var searchText = ""
     @State private var submittedQuery = ""
+    @State private var categoryFilter: FinancialTransactionCategoryFilter?
+    @State private var showingCategoryFilter = false
 
     private static let pageSize = 50
+
+    init(
+        account: CachedFinancialAccount? = nil,
+        categoryFilter: FinancialTransactionCategoryFilter? = nil
+    ) {
+        self.account = account
+        _categoryFilter = State(initialValue: categoryFilter)
+    }
 
     var body: some View {
         List {
             if transactions.isEmpty, !isLoading, loadError == nil {
                 NwEmptyState(
-                    title: submittedQuery.isEmpty ? "No transactions" : "No matches",
+                    title: submittedQuery.isEmpty
+                        ? (categoryFilter == nil
+                            ? "No transactions"
+                            : "No category transactions")
+                        : "No matches",
                     message: submittedQuery.isEmpty
-                        ? "Posted transactions will appear here."
+                        ? (categoryFilter.map {
+                            "No posted transactions use \($0.name)."
+                        } ?? "Posted transactions will appear here.")
                         : "No transactions match “\(submittedQuery)”.",
                     icon: .empty
                 )
@@ -1182,16 +1250,18 @@ struct FinancialAccountTransactionHistoryView: View {
                 NavigationLink {
                     PlaidTransactionReviewEditor(
                         transaction: transaction,
-                        matchingTransactions: [transaction],
                         dismissAfterSave: true,
-                        onSaved: {}
+                        onSaved: restartLoad
                     )
                 } label: {
                     NwTransactionRow(
                         title: transaction.displayName,
                         subtitle: financialTransactionSubtitle(transaction),
                         amount: Money(
-                            milliunits: transaction.amountMilliunits
+                            milliunits: categoryFilter?.matchingAmountMilliunits(
+                                in: transaction,
+                                cashAccountIDs: [transaction.canonicalAccountId]
+                            ) ?? transaction.amountMilliunits
                         )
                     )
                 }
@@ -1223,7 +1293,10 @@ struct FinancialAccountTransactionHistoryView: View {
                 }
             }
         }
-        .navigationTitle(account == nil ? "All Transactions" : "Transactions")
+        .navigationTitle(
+            categoryFilter?.name
+                ?? (account == nil ? "All Transactions" : "Transactions")
+        )
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
             text: $searchText,
@@ -1242,6 +1315,29 @@ struct FinancialAccountTransactionHistoryView: View {
         .task {
             guard transactions.isEmpty else { return }
             loadNextPage()
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingCategoryFilter = true
+                } label: {
+                    Image(
+                        systemName: categoryFilter == nil
+                            ? "line.3.horizontal.decrease.circle"
+                            : "line.3.horizontal.decrease.circle.fill"
+                    )
+                }
+                .accessibilityLabel("Filter by category")
+            }
+        }
+        .sheet(isPresented: $showingCategoryFilter) {
+            TransactionCategoryFilterSheet(
+                categories: categories,
+                selection: categoryFilter
+            ) { selection in
+                categoryFilter = selection
+                restartLoad()
+            }
         }
     }
 
@@ -1270,14 +1366,136 @@ struct FinancialAccountTransactionHistoryView: View {
                 query: submittedQuery,
                 offset: transactions.count,
                 limit: Self.pageSize,
+                categoryFilter: categoryFilter,
                 context: modelContext
             )
-            transactions.append(contentsOf: page)
-            hasMore = page.count == Self.pageSize
+            if categoryFilter == nil {
+                transactions.append(contentsOf: page)
+                hasMore = page.count == Self.pageSize
+            } else {
+                transactions = page
+                hasMore = false
+            }
         } catch {
             loadError = "More transactions could not be loaded."
         }
         isLoading = false
+    }
+}
+
+private struct TransactionCategoryFilterSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let categories: [DurableCanonicalCategory]
+    let selection: FinancialTransactionCategoryFilter?
+    let onSelect: (FinancialTransactionCategoryFilter?) -> Void
+    @State private var searchText = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    filterButton(title: "All Categories", filter: nil)
+                    filterButton(
+                        title: "Uncategorized",
+                        filter: FinancialTransactionCategoryFilter(
+                            key: "name:Uncategorized",
+                            name: "Uncategorized"
+                        )
+                    )
+                }
+
+                ForEach(filteredGroups, id: \.name) { group in
+                    Section(group.name) {
+                        ForEach(group.categories) { category in
+                            filterButton(
+                                title: category.name,
+                                filter: FinancialTransactionCategoryFilter(
+                                    key: category.canonicalId,
+                                    name: category.name
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Category")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search categories")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+        }
+    }
+
+    private func filterButton(
+        title: String,
+        filter: FinancialTransactionCategoryFilter?
+    ) -> some View {
+        Button {
+            onSelect(filter)
+            dismiss()
+        } label: {
+            HStack {
+                Text(title)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                Spacer()
+                if selection == filter {
+                    NwIcon.confirm.image
+                        .foregroundStyle(NwAppColors.positive)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+    }
+
+    private var filteredGroups: [CategoryGroup] {
+        let query = searchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let active: [DurableCanonicalCategory] = categories.filter {
+            category in
+            guard !category.deletedAtSource,
+                  !category.canonicalId.isEmpty else {
+                return false
+            }
+            return query.isEmpty
+                || category.name.localizedCaseInsensitiveContains(query)
+                || category.groupName.localizedCaseInsensitiveContains(query)
+        }
+        let grouped: [String: [DurableCanonicalCategory]] = Dictionary(
+            grouping: active
+        ) { category in
+            let groupName = category.groupName.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            return groupName.isEmpty ? "Categories" : groupName
+        }
+        let groups: [CategoryGroup] = grouped.map {
+            CategoryGroup(
+                name: $0.key,
+                categories: $0.value.sorted {
+                    $0.name.localizedCaseInsensitiveCompare($1.name)
+                        == .orderedAscending
+                }
+            )
+        }
+        return groups.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name)
+                == .orderedAscending
+        }
+    }
+
+    private struct CategoryGroup {
+        let name: String
+        let categories: [DurableCanonicalCategory]
     }
 }
 
@@ -1312,6 +1530,7 @@ enum FinancialTransactionPageFetcher {
         query: String = "",
         offset: Int,
         limit: Int = 50,
+        categoryFilter: FinancialTransactionCategoryFilter? = nil,
         context: ModelContext
     ) throws -> [CachedFinancialTransaction] {
         let sort = [
@@ -1355,13 +1574,33 @@ enum FinancialTransactionPageFetcher {
             predicate: predicate,
             sortBy: sort
         )
-        descriptor.fetchLimit = limit
-        descriptor.fetchOffset = offset
-        return try context.fetch(descriptor)
+        if categoryFilter == nil {
+            descriptor.fetchLimit = limit
+            descriptor.fetchOffset = offset
+        }
+        let rows = try context.fetch(descriptor)
+        guard let categoryFilter else { return rows }
+
+        let cashAccountIDs: Set<String>
+        if categoryFilter.isInvestmentContribution {
+            cashAccountIDs = Set(
+                try context.fetch(FetchDescriptor<CachedFinancialAccount>())
+                    .filter { $0.type.isCashLike }
+                    .map(\.canonicalAccountId)
+            )
+        } else {
+            cashAccountIDs = []
+        }
+        return rows.filter {
+            categoryFilter.matchingAmountMilliunits(
+                in: $0,
+                cashAccountIDs: cashAccountIDs
+            ) != nil
+        }
     }
 }
 
-private struct AccountDetailView: View {
+struct AccountDetailView: View {
     let account: CachedAccount
     @Query private var recentTransactions: [CachedTransaction]
 
@@ -1696,7 +1935,7 @@ private func effectiveManualAssetUpdatedAt(
         .max() ?? asset.lastUpdatedAt
 }
 
-private struct CanonicalPayeeListView: View {
+struct CanonicalPayeeListView: View {
     @Query(sort: \DurableCanonicalPayee.name)
     private var payees: [DurableCanonicalPayee]
     @State private var searchText = ""
@@ -1817,7 +2056,10 @@ private struct CanonicalPayeeEditor: View {
                                         .foregroundStyle(.secondary)
                                 }
                             }
-                            .swipeActions {
+                            .swipeActions(
+                                edge: .trailing,
+                                allowsFullSwipe: false
+                            ) {
                                 Button(role: .destructive) {
                                     _ = container.removeCanonicalAlias(
                                         aliasId: alias.id
@@ -1825,6 +2067,7 @@ private struct CanonicalPayeeEditor: View {
                                 } label: {
                                     Label("Remove", systemImage: "trash")
                                 }
+                                .tint(NwAppColors.liability)
                             }
                         }
                     }
@@ -1951,7 +2194,7 @@ private struct CanonicalAliasEditor: View {
     }
 }
 
-private struct CanonicalCategoryListView: View {
+struct CanonicalCategoryListView: View {
     @Query(sort: [
         SortDescriptor(\DurableCanonicalCategory.groupName),
         SortDescriptor(\DurableCanonicalCategory.name)

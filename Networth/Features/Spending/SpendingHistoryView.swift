@@ -319,8 +319,8 @@ struct SpendingHistoryView: View {
     /// A legend row beneath the pie: color key, group name, and amount. A
     /// filled swatch matches a pie slice; a hollow swatch marks a group that
     /// sits outside the spending pie (transfers, savings, investing,
-    /// unassigned). Tapping opens the selected month's category and transaction
-    /// detail while also selecting the group's 24-month history. The context
+    /// unassigned). The name selects the group's 24-month history; the amount
+    /// opens the selected month's category and transaction detail. The context
     /// menu keeps the quick reorder action available.
     private func legendRow(
         _ group: SpendingHistoryGroupTotal,
@@ -329,54 +329,53 @@ struct SpendingHistoryView: View {
     ) -> some View {
         let isSelected = selectedChartSeriesID == group.id
         let isSpending = group.isOrdinarySpending
-        return Button {
-            selectedChartSeriesID = group.id
-            guard !group.categories.isEmpty else { return }
-            detailSelection = SpendingGroupDetailSelection(
-                month: month,
-                group: group
-            )
-        } label: {
-            HStack(spacing: NwSpacing.sm) {
-                swatch(for: group, isSpending: isSpending)
-                Text(group.name)
-                    .font(
-                        isSelected
-                            ? NwTypography.bodyEmphasis
-                            : NwTypography.body
-                    )
-                    .foregroundStyle(
-                        isSelected
-                            ? NwAppColors.primary
-                            : NwAppColors.textPrimary
-                    )
-                    .lineLimit(1)
-                Spacer(minLength: NwSpacing.sm)
-                NwAmountText(
-                    displayAmount,
-                    variant: .body,
-                    showCents: false,
-                    color: group.spentMilliunits < 0
-                        ? NwAppColors.liability
-                        : NwAppColors.textPrimary
-                )
-                if !group.categories.isEmpty {
-                    Image(systemName: "chevron.right")
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.tertiary)
+        return HStack(spacing: NwSpacing.sm) {
+            Button {
+                selectedChartSeriesID = group.id
+            } label: {
+                HStack(spacing: NwSpacing.sm) {
+                    swatch(for: group, isSpending: isSpending)
+                    Text(group.name)
+                        .font(
+                            isSelected
+                                ? NwTypography.bodyEmphasis
+                                : NwTypography.body
+                        )
+                        .foregroundStyle(
+                            isSelected
+                                ? NwAppColors.primary
+                                : NwAppColors.textPrimary
+                        )
+                        .lineLimit(1)
+                    Spacer(minLength: NwSpacing.sm)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, NwSpacing.md)
-            .padding(.vertical, NwSpacing.rowVertical)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel(group.name)
+            .accessibilityValue(isSelected ? "Selected" : "")
+            .accessibilityHint("Shows this group's spending history")
+
+            if group.categories.isEmpty {
+                legendAmount(group, amount: displayAmount)
+            } else {
+                Button {
+                    detailSelection = SpendingGroupDetailSelection(
+                        month: month,
+                        group: group
+                    )
+                } label: {
+                    legendAmount(group, amount: displayAmount)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    "Open \(group.name) details, \(CurrencyFormatter.currency(displayAmount))"
+                )
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityValue(isSelected ? "Selected" : "")
-        .accessibilityHint(
-            group.categories.isEmpty
-                ? "Shows this group's spending history"
-                : "Opens this month's transactions and categories"
-        )
+        .padding(.horizontal, NwSpacing.md)
+        .padding(.vertical, NwSpacing.rowVertical)
         .contextMenu {
             if group.id != SpendingHistoryBuilder.ungroupedIdentity
                 && group.id != SpendingGroupSetup.unassignedIdentity {
@@ -387,6 +386,20 @@ struct SpendingHistoryView: View {
                 }
             }
         }
+    }
+
+    private func legendAmount(
+        _ group: SpendingHistoryGroupTotal,
+        amount: Money
+    ) -> some View {
+        NwAmountText(
+            amount,
+            variant: .body,
+            showCents: false,
+            color: group.spentMilliunits < 0
+                ? NwAppColors.liability
+                : NwAppColors.textPrimary
+        )
     }
 
     @ViewBuilder
@@ -623,8 +636,8 @@ private struct SpendingGroupEditorTarget: Identifiable {
     var id: String { identity ?? "new" }
 }
 
-private enum SpendingGroupEditorAlert: Identifiable {
-    case deletion(CanonicalGroupDeletionImpact)
+private enum SpendingGroupManagementAlert: Identifiable {
+    case deletion(ManagedSpendingGroup, CanonicalGroupDeletionImpact)
     case error(String)
 
     var id: String {
@@ -642,6 +655,7 @@ struct SpendingGroupManagementSheet: View {
     @Query private var categoryRows: [DurableCanonicalCategory]
 
     @State private var editorTarget: SpendingGroupEditorTarget?
+    @State private var activeAlert: SpendingGroupManagementAlert?
 
     var body: some View {
         NavigationStack {
@@ -696,6 +710,25 @@ struct SpendingGroupManagementSheet: View {
             }
             .navigationTitle("Spending Groups")
             .navigationBarTitleDisplayMode(.inline)
+            .alert(item: $activeAlert) { alert in
+                switch alert {
+                case .deletion(let group, let impact):
+                    Alert(
+                        title: Text("Delete \(group.name)?"),
+                        message: Text(deleteConfirmationMessage(impact)),
+                        primaryButton: .destructive(Text("Delete")) {
+                            delete(group)
+                        },
+                        secondaryButton: .cancel()
+                    )
+                case .error(let message):
+                    Alert(
+                        title: Text("Couldn’t Delete Group"),
+                        message: Text(message),
+                        dismissButton: .cancel(Text("OK"))
+                    )
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button {
@@ -795,30 +828,34 @@ struct SpendingGroupManagementSheet: View {
     }
 
     private func managedGroupRow(_ group: ManagedSpendingGroup) -> some View {
-        VStack(alignment: .leading, spacing: NwSpacing.sm) {
-            NavigationLink {
-                SpendingGroupCategoryList(group: group)
-                    .environment(container)
-            } label: {
-                HStack {
-                    groupLabel(group)
-                    Spacer()
-                    Text("\(categoryCount(for: group.identity))")
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                }
+        NavigationLink {
+            SpendingGroupCategoryList(group: group)
+                .environment(container)
+        } label: {
+            HStack {
+                groupLabel(group)
+                Spacer()
+                Text("\(categoryCount(for: group.identity))")
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
             }
-            HStack(spacing: NwSpacing.md) {
-                Button {
-                    edit(group)
-                } label: {
-                    Label("Rename", systemImage: "pencil")
-                }
-            }
-            .font(NwTypography.footnote)
-            .buttonStyle(.borderless)
         }
-        .padding(.vertical, NwSpacing.xs)
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button {
+                edit(group)
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+            .tint(NwAppColors.info)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                prepareDeletion(group)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .tint(NwAppColors.liability)
+        }
     }
 
     private func categoryCount(for identity: String) -> Int {
@@ -833,6 +870,35 @@ struct SpendingGroupManagementSheet: View {
             identity: group.identity,
             initialName: group.name
         )
+    }
+
+    private func deleteConfirmationMessage(
+        _ impact: CanonicalGroupDeletionImpact
+    ) -> String {
+        let count = impact.categoryCount
+        let categoryText = count == 1 ? "1 category" : "\(count) categories"
+        return "This permanently removes the group and moves \(categoryText) to Unassigned."
+    }
+
+    private func prepareDeletion(_ group: ManagedSpendingGroup) {
+        do {
+            let impact = try CanonicalDirectoryService(
+                context: container.modelContainer.mainContext
+            ).groupDeletionImpact(groupIdentity: group.identity)
+            activeAlert = .deletion(group, impact)
+        } catch {
+            activeAlert = .error(error.localizedDescription)
+        }
+    }
+
+    private func delete(_ group: ManagedSpendingGroup) {
+        do {
+            try CanonicalDirectoryService(
+                context: container.modelContainer.mainContext
+            ).deleteGroup(groupIdentity: group.identity)
+        } catch {
+            activeAlert = .error(error.localizedDescription)
+        }
     }
 
     private func moveGroups(from offsets: IndexSet, to destination: Int) {
@@ -862,7 +928,6 @@ private struct SpendingGroupEditorSheet: View {
     let onSaved: () -> Void
 
     @State private var name: String
-    @State private var activeAlert: SpendingGroupEditorAlert?
 
     init(target: SpendingGroupEditorTarget, onSaved: @escaping () -> Void) {
         self.target = target
@@ -876,37 +941,9 @@ private struct SpendingGroupEditorSheet: View {
                 Section("Name") {
                     TextField("Group name", text: $name)
                 }
-                if target.identity != nil {
-                    Section {
-                        Button("Delete Group", role: .destructive) {
-                            prepareDeletion()
-                        }
-                    } footer: {
-                        Text("Its categories will remain available in Unassigned.")
-                    }
-                }
             }
             .navigationTitle(target.identity == nil ? "Add Group" : "Rename Group")
             .navigationBarTitleDisplayMode(.inline)
-            .alert(item: $activeAlert) { alert in
-                switch alert {
-                case .deletion(let impact):
-                    Alert(
-                        title: Text("Delete Group?"),
-                        message: Text(deleteConfirmationMessage(impact)),
-                        primaryButton: .destructive(Text("Delete")) {
-                            deleteGroup()
-                        },
-                        secondaryButton: .cancel()
-                    )
-                case .error(let message):
-                    Alert(
-                        title: Text("Couldn’t Delete Group"),
-                        message: Text(message),
-                        dismissButton: .cancel(Text("OK"))
-                    )
-                }
-            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button {
@@ -940,14 +977,6 @@ private struct SpendingGroupEditorSheet: View {
     }
 
     private var canSave: Bool { !cleanedName.isEmpty }
-
-    private func deleteConfirmationMessage(
-        _ impact: CanonicalGroupDeletionImpact
-    ) -> String {
-        let count = impact.categoryCount
-        let categoryText = count == 1 ? "1 category" : "\(count) categories"
-        return "This permanently removes the group and moves \(categoryText) to Unassigned."
-    }
 
     private func save() {
         let context = container.modelContainer.mainContext
@@ -987,30 +1016,6 @@ private struct SpendingGroupEditorSheet: View {
         dismiss()
     }
 
-    private func deleteGroup() {
-        guard let identity = target.identity else { return }
-        do {
-            try CanonicalDirectoryService(
-                context: container.modelContainer.mainContext
-            ).deleteGroup(groupIdentity: identity)
-            onSaved()
-            dismiss()
-        } catch {
-            activeAlert = .error(error.localizedDescription)
-        }
-    }
-
-    private func prepareDeletion() {
-        guard let identity = target.identity else { return }
-        do {
-            let impact = try CanonicalDirectoryService(
-                context: container.modelContainer.mainContext
-            ).groupDeletionImpact(groupIdentity: identity)
-            activeAlert = .deletion(impact)
-        } catch {
-            activeAlert = .error(error.localizedDescription)
-        }
-    }
 }
 
 private struct ManagedSpendingCategory: Identifiable {
@@ -1484,14 +1489,11 @@ actor SpendingHistoryBuildActor {
 
 // MARK: - Group detail
 
-/// Month/group drill-down: categories with totals; each category expands to
-/// its approved transactions.
+/// Month/group drill-down: categories retain the selected month's totals and
+/// transaction list, with a separate path to complete cached history.
 struct SpendingGroupDetailSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
-    @SwiftUI.Environment(AppContainerController.self) private var container
     let selection: SpendingGroupDetailSelection
-
-    @State private var rowsByID: [String: CachedFinancialTransaction] = [:]
 
     var body: some View {
         NavigationStack {
@@ -1506,7 +1508,11 @@ struct SpendingGroupDetailSheet: View {
                 Section {
                     ForEach(selection.group.categories) { category in
                         NavigationLink {
-                            categoryTransactions(category)
+                            SpendingCategoryMonthDetailView(
+                                month: selection.month.month,
+                                category: category,
+                                reportingRole: selection.group.reportingRole
+                            )
                         } label: {
                             HStack(spacing: NwSpacing.xs) {
                                 Text(category.name)
@@ -1537,61 +1543,91 @@ struct SpendingGroupDetailSheet: View {
                     .accessibilityLabel("Close")
                 }
             }
-            .onAppear(perform: loadRows)
         }
     }
+}
 
-    private func categoryTransactions(
-        _ category: SpendingHistoryCategoryTotal
-    ) -> some View {
+private struct SpendingCategoryMonthDetailView: View {
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    let month: Date
+    let category: SpendingHistoryCategoryTotal
+    let reportingRole: CategoryReportingRole?
+
+    @State private var rowsByID: [String: CachedFinancialTransaction] = [:]
+
+    var body: some View {
         List {
-            ForEach(transactions(for: category), id: \.id) { row in
+            Section {
                 NavigationLink {
-                    PlaidTransactionReviewEditor(
-                        transaction: row,
-                        matchingTransactions: [row],
-                        dismissAfterSave: true,
-                        onSaved: loadRows
+                    FinancialAccountTransactionHistoryView(
+                        categoryFilter: categoryFilter
                     )
                 } label: {
-                    NwTransactionRow(
-                        title: row.displayName,
-                        subtitle: row.postedDate.formatted(
-                            date: .abbreviated,
-                            time: .omitted
-                        ),
-                        amount: displayAmount(for: row, category: category)
-                    )
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("View All History")
+                                .foregroundStyle(NwAppColors.textPrimary)
+                            Text("Every cached month")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .foregroundStyle(NwAppColors.primary)
+                    }
+                }
+            }
+
+            Section(month.formatted(.dateTime.month(.wide).year())) {
+                ForEach(monthTransactions, id: \.id) { row in
+                    NavigationLink {
+                        PlaidTransactionReviewEditor(
+                            transaction: row,
+                            dismissAfterSave: true,
+                            onSaved: loadRows
+                        )
+                    } label: {
+                        NwTransactionRow(
+                            title: row.displayName,
+                            subtitle: row.postedDate.formatted(
+                                date: .abbreviated,
+                                time: .omitted
+                            ),
+                            amount: Money(
+                                milliunits:
+                                    category.lineAmountsByTransactionId[row.id]
+                                        ?? row.amountMilliunits
+                            )
+                        )
+                    }
                 }
             }
         }
         .navigationTitle(category.name)
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: loadRows)
     }
 
-    private func transactions(
-        for category: SpendingHistoryCategoryTotal
-    ) -> [CachedFinancialTransaction] {
+    private var categoryFilter: FinancialTransactionCategoryFilter {
+        FinancialTransactionCategoryFilter(
+            key: category.id,
+            name: category.name,
+            isInvestmentContribution: reportingRole == .investment
+        )
+    }
+
+    private var monthTransactions: [CachedFinancialTransaction] {
         category.transactionIds
             .compactMap { rowsByID[$0] }
             .sorted { $0.postedDate > $1.postedDate }
     }
 
-    /// The report's per-transaction line amount for this category. Split legs
-    /// outside the category never count, so drill-down matches the column.
-    private func displayAmount(
-        for row: CachedFinancialTransaction,
-        category: SpendingHistoryCategoryTotal
-    ) -> Money {
-        Money(
-            milliunits: category.lineAmountsByTransactionId[row.id]
-                ?? row.amountMilliunits
-        )
-    }
-
     private func loadRows() {
-        let ids = Set(selection.group.categories.flatMap(\.transactionIds))
-        guard !ids.isEmpty else { return }
+        let ids = Set(category.transactionIds)
+        guard !ids.isEmpty else {
+            rowsByID = [:]
+            return
+        }
         let idList = Array(ids)
         let descriptor = FetchDescriptor<CachedFinancialTransaction>(
             predicate: #Predicate { idList.contains($0.id) }

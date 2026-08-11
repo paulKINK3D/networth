@@ -21,8 +21,6 @@ struct GoalCard: View {
                             NwStatusBadge("Completed", style: .positive)
                         } else if item.goal.archived {
                             NwStatusBadge("Archived", style: .neutral)
-                        } else if item.isResidual {
-                            NwStatusBadge("All unallocated", style: .positive)
                         }
                         Spacer()
                         NwAmountText(
@@ -1119,7 +1117,6 @@ struct GoalTransferRequestSheet: View {
                     NavigationStack {
                         PlaidTransactionReviewEditor(
                             transaction: original,
-                            matchingTransactions: [original],
                             dismissAfterSave: true,
                             onSaved: { dismiss() }
                         )
