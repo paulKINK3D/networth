@@ -1131,7 +1131,7 @@ struct FinancialAccountDetailView: View {
 }
 
 /// Paged posted-transaction history for one account, or for every account
-/// when `account` is nil (the Net Worth tab's "All Transactions" entry).
+/// when `account` is nil (the Spending tab's "All Transactions" entry).
 struct FinancialTransactionCategoryFilter: Equatable {
     let key: String
     let name: String

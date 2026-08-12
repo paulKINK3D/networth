@@ -178,7 +178,6 @@ struct NetWorthView: View {
                         heroCard
                         chartCard
                         balanceSheet
-                        allTransactionsLink
                     } else {
                         // Cold load: the breakdown computes off the render
                         // path; never fetch-through inside body.
@@ -278,28 +277,6 @@ struct NetWorthView: View {
             cachedBreakdown = model.breakdown
             cachedTrendPoints = model.trendPoints
         }
-    }
-
-    private var allTransactionsLink: some View {
-        NavigationLink {
-            FinancialAccountTransactionHistoryView()
-        } label: {
-            NwCard(style: .primary) {
-                HStack(spacing: NwSpacing.sm) {
-                    NwIcon.history.image
-                        .font(NwTypography.headline)
-                        .foregroundStyle(NwAppColors.primary)
-                    Text("All Transactions")
-                        .font(NwTypography.headline)
-                        .foregroundStyle(NwAppColors.textPrimary)
-                    Spacer()
-                    NwIcon.chevron.image
-                        .font(NwTypography.footnoteEm)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .buttonStyle(.plain)
     }
 
     /// UI is gated on the cache being present; the zero fallback exists only

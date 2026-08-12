@@ -13,6 +13,8 @@
   Retained (`Income − Spent`). Multi-month summaries show `Avg/mo = total ÷
   month count`; the single-month comparison is explicitly labeled `12-mo avg`.
   Income includes only reviewed positive entries classified as Income.
+- All Transactions now appears at the bottom of Spending instead of Net Worth;
+  its searchable, category-filterable cross-account history is unchanged.
 - Historical spending and funding estimates now use arithmetic means so lumpy
   purchases, annual costs, savings-funded repairs, and payment-timing shifts
   remain amortized. Medians remain only for anomaly-resistant cadence,
@@ -35,11 +37,11 @@
 - Net Worth Balance Sheet categories now drill into their contributing
   accounts, and each account opens its source-specific detail. The redundant
   All Accounts card is removed; Contacts and Categories moved to Settings →
-  Accounts & Sync. All Transactions remains on Net Worth and now has a
-  searchable category filter. Spending retains its selected-month category
-  transaction list and adds View All History from that screen, opening the
-  same shared history prefiltered across all cached months. Split rows show
-  only the amount assigned to the selected category.
+  Accounts & Sync. All Transactions has a searchable category filter and now
+  lives at the bottom of Spending. Spending retains its selected-period
+  category transaction list and adds View All History from that screen,
+  opening the same shared history prefiltered across all cached months. Split
+  rows show only the amount assigned to the selected category.
 - Goal allocation editing now uses a compact allocation table. Amounts open
   focused numeric entry, available/allocated/remaining reconcile live, and the
   optional automatic-remainder goal is visibly locked. Apply retains the

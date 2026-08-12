@@ -87,6 +87,7 @@ struct SpendingHistoryView: View {
                             spendingBreakdown(period, model: model)
                         }
                         historyChartCard(model)
+                        allTransactionsLink
                     } else {
                         NwLoadingState("Loading spending…")
                             .frame(maxWidth: .infinity, minHeight: 240)
@@ -181,6 +182,28 @@ struct SpendingHistoryView: View {
                 }
             }
         }
+    }
+
+    private var allTransactionsLink: some View {
+        NavigationLink {
+            FinancialAccountTransactionHistoryView()
+        } label: {
+            NwCard(style: .primary) {
+                HStack(spacing: NwSpacing.sm) {
+                    NwIcon.history.image
+                        .font(NwTypography.headline)
+                        .foregroundStyle(NwAppColors.primary)
+                    Text("All Transactions")
+                        .font(NwTypography.headline)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                    Spacer()
+                    NwIcon.chevron.image
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Month navigation
