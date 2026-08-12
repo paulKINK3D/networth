@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var alertPayload: PersistenceFailure?
     @State private var showingTutorial = false
     @State private var showingSettings = false
+    @State private var settingsPage: SettingsPage?
     /// Minimum hold time for the launch splash so it always shows long enough
     /// to read — matches the WorkoutApp splash pause (1.2 s) before fading.
     @State private var splashMinimumElapsed = false
@@ -37,7 +38,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .selectTab)) { note in
             if let tab = note.object as? Int { selection = tab }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { note in
+            settingsPage = note.object as? SettingsPage
             showingSettings = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .showTutorial)) { _ in
@@ -67,9 +69,11 @@ struct ContentView: View {
         .sheet(isPresented: $showingTutorial) {
             TutorialView().environment(container)
         }
-        .sheet(isPresented: $showingSettings) {
+        .sheet(isPresented: $showingSettings, onDismiss: {
+            settingsPage = nil
+        }) {
             NavigationStack {
-                SettingsView()
+                SettingsView(page: settingsPage)
                     .environment(container)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {

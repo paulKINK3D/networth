@@ -6,6 +6,8 @@ import NetworthCore
 /// A missing or pending treatment remains eligible because some connected
 /// cash accounts have no editable investment-reconciliation control.
 enum GoalReserveAccountEligibility {
+    private static let manualAssetPrefix = "manual-asset:"
+
     static func canBackGoals(_ account: CachedFinancialAccount) -> Bool {
         switch account.type {
         case .checking, .savings, .cash:
@@ -41,6 +43,14 @@ enum GoalReserveAccountEligibility {
             }
         }
     }
+
+    static func canBackGoals(_ asset: DurableManualAsset) -> Bool {
+        !asset.deleted && asset.kind == .other
+    }
+
+    static func reserveID(for asset: DurableManualAsset) -> String {
+        manualAssetPrefix + asset.id.uuidString
+    }
 }
 
 /// Resolves one reserve account's conservative balance from either the
@@ -52,7 +62,8 @@ enum ReserveBalance {
     static func conservative(
         canonicalAccountId: String,
         financialById: [String: CachedFinancialAccount],
-        plaidById: [String: CachedPlaidAccount]
+        plaidById: [String: CachedPlaidAccount],
+        manualValueById: [String: Money] = [:]
     ) -> Money? {
         if let account = financialById[canonicalAccountId],
            !account.deleted,
@@ -69,6 +80,9 @@ enum ReserveBalance {
             let value = plaid.availableBalanceMilliunits
                 .map { min($0, current) } ?? current
             return Money(milliunits: max(0, value))
+        }
+        if let manualValue = manualValueById[canonicalAccountId] {
+            return max(manualValue, .zero)
         }
         return nil
     }
@@ -394,11 +408,36 @@ struct GoalLedgerService {
                 .map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
+        let plaidAccounts = try context.fetch(
+            FetchDescriptor<CachedPlaidAccount>()
+        )
+        let plaidTreatments = try context.fetch(
+            FetchDescriptor<DurablePlaidAccountTreatment>()
+        )
+        let manualAssets = try context.fetch(
+            FetchDescriptor<DurableManualAsset>()
+        )
+        let manualResolver = PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualAssets
+        )
+        let manualValueById = Dictionary(
+            uniqueKeysWithValues: manualAssets
+                .filter(GoalReserveAccountEligibility.canBackGoals)
+                .map {
+                    (
+                        GoalReserveAccountEligibility.reserveID(for: $0),
+                        manualResolver.effectiveValue(for: $0)
+                    )
+                }
+        )
         let liveTotal = reserves.reduce(Int64(0)) { sum, reserve in
             sum + (ReserveBalance.conservative(
                 canonicalAccountId: reserve.canonicalAccountId,
                 financialById: financialById,
-                plaidById: plaidById
+                plaidById: plaidById,
+                manualValueById: manualValueById
             )?.milliunits ?? 0)
         }
         let pendingAdjustment = try context.fetch(
@@ -740,6 +779,19 @@ struct GoalLedgerService {
             accountName: account.name,
             institutionName: account.institutionName ?? "",
             mask: account.mask ?? ""
+        )
+    }
+
+    func addReserveAccount(_ asset: DurableManualAsset) throws {
+        guard GoalReserveAccountEligibility.canBackGoals(asset) else {
+            throw Failure.accountCannotBackGoals
+        }
+        try addReserveAccount(
+            canonicalAccountId:
+                GoalReserveAccountEligibility.reserveID(for: asset),
+            accountName: asset.name,
+            institutionName: "Manual",
+            mask: ""
         )
     }
 

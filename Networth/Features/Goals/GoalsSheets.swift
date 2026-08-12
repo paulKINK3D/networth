@@ -400,6 +400,8 @@ struct GoalReservePickerSheet: View {
     @Query private var accounts: [CachedFinancialAccount]
     @Query private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
+    @Query(sort: \DurableManualAsset.name)
+    private var manualAssets: [DurableManualAsset]
     @Query private var reserveRows: [DurableGoalReserveAccount]
     let model: GoalsModel?
 
@@ -441,6 +443,23 @@ struct GoalReservePickerSheet: View {
         Set(reserveRows.filter(\.active).map(\.canonicalAccountId))
     }
 
+    private var manualResolver: PlaidContributionResolver {
+        PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualAssets
+        )
+    }
+
+    private var eligibleManualAccounts: [DurableManualAsset] {
+        manualAssets.filter {
+            GoalReserveAccountEligibility.canBackGoals($0)
+                && (activeReserveIds.contains(
+                    GoalReserveAccountEligibility.reserveID(for: $0)
+                ) || manualResolver.effectiveValue(for: $0).milliunits > 0)
+        }
+    }
+
     var body: some View {
         GoalSheetShell(title: "Goal Accounts") {
             Section {
@@ -471,6 +490,13 @@ struct GoalReservePickerSheet: View {
                 } footer: {
                     Text("Changing balances automatically update the amount "
                          + "available to goals.")
+                }
+            }
+            if !eligibleManualAccounts.isEmpty {
+                Section("Manual Accounts") {
+                    ForEach(eligibleManualAccounts) { asset in
+                        manualAccountRow(asset)
+                    }
                 }
             }
             unavailableSection
@@ -558,6 +584,40 @@ struct GoalReservePickerSheet: View {
                 NwAmountText(
                     account.currentBalance ?? .zero, variant: .body,
                     showCents: false, color: NwAppColors.textSecondary
+                )
+                Image(systemName: isReserve
+                    ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isReserve
+                        ? NwAppColors.positive : NwAppColors.textSecondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func manualAccountRow(
+        _ asset: DurableManualAsset
+    ) -> some View {
+        let reserveID = GoalReserveAccountEligibility.reserveID(for: asset)
+        let isReserve = activeReserveIds.contains(reserveID)
+        return Button {
+            toggleManualAccount(asset, isReserve: isReserve)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(asset.name.isEmpty ? "Untitled" : asset.name)
+                        .font(NwTypography.body)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                    Text("Manual · Other")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                NwAmountText(
+                    manualResolver.effectiveValue(for: asset),
+                    variant: .body,
+                    showCents: false,
+                    color: NwAppColors.textSecondary
                 )
                 Image(systemName: isReserve
                     ? "checkmark.circle.fill" : "circle")
@@ -685,6 +745,28 @@ struct GoalReservePickerSheet: View {
         }
     }
 
+    private func toggleManualAccount(
+        _ asset: DurableManualAsset,
+        isReserve: Bool
+    ) {
+        failure = nil
+        do {
+            let service = GoalLedgerService(context: context)
+            let reserveID = GoalReserveAccountEligibility.reserveID(for: asset)
+            if isReserve {
+                if let row = reserveRows.first(where: {
+                    $0.active && $0.canonicalAccountId == reserveID
+                }) {
+                    try service.removeReserveAccount(row)
+                }
+            } else {
+                try service.addReserveAccount(asset)
+            }
+        } catch {
+            failure = error.localizedDescription
+        }
+    }
+
     private func remove(_ reserve: GoalsModel.ReserveItem) {
         do {
             if let row = reserveRows.first(
@@ -717,8 +799,14 @@ struct GoalReservePickerSheet: View {
 
 // MARK: - Allocate
 
-/// Stage every goal allocation together, then commit once. One optional goal
-/// can receive the live remainder automatically.
+private struct GoalAllocationAmountTarget: Identifiable {
+    let id: UUID
+    let name: String
+    let amount: Money
+}
+
+/// Compact allocation editor. Every change remains staged until Apply; one
+/// optional goal can receive the live remainder automatically.
 struct GoalAllocateSheet: View {
     @SwiftUI.Environment(\.modelContext) private var context
     @SwiftUI.Environment(\.dismiss) private var dismiss
@@ -729,70 +817,106 @@ struct GoalAllocateSheet: View {
     @State private var residualGoalId: UUID?
     @State private var seeded = false
     @State private var failure: String?
+    @State private var amountTarget: GoalAllocationAmountTarget?
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    LabeledContent("Goal accounts") {
+                Section("Summary") {
+                    LabeledContent("Available") {
                         NwAmountText(
                             pool, variant: .body, showCents: false
                         )
                     }
-                    LabeledContent(residualGoalId == nil
-                        ? "Unallocated" : "Automatic remainder") {
+                    LabeledContent("Allocated") {
                         NwAmountText(
-                            remaining, variant: .body, showCents: false,
+                            stagedAllocated,
+                            variant: .body,
+                            showCents: false,
+                            color: overage.isZero
+                                ? NwAppColors.textPrimary
+                                : NwAppColors.liability
+                        )
+                    }
+                    LabeledContent("Remaining") {
+                        NwAmountText(
+                            unallocated,
+                            variant: .body,
+                            showCents: false,
                             color: overage.isZero
                                 ? NwAppColors.textPrimary
                                 : NwAppColors.liability
                         )
                     }
                 }
-                Section {
+                Section("Allocations") {
                     ForEach(goals) { item in
-                        VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(item.goal.name)
-                                    .font(NwTypography.headline)
-                                    .foregroundStyle(NwAppColors.textPrimary)
+                        if residualGoalId == item.goalUUID {
+                            HStack(spacing: NwSpacing.md) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.goal.name)
+                                        .foregroundStyle(
+                                            NwAppColors.textPrimary
+                                        )
+                                    Label(
+                                        "Automatic",
+                                        systemImage: "lock.fill"
+                                    )
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(.secondary)
+                                }
                                 Spacer()
-                                if residualGoalId == item.goalUUID {
+                                NwAmountText(
+                                    remaining,
+                                    variant: .body,
+                                    showCents: false,
+                                    color: NwAppColors.accent
+                                )
+                            }
+                        } else {
+                            Button {
+                                amountTarget = GoalAllocationAmountTarget(
+                                    id: item.goalUUID,
+                                    name: item.goal.name,
+                                    amount: allocation(for: item.goalUUID)
+                                )
+                            } label: {
+                                HStack(spacing: NwSpacing.md) {
+                                    Text(item.goal.name)
+                                        .foregroundStyle(
+                                            NwAppColors.textPrimary
+                                        )
+                                    Spacer()
                                     NwAmountText(
-                                        remaining,
+                                        allocation(for: item.goalUUID),
                                         variant: .body,
                                         showCents: false,
-                                        color: NwAppColors.accent
+                                        color: NwAppColors.textSecondary
                                     )
-                                } else {
-                                    TextField(
-                                        "0.00",
-                                        text: allocationBinding(
-                                            for: item.goalUUID
-                                        )
-                                    )
-                                    .multilineTextAlignment(.trailing)
-                                    .frame(maxWidth: 140)
-                                    .nwCurrencyInput(text: allocationBinding(
-                                        for: item.goalUUID
-                                    ))
                                 }
+                                .contentShape(Rectangle())
                             }
-                            Toggle(
-                                "Gets all unallocated money",
-                                isOn: residualBinding(for: item.goalUUID)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(
+                                "Edit \(item.goal.name) allocation"
                             )
-                            .font(NwTypography.footnote)
-                            .tint(NwAppColors.accent)
                         }
-                        .padding(.vertical, NwSpacing.xs)
                     }
-                } header: {
-                    Text("Allocations")
-                } footer: {
-                    Text("Amounts are staged until you tap Apply. Turn on "
-                         + "all unallocated for one goal to let its amount "
-                         + "rise and fall with the selected accounts.")
+                }
+
+                Section {
+                    Picker(
+                        "Automatic remainder",
+                        selection: $residualGoalId
+                    ) {
+                        Text("None").tag(UUID?.none)
+                        ForEach(goals) { item in
+                            Text(item.goal.name)
+                                .tag(Optional(item.goalUUID))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(NwAppColors.textSecondary)
                 }
                 if !overage.isZero {
                     Section {
@@ -844,41 +968,27 @@ struct GoalAllocateSheet: View {
                         )
                 }
             }
+            .sheet(item: $amountTarget) { target in
+                GoalAllocationAmountSheet(target: target) { amount in
+                    allocationText[target.id] =
+                        CurrencyInputFormatter.text(for: amount)
+                    failure = nil
+                }
+                .presentationDetents([.medium])
+            }
         }
         .presentationDetents([.large])
     }
 
-    private func allocationBinding(for goalId: UUID) -> Binding<String> {
-        Binding(
-            get: { allocationText[goalId] ?? "" },
-            set: { allocationText[goalId] = $0 }
-        )
-    }
-
-    private func residualBinding(for goalId: UUID) -> Binding<Bool> {
-        Binding(
-            get: { residualGoalId == goalId },
-            set: { enabled in
-                if enabled {
-                    if let previous = residualGoalId,
-                       previous != goalId {
-                        allocationText[previous] =
-                            CurrencyInputFormatter.text(for: .zero)
-                    }
-                    residualGoalId = goalId
-                } else if residualGoalId == goalId {
-                    residualGoalId = nil
-                }
-            }
-        )
+    private func allocation(for goalId: UUID) -> Money {
+        CurrencyInputFormatter.money(
+            from: allocationText[goalId] ?? ""
+        ) ?? .zero
     }
 
     private var allocations: [UUID: Money] {
         Dictionary(uniqueKeysWithValues: goals.map { goal in
-            let amount = CurrencyInputFormatter.money(
-                from: allocationText[goal.goalUUID] ?? ""
-            ) ?? .zero
-            return (goal.goalUUID, amount)
+            (goal.goalUUID, allocation(for: goal.goalUUID))
         })
     }
 
@@ -890,6 +1000,14 @@ struct GoalAllocateSheet: View {
 
     private var remaining: Money {
         max(pool - explicitTotal, .zero)
+    }
+
+    private var unallocated: Money {
+        residualGoalId == nil ? remaining : .zero
+    }
+
+    private var stagedAllocated: Money {
+        overage.isZero ? pool - unallocated : explicitTotal
     }
 
     private var overage: Money {
@@ -906,6 +1024,56 @@ struct GoalAllocateSheet: View {
         } catch {
             failure = error.localizedDescription
         }
+    }
+}
+
+private struct GoalAllocationAmountSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    let target: GoalAllocationAmountTarget
+    let onApply: (Money) -> Void
+
+    @State private var amountText: String
+
+    init(
+        target: GoalAllocationAmountTarget,
+        onApply: @escaping (Money) -> Void
+    ) {
+        self.target = target
+        self.onApply = onApply
+        _amountText = State(
+            initialValue: CurrencyInputFormatter.text(for: target.amount)
+        )
+    }
+
+    var body: some View {
+        NwModalLayout(
+            title: target.name,
+            onClose: { dismiss() },
+            onConfirm: apply,
+            confirmDisabled: amount == nil
+        ) {
+            NwCard(style: .primary) {
+                HStack(spacing: NwSpacing.md) {
+                    Text("Amount allocated")
+                    Spacer()
+                    NwAccessoryCurrencyTextField(
+                        text: $amountText,
+                        onFocusChange: { _ in }
+                    )
+                    .frame(width: 140, height: 44)
+                }
+            }
+        }
+    }
+
+    private var amount: Money? {
+        CurrencyInputFormatter.money(from: amountText)
+    }
+
+    private func apply() {
+        guard let amount else { return }
+        onApply(amount)
+        dismiss()
     }
 }
 

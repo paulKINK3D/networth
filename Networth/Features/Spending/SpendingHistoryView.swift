@@ -53,12 +53,20 @@ struct SpendingHistoryView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingGroupManager = true
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                    }
-                    .accessibilityLabel("Manage spending groups")
+                    NwTopLevelMenu(
+                        canRefresh: container.hasPlaidBackendToken,
+                        contextualActions: [
+                            NwTopLevelMenuAction(
+                                title: "Manage Spending Groups",
+                                systemImage: "slider.horizontal.3",
+                                action: { showingGroupManager = true }
+                            )
+                        ],
+                        onRefresh: {
+                            Task { await container.syncNow() }
+                        },
+                        onSettings: { SettingsRouter.open() }
+                    )
                 }
             }
         }

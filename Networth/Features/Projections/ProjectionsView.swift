@@ -55,6 +55,24 @@ struct ProjectionsView: View {
                         .navigationTitle("Projections")
                 }
             }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NwTopLevelMenu(
+                        canRefresh: container.hasPlaidBackendToken,
+                        contextualActions: [
+                            NwTopLevelMenuAction(
+                                title: "Projection Settings",
+                                systemImage: "slider.horizontal.3",
+                                action: { SettingsRouter.open(.budget) }
+                            )
+                        ],
+                        onRefresh: {
+                            Task { await container.syncNow() }
+                        },
+                        onSettings: { SettingsRouter.open() }
+                    )
+                }
+            }
             .task { refreshCache() }
             .onAppear {
                 isVisible = true
@@ -204,7 +222,7 @@ struct ProjectionsView: View {
 
     private func settingsNotice(_ title: String, message: String) -> some View {
         Button {
-            NotificationCenter.default.post(name: .openSettings, object: nil)
+            SettingsRouter.open()
         } label: {
             NwInlineNotice(
                 title,

@@ -248,6 +248,24 @@ struct InvestmentsView: View {
             }
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Investments")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NwTopLevelMenu(
+                        canRefresh: container.hasPlaidBackendToken,
+                        contextualActions: [
+                            NwTopLevelMenuAction(
+                                title: "Manage Investment Accounts",
+                                systemImage: NwIcon.accounts.rawValue,
+                                action: { SettingsRouter.open(.connections) }
+                            )
+                        ],
+                        onRefresh: {
+                            Task { await container.syncNow() }
+                        },
+                        onSettings: { SettingsRouter.open() }
+                    )
+                }
+            }
             .sheet(isPresented: $showingPlaidReview) {
                 PlaidAccountReviewSheet().environment(container)
             }

@@ -162,7 +162,7 @@ struct NetWorthView: View {
                             message: "Connect your bank through Plaid in Settings to start tracking.",
                             tone: .info,
                             actionTitle: "Open Settings",
-                            action: { NotificationCenter.default.post(name: .openSettings, object: nil) }
+                            action: { SettingsRouter.open() }
                         )
                     } else if case .error(let msg) = container.plaidTransactionSyncCoordinator.phase {
                         NwBanner(
@@ -191,7 +191,17 @@ struct NetWorthView: View {
             }
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Net Worth")
-            .toolbar { syncToolbarItem }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NwTopLevelMenu(
+                        canRefresh: hasPrimaryConnection,
+                        onRefresh: {
+                            Task { await container.syncNow() }
+                        },
+                        onSettings: { SettingsRouter.open() }
+                    )
+                }
+            }
             .sheet(isPresented: $showingTrendDetail) {
                 TrendDetailView().environment(container)
             }
@@ -206,43 +216,6 @@ struct NetWorthView: View {
                     refreshCaches(force: true)
                 } else {
                     cacheFingerprint = ""
-                }
-            }
-        }
-    }
-
-    @ToolbarContentBuilder
-    private var syncToolbarItem: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            switch container.plaidTransactionSyncCoordinator.phase {
-            case .syncing(let label):
-                HStack(spacing: NwSpacing.xs) {
-                    ProgressView().controlSize(.small)
-                    Text(label).font(NwTypography.caption).foregroundStyle(.secondary)
-                }
-            default:
-                Menu {
-                    // Settings first so an accidental release-over-first-item
-                    // when the menu opens fires a harmless action instead of
-                    // a sync. Refresh stays available as the second item.
-                    Button {
-                        NotificationCenter.default.post(name: .openSettings, object: nil)
-                    } label: {
-                        Label("Settings", systemImage: NwIcon.settings.rawValue)
-                    }
-
-                    Button {
-                        Task { await container.syncNow() }
-                    } label: {
-                        Label("Refresh", systemImage: NwIcon.sync.rawValue)
-                    }
-                    .disabled(!hasPrimaryConnection)
-                } label: {
-                    if case .error = container.plaidTransactionSyncCoordinator.phase {
-                        NwIcon.warning.image.foregroundStyle(NwAppColors.caution)
-                    } else {
-                        Image(systemName: "ellipsis.circle")
-                    }
                 }
             }
         }

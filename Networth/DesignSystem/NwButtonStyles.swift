@@ -61,3 +61,57 @@ public struct NwDestructiveButtonStyle: ButtonStyle {
             .opacity(configuration.isPressed ? 0.85 : 1)
     }
 }
+
+struct NwTopLevelMenuAction: Identifiable {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    var id: String { title }
+}
+
+/// Shared management menu for every top-level tab. Settings and Refresh stay
+/// in the same position; each tab may append its own management actions.
+struct NwTopLevelMenu: View {
+    let canRefresh: Bool
+    let contextualActions: [NwTopLevelMenuAction]
+    let onRefresh: () -> Void
+    let onSettings: () -> Void
+
+    init(
+        canRefresh: Bool,
+        contextualActions: [NwTopLevelMenuAction] = [],
+        onRefresh: @escaping () -> Void,
+        onSettings: @escaping () -> Void
+    ) {
+        self.canRefresh = canRefresh
+        self.contextualActions = contextualActions
+        self.onRefresh = onRefresh
+        self.onSettings = onSettings
+    }
+
+    var body: some View {
+        Menu {
+            Button(action: onSettings) {
+                Label("Settings", systemImage: NwIcon.settings.rawValue)
+            }
+
+            Button(action: onRefresh) {
+                Label("Refresh", systemImage: NwIcon.sync.rawValue)
+            }
+            .disabled(!canRefresh)
+
+            if !contextualActions.isEmpty {
+                Divider()
+                ForEach(contextualActions) { item in
+                    Button(action: item.action) {
+                        Label(item.title, systemImage: item.systemImage)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityLabel("More")
+    }
+}

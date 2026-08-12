@@ -176,6 +176,52 @@ struct GoalLedgerServiceTests {
             == Money(milliunits: 50_500_000))
     }
 
+    @Test func manualOtherAccountCanBackGoals() async throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let asset = DurableManualAsset(
+            name: "Manual Savings",
+            kind: .other
+        )
+        let value = DurableManualAssetValue(
+            amountMilliunits: 750_000,
+            asset: asset
+        )
+        asset.values = [value]
+        context.insert(asset)
+        context.insert(value)
+        try context.save()
+
+        let service = GoalLedgerService(context: context)
+        try service.addReserveAccount(asset)
+
+        #expect(try service.reservePoolBalance()
+            == Money(milliunits: 750_000))
+        let model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        #expect(model.pool.pool == Money(milliunits: 750_000))
+        #expect(model.reserves.first?.canonicalAccountId
+            == GoalReserveAccountEligibility.reserveID(for: asset))
+        #expect(model.unavailableReserves.isEmpty)
+    }
+
+    @Test func nonAccountManualAssetsCannotBackGoals() throws {
+        let context = try makeContext()
+        let property = DurableManualAsset(
+            name: "Home",
+            kind: .realEstate
+        )
+        context.insert(property)
+        try context.save()
+
+        #expect(!GoalReserveAccountEligibility.canBackGoals(property))
+        #expect(throws: GoalLedgerService.Failure.self) {
+            try GoalLedgerService(context: context)
+                .addReserveAccount(property)
+        }
+    }
+
     @Test func excludedInvestmentIsNotCountedAsAGoalAccount() async throws {
         let container = try ModelContainerFactory.makeContainer(inMemory: true)
         let context = container.mainContext
@@ -346,6 +392,44 @@ struct GoalLedgerServiceTests {
         #expect(model.activeGoals.first {
             $0.goalUUID == investments.id
         }?.balance == Money(milliunits: 950_000))
+    }
+
+    @Test func changingResidualGoalPreservesStagedFinalBalances() async throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let account = insertSavingsAccount(context, balance: 1_000_000)
+        let service = GoalLedgerService(context: context)
+        try service.addReserveAccount(account)
+        let emergency = try service.createGoal(
+            name: "Emergency", kind: .refillable
+        )
+        let downPayment = try service.createGoal(
+            name: "Down Payment", kind: .oneTime
+        )
+        try service.applyAllocations(
+            [emergency.id: Money(milliunits: 300_000)],
+            residualGoalId: downPayment.id
+        )
+
+        try service.applyAllocations(
+            [
+                emergency.id: Money(milliunits: 300_000),
+                downPayment.id: Money(milliunits: 700_000)
+            ],
+            residualGoalId: emergency.id
+        )
+
+        let model = try await GoalsBuildActor(
+            modelContainer: container
+        ).build(now: .now)
+        #expect(model.activeGoals.first {
+            $0.goalUUID == emergency.id
+        }?.balance == Money(milliunits: 300_000))
+        #expect(model.activeGoals.first {
+            $0.goalUUID == downPayment.id
+        }?.balance == Money(milliunits: 700_000))
+        #expect(emergency.isResidual)
+        #expect(!downPayment.isResidual)
     }
 
     @Test func movingMoneyAgainstResidualAdjustsOnlySelectedGoal() async throws {

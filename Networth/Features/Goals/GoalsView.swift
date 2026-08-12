@@ -47,21 +47,28 @@ struct GoalsView: View {
             .navigationTitle("Goals")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showingReservePicker = true
-                    } label: {
-                        Image(systemName: NwIcon.savings.rawValue)
-                    }
-                    .accessibilityLabel("Goal accounts")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         editorTarget = .create
                     } label: {
                         Image(systemName: NwIcon.add.rawValue)
                     }
                     .accessibilityLabel("New goal")
+
+                    NwTopLevelMenu(
+                        canRefresh: container.hasPlaidBackendToken,
+                        contextualActions: [
+                            NwTopLevelMenuAction(
+                                title: "Goal Accounts",
+                                systemImage: NwIcon.savings.rawValue,
+                                action: { showingReservePicker = true }
+                            )
+                        ],
+                        onRefresh: {
+                            Task { await container.syncNow() }
+                        },
+                        onSettings: { SettingsRouter.open() }
+                    )
                 }
             }
         }
@@ -345,6 +352,9 @@ actor GoalsBuildActor {
         let plaidTreatments = try modelContext.fetch(
             FetchDescriptor<DurablePlaidAccountTreatment>()
         )
+        let manualAssets = try modelContext.fetch(
+            FetchDescriptor<DurableManualAsset>()
+        )
         let transferRequests = try modelContext.fetch(
             FetchDescriptor<DurableGoalTransferRequest>()
         ).filter { $0.active && $0.completedAt == nil }
@@ -371,6 +381,21 @@ actor GoalsBuildActor {
                 .map { ($0.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
+        let manualResolver = PlaidContributionResolver(
+            plaidAccounts: plaidAccounts,
+            treatments: plaidTreatments,
+            manualAssets: manualAssets
+        )
+        let manualValueById = Dictionary(
+            uniqueKeysWithValues: manualAssets
+                .filter(GoalReserveAccountEligibility.canBackGoals)
+                .map {
+                    (
+                        GoalReserveAccountEligibility.reserveID(for: $0),
+                        manualResolver.effectiveValue(for: $0)
+                    )
+                }
+        )
         let activeReserves = reserveRows.filter(\.active)
 
         // Reserve items + conservative pool balance. Cash accounts resolve
@@ -382,7 +407,8 @@ actor GoalsBuildActor {
             let balance = ReserveBalance.conservative(
                 canonicalAccountId: reserve.canonicalAccountId,
                 financialById: financialById,
-                plaidById: plaidById
+                plaidById: plaidById,
+                manualValueById: manualValueById
             )
             poolMilliunits += balance?.milliunits ?? 0
             return GoalsModel.ReserveItem(

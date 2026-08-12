@@ -6,7 +6,7 @@ import struct LinkKit.Plaid
 import class LinkKit.PlaidLinkSession
 import UIKit
 
-private enum SettingsPage {
+enum SettingsPage {
     case connections
     case budget
     case assets
@@ -19,6 +19,15 @@ private enum SettingsPage {
         case .assets: "Manual Assets"
         case .privacy: "Privacy & App"
         }
+    }
+}
+
+enum SettingsRouter {
+    static func open(_ page: SettingsPage? = nil) {
+        NotificationCenter.default.post(
+            name: .openSettings,
+            object: page
+        )
     }
 }
 
@@ -69,11 +78,7 @@ struct SettingsView: View {
 
     private let page: SettingsPage?
 
-    init() {
-        page = nil
-    }
-
-    private init(page: SettingsPage) {
+    init(page: SettingsPage? = nil) {
         self.page = page
     }
 

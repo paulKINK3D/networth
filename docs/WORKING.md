@@ -27,6 +27,20 @@
   transaction list and adds View All History from that screen, opening the
   same shared history prefiltered across all cached months. Split rows show
   only the amount assigned to the selected category.
+- Goal allocation editing now uses a compact allocation table. Amounts open
+  focused numeric entry, available/allocated/remaining reconcile live, and the
+  optional automatic-remainder goal is visibly locked. Apply retains the
+  existing atomic snapshot save; changing the remainder goal preserves the
+  staged balances. Tappable amount rows omit redundant chevrons so every value
+  stays aligned to one trailing numeric column.
+- Goal Accounts now includes positive, active manual assets classified as
+  Other. They contribute their effective reconciled value to the goal pool;
+  non-account manual asset kinds remain excluded.
+- All five top-level tabs now use the same top-right overflow menu for Settings
+  and Refresh. Spending, Projections, Investments, and Goals append their own
+  management destination; Net Worth has no contextual item. Goals retains New
+  Goal as the only separate toolbar action, and its Goal Accounts control no
+  longer sits in the opposite corner.
 - All identified P0 correctness items are closed: reimbursement repair,
   standalone Plaid accounts in Net Worth drill-downs, transaction-review queue
   alignment, Plaid IRA retirement presentation, and reconciled whole-dollar
@@ -36,9 +50,8 @@
   because simulator execution was not requested. The prior stabilization
   checkpoint also passed NetworthCore 214/214 and a generic-device Release
   build.
-- Immediate next step: **agree on the Goal allocation editing interaction**
-  before implementing it. Review Transactions has no live pending rows for a
-  device check, so its polish is closed on code review and build validation.
+- Immediate next step: **scope investment reconciliation controls correctly**
+  so ordinary banking accounts do not expose controls that cannot affect them.
 
 ### Ordered backlog
 
@@ -49,11 +62,11 @@
      editing before the green approval action is available.
    - Preserve grouped approval, batch selection, and individual transaction
      review behavior.
-2. **Goal allocation editing redesign**
-   - The current staged all-goals sheet is functional but temporary.
-   - The per-goal Add/Remove experiment was rejected and must not be restored.
-   - Agree on the replacement interaction with the user before implementation;
-     preserve atomic saves, the live remainder goal, and pool constraints.
+2. **Goal allocation editing redesign — complete**
+   - Edit desired final balances from one compact staged table.
+   - Preserve atomic saves, pool constraints, and one visibly locked automatic
+     remainder goal.
+   - The rejected per-goal Add/Remove experiment was not restored.
 3. **Spending group management controls — complete**
    - Replace the current rename/edit affordances with native list-row
      management and swipe actions while preserving explicit ordering.
