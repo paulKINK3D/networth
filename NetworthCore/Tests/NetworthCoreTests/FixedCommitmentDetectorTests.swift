@@ -60,7 +60,7 @@ struct FixedCommitmentDetectorTests {
         #expect(candidate.occurrenceCount == 6)
     }
 
-    @Test("A variable monthly bill suggests the recent median")
+    @Test("A variable monthly bill suggests the recent mean")
     func variableMonthlyBill() {
         let amounts: [Decimal] = [80, 95, 110, 90, 85, 100]
         let transactions = amounts.enumerated().map { index, amount in
@@ -70,8 +70,8 @@ struct FixedCommitmentDetectorTests {
         let candidates = detect(transactions, asOf: date(2026, 7, 1))
         let candidate = try! #require(candidates.first)
         #expect(candidate.cadence == .monthly)
-        #expect(candidate.amountBasis == .recentMedian)
-        #expect(candidate.suggestedAmount == .dollars(92.5))
+        #expect(candidate.amountBasis == .recentMean)
+        #expect(candidate.suggestedAmount == Money(milliunits: 93_333))
     }
 
     @Test("An amount change converges onto the new stable amount")

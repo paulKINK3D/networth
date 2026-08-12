@@ -5,34 +5,33 @@ import Foundation
 
 @Suite("Emergency fund target math")
 struct EmergencyFundMathTests {
-    @Test func medianRequiresMinimumSampleMonths() {
-        #expect(EmergencyFundMath.medianOfCompleteMonths([]) == nil)
-        #expect(EmergencyFundMath.medianOfCompleteMonths(
+    @Test func meanRequiresMinimumSampleMonths() {
+        #expect(EmergencyFundMath.meanOfCompleteMonths([]) == nil)
+        #expect(EmergencyFundMath.meanOfCompleteMonths(
             [.dollars(integer: 4_000)]
         ) == nil)
     }
 
-    @Test func medianOfOddAndEvenCounts() {
-        let odd = EmergencyFundMath.medianOfCompleteMonths([
+    @Test func meanIncludesEveryCompleteMonth() {
+        let odd = EmergencyFundMath.meanOfCompleteMonths([
             .dollars(integer: 3_000),
             .dollars(integer: 9_000),
             .dollars(integer: 4_000)
         ])
-        #expect(odd == .dollars(integer: 4_000))
+        #expect(odd == Money(milliunits: 5_333_333))
 
-        let even = EmergencyFundMath.medianOfCompleteMonths([
+        let even = EmergencyFundMath.meanOfCompleteMonths([
             .dollars(integer: 3_000),
             .dollars(integer: 5_000),
             .dollars(integer: 4_000),
             .dollars(integer: 20_000)
         ])
-        // Median of middle two (4k, 5k); a spike month barely moves it.
-        #expect(even == .dollars(integer: 4_500))
+        #expect(even == .dollars(integer: 8_000))
     }
 
     @Test func targetAppliesMonthsAndReductionThenRounds() {
         let target = EmergencyFundMath.target(
-            medianMonthly: .dollars(integer: 5_150),
+            averageMonthly: .dollars(integer: 5_150),
             months: 6,
             reductionPercent: 70
         )
@@ -42,10 +41,10 @@ struct EmergencyFundMathTests {
 
     @Test func targetDegeneratesToZeroOnBadInputs() {
         #expect(EmergencyFundMath.target(
-            medianMonthly: .zero, months: 6, reductionPercent: 100
+            averageMonthly: .zero, months: 6, reductionPercent: 100
         ) == .zero)
         #expect(EmergencyFundMath.target(
-            medianMonthly: .dollars(integer: 4_000),
+            averageMonthly: .dollars(integer: 4_000),
             months: 0, reductionPercent: 100
         ) == .zero)
     }

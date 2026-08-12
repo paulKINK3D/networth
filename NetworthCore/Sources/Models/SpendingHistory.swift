@@ -118,6 +118,8 @@ public struct SpendingHistoryGroupTotal: Sendable, Hashable, Identifiable {
 public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
     /// Start of month in the builder's calendar.
     public let month: Date
+    /// Confirmed positive deposits explicitly classified as income.
+    public let incomeMilliunits: Int64
     /// The Spent headline: every visible group.
     public let totalMilliunits: Int64
     /// Ordinary out-of-pocket spending only — excludes transfer and
@@ -127,6 +129,7 @@ public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
     public let groups: [SpendingHistoryGroupTotal]
 
     public var id: Date { month }
+    public var income: Money { Money(milliunits: incomeMilliunits) }
     public var total: Money { Money(milliunits: totalMilliunits) }
     public var ordinaryTotal: Money {
         Money(milliunits: ordinaryTotalMilliunits)
@@ -172,8 +175,15 @@ public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
             )
         }
         return SpendingHistoryWholeDollarDisplay(
+            incomeHeadline: Money(
+                milliunits: Self.roundedWholeDollar(incomeMilliunits)
+            ),
             ordinaryHeadline: Money(milliunits: headlineMilliunits),
-            groupAmountsByID: groupAmounts
+            groupAmountsByID: groupAmounts,
+            retainedHeadline: Money(
+                milliunits: Self.roundedWholeDollar(incomeMilliunits)
+                    - headlineMilliunits
+            )
         )
     }
 
@@ -187,8 +197,10 @@ public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
 }
 
 public struct SpendingHistoryWholeDollarDisplay: Sendable, Hashable {
+    public let incomeHeadline: Money
     public let ordinaryHeadline: Money
     public let groupAmountsByID: [String: Money]
+    public let retainedHeadline: Money
 }
 
 /// Builds the Spending History months from approved activity.
@@ -218,6 +230,113 @@ public enum SpendingHistoryBuilder {
         case .income, .cardPayment, .reimbursement, .goalSpend, .goalRefund,
              .excluded, .unknown: false
         }
+    }
+
+    /// Combines consecutive monthly summaries into one trailing-period
+    /// summary while retaining category and transaction drill-down data.
+    /// The returned `month` is the period's ending month.
+    public static func aggregate(
+        months: [SpendingHistoryMonth]
+    ) -> SpendingHistoryMonth? {
+        guard let endingMonth = months.last?.month else { return nil }
+
+        struct CategoryBucket {
+            var name: String
+            var spentMilliunits: Int64 = 0
+            var transactionIds: [String] = []
+            var seenTransactionIds: Set<String> = []
+            var lineAmountsByTransactionId: [String: Int64] = [:]
+        }
+        struct GroupBucket {
+            var name: String
+            var spentMilliunits: Int64 = 0
+            var categories: [String: CategoryBucket] = [:]
+            var reportingRole: CategoryReportingRole?
+        }
+
+        var groupsByID: [String: GroupBucket] = [:]
+        for month in months {
+            for group in month.groups {
+                var groupBucket = groupsByID[group.id]
+                    ?? GroupBucket(name: group.name)
+                groupBucket.name = group.name
+                groupBucket.spentMilliunits += group.spentMilliunits
+                if let reportingRole = group.reportingRole {
+                    groupBucket.reportingRole = reportingRole
+                }
+
+                for category in group.categories {
+                    var categoryBucket = groupBucket.categories[category.id]
+                        ?? CategoryBucket(name: category.name)
+                    categoryBucket.name = category.name
+                    categoryBucket.spentMilliunits += category.spentMilliunits
+                    for transactionID in category.transactionIds
+                    where categoryBucket.seenTransactionIds.insert(
+                        transactionID
+                    ).inserted {
+                        categoryBucket.transactionIds.append(transactionID)
+                    }
+                    for (transactionID, amount) in
+                        category.lineAmountsByTransactionId {
+                        categoryBucket.lineAmountsByTransactionId[
+                            transactionID,
+                            default: 0
+                        ] += amount
+                    }
+                    groupBucket.categories[category.id] = categoryBucket
+                }
+                groupsByID[group.id] = groupBucket
+            }
+        }
+
+        let groups = groupsByID.map { groupID, bucket in
+            let categories = bucket.categories.map { categoryID, category in
+                SpendingHistoryCategoryTotal(
+                    id: categoryID,
+                    name: category.name,
+                    spentMilliunits: category.spentMilliunits,
+                    transactionIds: category.transactionIds,
+                    lineAmountsByTransactionId:
+                        category.lineAmountsByTransactionId
+                )
+            }
+            .sorted {
+                if $0.spentMilliunits != $1.spentMilliunits {
+                    return $0.spentMilliunits > $1.spentMilliunits
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name)
+                    == .orderedAscending
+            }
+            return SpendingHistoryGroupTotal(
+                id: groupID,
+                name: bucket.name,
+                spentMilliunits: bucket.spentMilliunits,
+                categories: categories,
+                reportingRole: bucket.reportingRole
+            )
+        }
+        .sorted {
+            if $0.spentMilliunits != $1.spentMilliunits {
+                return $0.spentMilliunits > $1.spentMilliunits
+            }
+            return $0.name.localizedCaseInsensitiveCompare($1.name)
+                == .orderedAscending
+        }
+
+        return SpendingHistoryMonth(
+            month: endingMonth,
+            incomeMilliunits: months.reduce(0) {
+                $0 + $1.incomeMilliunits
+            },
+            totalMilliunits: groups.reduce(0) {
+                $0 + max(0, $1.spentMilliunits)
+            },
+            ordinaryTotalMilliunits: groups.reduce(0) {
+                $1.isOrdinarySpending
+                    ? $0 + max(0, $1.spentMilliunits) : $0
+            },
+            groups: groups
+        )
     }
 
     /// Returns exactly `monthsBack` months ending at `now`'s month, oldest
@@ -258,8 +377,20 @@ public enum SpendingHistoryBuilder {
         }
         // month -> groupIdentity -> buckets
         var months: [Date: [String: GroupBucket]] = [:]
+        var incomeByMonth: [Date: Int64] = [:]
 
         for entry in entries {
+            guard entry.date >= windowStart, entry.date <= now,
+                  let month = calendar.dateInterval(
+                    of: .month, for: entry.date
+                  )?.start else {
+                continue
+            }
+            if entry.treatment == .income {
+                guard entry.amountMilliunits > 0 else { continue }
+                incomeByMonth[month, default: 0] += entry.amountMilliunits
+                continue
+            }
             guard contributesToSpending(
                 entry.treatment,
                 reportingRole: entry.reportingRole
@@ -290,12 +421,6 @@ public enum SpendingHistoryBuilder {
                 reportedAmount = entry.amountMilliunits
             case .income, .cardPayment, .reimbursement, .goalSpend,
                  .goalRefund, .excluded, .unknown:
-                continue
-            }
-            guard entry.date >= windowStart, entry.date <= now,
-                  let month = calendar.dateInterval(
-                    of: .month, for: entry.date
-                  )?.start else {
                 continue
             }
             let groupID = entry.groupIdentity ?? ungroupedIdentity
@@ -362,6 +487,7 @@ public enum SpendingHistoryBuilder {
             }
             return SpendingHistoryMonth(
                 month: month,
+                incomeMilliunits: incomeByMonth[month] ?? 0,
                 // A net-negative group is refund inflow exceeding spending
                 // (usually misclassified income/reimbursements) — it must not
                 // erase other groups' real spending from the headline. Clamp

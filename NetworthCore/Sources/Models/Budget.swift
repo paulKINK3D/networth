@@ -232,8 +232,16 @@ public enum CommitmentCadence: String, Codable, Sendable, CaseIterable, Identifi
 public enum CommitmentAmountBasis: String, Codable, Sendable, CaseIterable {
     /// Stable amounts (subscriptions, rent): plan with the latest amount.
     case latestAmount
-    /// Variable amounts (utilities): plan with the median of recent occurrences.
+    /// Variable amounts (utilities): plan with the arithmetic mean of recent
+    /// occurrences so every observed charge contributes to the reserve.
+    case recentMean
+    /// Legacy persisted value. New detections use `recentMean`; existing
+    /// confirmed commitments retain their already-saved suggested amount.
     case recentMedian
+
+    public static let allCases: [CommitmentAmountBasis] = [
+        .latestAmount, .recentMean
+    ]
 }
 
 /// A user-confirmed recurring obligation. Confirmed commitments stay active
@@ -641,7 +649,7 @@ public struct MonthlyBudgetPlan: Hashable, Sendable {
     public let plannedFixed: Money
     public let actualFixed: Money
     public let fixedLines: [FixedCommitmentLine]
-    /// Rolling median of the latest 12 completed months of Necessities.
+    /// Rolling mean of the latest 12 completed months of Necessities.
     public let necessitiesEnvelope: Money
     public let actualNecessities: Money
     public let surplusTarget: Money
@@ -742,5 +750,13 @@ public enum BudgetDateMath {
             return Money(milliunits: (sorted[mid - 1] + sorted[mid]) / 2)
         }
         return Money(milliunits: sorted[mid])
+    }
+
+    /// Arithmetic mean of milliunit values. Every observation contributes,
+    /// which is appropriate for amortizing lumpy spending over time.
+    public static func mean(of values: [Money]) -> Money {
+        guard !values.isEmpty else { return .zero }
+        let total = values.reduce(Int64(0)) { $0 + $1.milliunits }
+        return Money(milliunits: total / Int64(values.count))
     }
 }

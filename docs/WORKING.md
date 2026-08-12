@@ -1,12 +1,25 @@
 # WORKING
 
-## Resume here — ordered next work (2026-08-11)
+## Resume here — ordered next work (2026-08-12)
 
 ### Repository handoff
 
-- Active branch: `ux-cleanup`.
-- Prior checkpoint: `e6a8e73` (`Close remaining stabilization correctness
-  gaps`). The current checkpoint completes the approved UX cleanup below.
+- Active branch: `spending-view`.
+- Spending range and comparison work is complete. The month is a left-aligned
+  dropdown for the single-month view; 3/6/12-month summaries always use the
+  preceding completed months and exclude the current partial month. Aggregate
+  summaries retain category and transaction drill-down detail.
+- The Spending summary now reconciles actual Spent, confirmed Income, and
+  Retained (`Income − Spent`). Multi-month summaries show `Avg/mo = total ÷
+  month count`; the single-month comparison is explicitly labeled `12-mo avg`.
+  Income includes only reviewed positive entries classified as Income.
+- Historical spending and funding estimates now use arithmetic means so lumpy
+  purchases, annual costs, savings-funded repairs, and payment-timing shifts
+  remain amortized. Medians remain only for anomaly-resistant cadence,
+  clustering, and stability detection. The full policy and supersession are
+  recorded in `docs/PLAN.md`.
+- Validation for this checkpoint: NetworthCore 220/220 and a generic-device
+  Debug build pass. Simulator execution was not requested.
 - Review Transactions UX polish is complete: the oversized
   normal-state instruction row is gone, counts pluralize correctly, tapping a
   row opens detail, and Edit/Approve are swipe actions. Incomplete suggestions
@@ -368,7 +381,8 @@ DiscretionaryBudgetSettingsSheet struct removed from SettingsView.swift.
   `.refund` transactions in their posted month instead of forecasting gross
   charges forever. Projection Details reports the refund total, and monthly
   transaction drill-downs show the offset. Live-device replay moved the
-  everyday median from $9,002.08 to $7,917.84 before installation.
+  then-current everyday median from $9,002.08 to $7,917.84 before
+  installation. The 2026-08-12 mean-based policy supersedes this method.
 - [ ] Required projection-audit CSV export: add a user-initiated local export
   from Projection Details with one row for every source transaction/split leg
   considered (including excluded rows), its stored treatment, signed amount,

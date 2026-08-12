@@ -1090,7 +1090,7 @@ private struct ProjectionAssumptionsSheet: View {
                 Section("Everyday spending estimate") {
                     detail(
                         "Method",
-                        data.result.expectedSpend.sampleMonthCount > 0 ? "Median monthly" : "Daily average fallback"
+                        data.result.expectedSpend.sampleMonthCount > 0 ? "Average of complete months" : "Daily average fallback"
                     )
                     detail("History used", data.result.expectedSpend.historyDays == 0 ? "Not enough data" : "\(data.result.expectedSpend.historyDays) days")
                     if data.result.expectedSpend.sampleMonthCount > 0 {
@@ -1150,7 +1150,7 @@ private struct ProjectionAssumptionsSheet: View {
                     }
                 }
                 Section("Method") {
-                    Text("Median complete month · Scheduled outflows separate · Income excluded")
+                    Text("Average of complete months · Scheduled outflows separate · Income excluded")
                         .font(NwTypography.callout)
                 }
             }

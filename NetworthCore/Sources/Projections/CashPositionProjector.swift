@@ -725,8 +725,10 @@ public struct CashPositionProjector: Sendable {
                 milliunits: unscheduled.milliunits * 365 / Int64(days) / 12
             )
         } else {
-            estimatedMonthly = median(monthlyTotalSamples)
-            unscheduledMonthly = median(monthlyUnscheduledSamples)
+            estimatedMonthly = BudgetDateMath.mean(of: monthlyTotalSamples)
+            unscheduledMonthly = BudgetDateMath.mean(
+                of: monthlyUnscheduledSamples
+            )
             daily = Money(milliunits: unscheduledMonthly.milliunits * 12 / 365)
             if monthlyTotalSamples.count >= 4 {
                 let candidateMonthly = upperQuartile(monthlyTotalSamples)
@@ -761,16 +763,6 @@ public struct CashPositionProjector: Sendable {
     private func monthStart(for date: Date) -> Date {
         let components = calendar.dateComponents([.year, .month], from: date)
         return calendar.date(from: components).map(calendar.startOfDay(for:)) ?? calendar.startOfDay(for: date)
-    }
-
-    private func median(_ values: [Money]) -> Money {
-        guard !values.isEmpty else { return .zero }
-        let sorted = values.sorted()
-        let middle = sorted.count / 2
-        guard sorted.count.isMultiple(of: 2) else { return sorted[middle] }
-        let lower = sorted[middle - 1].milliunits
-        let upper = sorted[middle].milliunits
-        return Money(milliunits: lower + (upper - lower) / 2)
     }
 
     private func upperQuartile(_ values: [Money]) -> Money {

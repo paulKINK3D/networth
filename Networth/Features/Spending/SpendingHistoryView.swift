@@ -4,6 +4,27 @@ import Charts
 import UIKit
 import NetworthCore
 
+private enum SpendingPeriodFormatter {
+    static func label(from startMonth: Date, through endMonth: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDate(
+            startMonth,
+            equalTo: endMonth,
+            toGranularity: .month
+        ) {
+            return endMonth.formatted(.dateTime.month(.wide).year())
+        }
+        if calendar.isDate(
+            startMonth,
+            equalTo: endMonth,
+            toGranularity: .year
+        ) {
+            return "\(startMonth.formatted(.dateTime.month(.abbreviated)))–\(endMonth.formatted(.dateTime.month(.abbreviated).year()))"
+        }
+        return "\(startMonth.formatted(.dateTime.month(.abbreviated).year()))–\(endMonth.formatted(.dateTime.month(.abbreviated).year()))"
+    }
+}
+
 /// Spending History — the Spending tab (Phase 1 step 3).
 ///
 /// Month navigation, the review card for posted transactions awaiting
@@ -13,8 +34,33 @@ import NetworthCore
 struct SpendingHistoryView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
 
+    private enum SummaryRange: Int, CaseIterable, Identifiable, Hashable {
+        case oneMonth = 1
+        case threeMonths = 3
+        case sixMonths = 6
+        case twelveMonths = 12
+
+        var id: Int { rawValue }
+        var label: String { "\(rawValue) mo" }
+    }
+
+    private struct DisplayedPeriod {
+        let months: [SpendingHistoryMonth]
+        let summary: SpendingHistoryMonth
+
+        var startMonth: Date { months[0].month }
+        var monthCount: Int { months.count }
+        var label: String {
+            SpendingPeriodFormatter.label(
+                from: startMonth,
+                through: summary.month
+            )
+        }
+    }
+
     @State private var model: SpendingHistoryModel?
     @State private var selectedMonth: Date?
+    @State private var summaryRange = SummaryRange.oneMonth
     @State private var selectedChartSeriesID = "networth:spending:all"
     @State private var historyChartScrollPosition = Date.now
     @State private var detailSelection: SpendingGroupDetailSelection?
@@ -25,6 +71,7 @@ struct SpendingHistoryView: View {
 
     private let calendar = Calendar.current
     private let historyVisibleDuration: TimeInterval = 60 * 60 * 24 * 30.5 * 8
+    private let visibleMonthCount = 24
 
     var body: some View {
         NavigationStack {
@@ -35,9 +82,9 @@ struct SpendingHistoryView: View {
                     }
                     if let model {
                         monthHeader(model)
-                        if let month = displayedMonth(model) {
-                            monthTotalCard(month, model: model)
-                            spendingBreakdown(month, model: model)
+                        if let period = displayedPeriod(model) {
+                            monthTotalCard(period, model: model)
+                            spendingBreakdown(period, model: model)
                         }
                         historyChartCard(model)
                     } else {
@@ -141,20 +188,102 @@ struct SpendingHistoryView: View {
     private func displayedMonth(
         _ model: SpendingHistoryModel
     ) -> SpendingHistoryMonth? {
-        guard let selectedMonth else { return model.months.last }
-        return model.months.first { $0.month == selectedMonth }
-            ?? model.months.last
+        let selectableMonths = selectableMonths(in: model)
+        guard let selectedMonth else { return selectableMonths.last }
+        return selectableMonths.first { $0.month == selectedMonth }
+            ?? selectableMonths.last
+    }
+
+    private func selectableMonths(
+        in model: SpendingHistoryModel
+    ) -> [SpendingHistoryMonth] {
+        Array(model.months.suffix(visibleMonthCount))
+    }
+
+    private func displayedPeriod(
+        _ model: SpendingHistoryModel
+    ) -> DisplayedPeriod? {
+        if summaryRange != .oneMonth {
+            let months = Array(
+                model.months
+                    .filter { !isCurrentMonth($0.month) }
+                    .suffix(summaryRange.rawValue)
+            )
+            guard let summary = SpendingHistoryBuilder.aggregate(months: months)
+            else { return nil }
+            return DisplayedPeriod(months: months, summary: summary)
+        }
+
+        guard let endingMonth = displayedMonth(model),
+              let endingIndex = model.months.firstIndex(where: {
+                  $0.month == endingMonth.month
+              }) else { return nil }
+        let startIndex = max(
+            model.months.startIndex,
+            endingIndex - summaryRange.rawValue + 1
+        )
+        let months = Array(model.months[startIndex...endingIndex])
+        guard let summary = SpendingHistoryBuilder.aggregate(months: months)
+        else { return nil }
+        return DisplayedPeriod(months: months, summary: summary)
     }
 
     private func monthHeader(_ model: SpendingHistoryModel) -> some View {
         let current = displayedMonth(model)
-        return VStack(spacing: 2) {
-            Text(
-                current?.month.formatted(
-                    .dateTime.month(.wide).year()
-                ) ?? ""
-            )
-            .font(NwTypography.titleSmall)
+        return HStack(spacing: NwSpacing.sm) {
+            Menu {
+                ForEach(selectableMonths(in: model).reversed()) { month in
+                    Button {
+                        selectedMonth = month.month
+                        summaryRange = .oneMonth
+                    } label: {
+                        if month.month == current?.month {
+                            Label(
+                                month.month.formatted(
+                                    .dateTime.month(.wide).year()
+                                ),
+                                systemImage: "checkmark"
+                            )
+                        } else {
+                            Text(
+                                month.month.formatted(
+                                    .dateTime.month(.wide).year()
+                                )
+                            )
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: NwSpacing.xs) {
+                    Text(
+                        current?.month.formatted(
+                            .dateTime.month(.wide).year()
+                        ) ?? "Select Month"
+                    )
+                    .font(NwTypography.titleSmall)
+                    .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(NwTypography.caption)
+                }
+                .foregroundStyle(
+                    summaryRange == .oneMonth
+                        ? NwAppColors.textPrimary
+                        : NwAppColors.textSecondary
+                )
+                .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Spending month")
+            .accessibilityHint("Selecting a month switches to 1 month")
+
+            Spacer(minLength: 0)
+
+            Picker("Spending summary range", selection: $summaryRange) {
+                ForEach(SummaryRange.allCases) { range in
+                    Text(range.label).tag(range)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 190)
         }
         .frame(maxWidth: .infinity)
     }
@@ -167,28 +296,65 @@ struct SpendingHistoryView: View {
     // MARK: - Selected month
 
     private func monthTotalCard(
-        _ month: SpendingHistoryMonth,
+        _ period: DisplayedPeriod,
         model: SpendingHistoryModel
     ) -> some View {
-        NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.xs) {
-                Text("Spent")
+        let month = period.summary
+        let display = month.wholeDollarDisplay
+        return NwCard(style: .primary) {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                Text(
+                    period.monthCount == 1
+                        ? "Spent"
+                        : "Spent · \(period.label)"
+                )
                     .font(NwTypography.caption)
                     .foregroundStyle(.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: NwSpacing.sm) {
                     NwAmountText(
-                        month.wholeDollarDisplay.ordinaryHeadline,
+                        display.ordinaryHeadline,
                         variant: .hero,
                         showCents: false
                     )
-                    if let typical = typicalMonthlySpend(model) {
-                        Text("/ \(CurrencyFormatter.currency(typical, showCents: false))")
+                    if let comparison = spendingComparison(
+                        for: period,
+                        model: model
+                    ) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(comparison.label)
+                                .font(NwTypography.caption)
+                            Text(
+                                CurrencyFormatter.currency(
+                                    comparison.amount,
+                                    showCents: true
+                                )
+                            )
                             .font(NwTypography.title)
-                            .foregroundStyle(.secondary)
                             .monospacedDigit()
                             .lineLimit(1)
                             .minimumScaleFactor(0.6)
+                        }
+                        .foregroundStyle(.secondary)
                     }
+                }
+
+                Divider()
+                    .padding(.vertical, NwSpacing.xs)
+
+                HStack(alignment: .top, spacing: NwSpacing.md) {
+                    companionMetric(
+                        title: "Income",
+                        amount: display.incomeHeadline
+                    )
+
+                    Divider()
+                        .frame(height: 52)
+
+                    companionMetric(
+                        title: "Retained",
+                        amount: display.retainedHeadline,
+                        color: retainedColor(display.retainedHeadline)
+                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -218,53 +384,91 @@ struct SpendingHistoryView: View {
         .accessibilityHint("Double-tap to show all spending history")
     }
 
-    /// A quiet reference point for the "Spent" headline: the median out-of-
-    /// pocket monthly total across complete (non-current) months, on the same
-    /// basis as the headline so the "$spent / $typical" pair is apples-to-
-    /// apples. Same helper Goals uses for its emergency median. Nil until there
-    /// are at least two complete months; the in-progress month is excluded so
-    /// it can't skew the anchor.
-    private func typicalMonthlySpend(_ model: SpendingHistoryModel) -> Money? {
+    private func companionMetric(
+        title: String,
+        amount: Money,
+        color: Color = NwAppColors.textPrimary
+    ) -> some View {
+        VStack(alignment: .leading, spacing: NwSpacing.xs) {
+            Text(title)
+                .font(NwTypography.caption)
+                .foregroundStyle(NwAppColors.textSecondary)
+            NwAmountText(
+                amount,
+                variant: .large,
+                showCents: false,
+                color: color
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func retainedColor(_ amount: Money) -> Color {
+        if amount.isNegative { return NwAppColors.liability }
+        if amount > .zero { return NwAppColors.positive }
+        return NwAppColors.textSecondary
+    }
+
+    /// Arithmetic mean of the latest 12 complete months. Every real expense
+    /// remains represented, including lumpy purchases and timing shifts.
+    private func averageMonthlySpend(_ model: SpendingHistoryModel) -> Money? {
         let completeMonths = model.months
             .filter { !isCurrentMonth($0.month) }
             .sorted { $0.month < $1.month }
             .suffix(12)
             .map(\.ordinaryTotal)
-        return EmergencyFundMath.medianOfCompleteMonths(Array(completeMonths))
+        return EmergencyFundMath.meanOfCompleteMonths(Array(completeMonths))
+    }
+
+    private func spendingComparison(
+        for period: DisplayedPeriod,
+        model: SpendingHistoryModel
+    ) -> (label: String, amount: Money)? {
+        if period.monthCount == 1 {
+            return averageMonthlySpend(model).map { ("12-mo avg", $0) }
+        }
+        return (
+            "Avg/mo",
+            Money(
+                milliunits: period.summary.ordinaryTotalMilliunits
+                    / Int64(period.monthCount)
+            )
+        )
     }
 
     private func moveDisplayedMonth(
         in model: SpendingHistoryModel,
         by offset: Int
     ) {
+        guard summaryRange == .oneMonth else { return }
+        let selectableMonths = selectableMonths(in: model)
         guard let current = displayedMonth(model),
-              let index = model.months.firstIndex(where: {
+              let index = selectableMonths.firstIndex(where: {
                   $0.month == current.month
               }) else { return }
         let destination = index + offset
-        guard model.months.indices.contains(destination) else { return }
-        selectedMonth = model.months[destination].month
+        guard selectableMonths.indices.contains(destination) else { return }
+        selectedMonth = selectableMonths[destination].month
     }
 
-    /// The month's out-of-pocket spending as a pie, sized against a normal
-    /// month. The gray disc is the typical monthly spend (the same "/typical"
-    /// figure shown beside the headline); the colored pie is this month, scaled
-    /// by *area* so a below-normal month nests visibly inside the gray and a
-    /// dashed ring always marks the typical level. The colored slices are the
-    /// ordinary spending groups, which together sum to the "Spent" headline —
-    /// there is no per-group budget, so the only reference is your own history.
+    /// The selected period's out-of-pocket spending composition. A single
+    /// month is sized against the trailing 12-month arithmetic mean; aggregate
+    /// periods show composition only because their own monthly average is
+    /// already displayed in the summary card.
     /// The legend below carries selection and reorder, and marks
     /// non-spending groups (transfers, savings, investing, unassigned) with a
     /// hollow swatch since they sit outside the pie.
     private func spendingBreakdown(
-        _ month: SpendingHistoryMonth,
+        _ period: DisplayedPeriod,
         model: SpendingHistoryModel
     ) -> some View {
+        let month = period.summary
         let groups = orderedGroups(in: month)
         let displayAmounts = month.wholeDollarDisplay.groupAmountsByID
         let currentTotal = Double(max(0, month.ordinaryTotalMilliunits))
-        let typical = typicalMonthlySpend(model)
-            .map { Double($0.milliunits) } ?? currentTotal
+        let referenceTotal = period.monthCount == 1
+            ? averageMonthlySpend(model).map { Double($0.milliunits) }
+            : nil
         let slices: [SpendingSlice] = groups
             .filter { $0.isOrdinarySpending && $0.spentMilliunits > 0 }
             .map {
@@ -277,7 +481,11 @@ struct SpendingHistoryView: View {
         return NwCard(style: .primary, padding: 0) {
             VStack(spacing: 0) {
                 if groups.isEmpty {
-                    Text("No approved spending this month.")
+                    Text(
+                        period.monthCount == 1
+                            ? "No approved spending this month."
+                            : "No approved spending in this period."
+                    )
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -286,19 +494,24 @@ struct SpendingHistoryView: View {
                     NestedSpendingPie(
                         slices: slices,
                         currentTotal: currentTotal,
-                        typicalTotal: max(0, typical)
+                        referenceTotal: referenceTotal.map { max(0, $0) }
                     )
                     .frame(height: 200)
                     .frame(maxWidth: .infinity)
                     .padding(.top, NwSpacing.lg)
                     .padding(.bottom, NwSpacing.md)
-                    .accessibilityLabel("Spending versus a typical month")
+                    .accessibilityLabel(
+                        period.monthCount == 1
+                            ? "Spending versus the 12 month average"
+                            : "Spending composition for \(period.label)"
+                    )
                     Divider().padding(.leading, NwSpacing.md)
                     ForEach(Array(groups.enumerated()), id: \.element.id) {
                         index, group in
                         legendRow(
                             group,
                             month: month,
+                            periodStartMonth: period.startMonth,
                             displayAmount: displayAmounts[group.id]
                                 ?? group.spent
                         )
@@ -333,6 +546,7 @@ struct SpendingHistoryView: View {
     private func legendRow(
         _ group: SpendingHistoryGroupTotal,
         month: SpendingHistoryMonth,
+        periodStartMonth: Date,
         displayAmount: Money
     ) -> some View {
         let isSelected = selectedChartSeriesID == group.id
@@ -371,7 +585,8 @@ struct SpendingHistoryView: View {
                 Button {
                     detailSelection = SpendingGroupDetailSelection(
                         month: month,
-                        group: group
+                        group: group,
+                        periodStartMonth: periodStartMonth
                     )
                 } label: {
                     legendAmount(group, amount: displayAmount)
@@ -468,7 +683,7 @@ struct SpendingHistoryView: View {
     private func chartData(
         _ model: SpendingHistoryModel
     ) -> [ChartDatum] {
-        model.months.map { month in
+        selectableMonths(in: model).map { month in
             let milliunits: Int64
             if selectedChartSeriesID == Self.allSpendingSeriesID {
                 // Out-of-pocket basis: matches the "Spent" headline, so
@@ -588,6 +803,7 @@ struct SpendingHistoryView: View {
             return
         }
         selectedMonth = month.month
+        summaryRange = .oneMonth
         guard seriesID != Self.allSpendingSeriesID,
               let group = month.groups.first(where: { $0.id == seriesID }),
               !group.categories.isEmpty else { return }
@@ -618,7 +834,9 @@ struct SpendingHistoryView: View {
             selectedChartSeriesID = Self.allSpendingSeriesID
         }
         if let selectedMonth,
-           !built.months.contains(where: { $0.month == selectedMonth }) {
+           !selectableMonths(in: built).contains(where: {
+               $0.month == selectedMonth
+           }) {
             self.selectedMonth = nil
         }
     }
@@ -1299,17 +1517,13 @@ private struct SpendingSlice: Identifiable {
     let color: Color
 }
 
-/// This month's spending as a pie nested inside a gray disc that represents a
-/// typical month. Both are sized by *area* against the larger of the two, so:
-/// when this month is below normal the colored pie sits visibly inside the gray
-/// (the empty gray ring is what's left of a normal month); when it's above,
-/// the colored pie fills the frame. A dashed ring always marks the typical
-/// level, so the reference stays legible either way. There is no per-group
-/// budget — the only benchmark is the user's own history.
+/// Spending composition for the selected period. A single month is nested
+/// inside a gray disc representing the trailing 12-month arithmetic mean;
+/// aggregate periods omit that benchmark and use the full available area.
 private struct NestedSpendingPie: View {
     let slices: [SpendingSlice]
     let currentTotal: Double
-    let typicalTotal: Double
+    let referenceTotal: Double?
 
     var body: some View {
         Canvas { context, size in
@@ -1317,15 +1531,27 @@ private struct NestedSpendingPie: View {
             guard side > 0 else { return }
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
             let frameR = side / 2
-            let maxVal = max(currentTotal, typicalTotal, 1)
-            let typicalR = frameR * (typicalTotal / maxVal).squareRoot()
+            let maxVal = max(currentTotal, referenceTotal ?? 0, 1)
             let currentR = frameR * (currentTotal / maxVal).squareRoot()
 
-            // Gray disc: a normal month's spend.
-            context.fill(
-                disc(center: center, radius: typicalR),
-                with: .color(NwAppColors.chartOther.opacity(0.16))
-            )
+            if let referenceTotal {
+                let referenceR = frameR
+                    * (referenceTotal / maxVal).squareRoot()
+                // Gray disc: trailing 12-month average spending.
+                context.fill(
+                    disc(center: center, radius: referenceR),
+                    with: .color(NwAppColors.chartOther.opacity(0.16))
+                )
+
+                // Dashed ring: the average level, always visible.
+                if referenceR > 0 {
+                    context.stroke(
+                        disc(center: center, radius: referenceR),
+                        with: .color(NwAppColors.chartOther.opacity(0.7)),
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                    )
+                }
+            }
 
             // Colored pie: this month, wedge per group.
             if currentTotal > 0 && currentR > 0 {
@@ -1354,19 +1580,6 @@ private struct NestedSpendingPie: View {
                 }
             }
 
-            // Dashed ring: the typical level, always visible.
-            if typicalR > 0 {
-                context.stroke(
-                    Path(ellipseIn: CGRect(
-                        x: center.x - typicalR,
-                        y: center.y - typicalR,
-                        width: typicalR * 2,
-                        height: typicalR * 2
-                    )),
-                    with: .color(NwAppColors.chartOther.opacity(0.7)),
-                    style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-                )
-            }
         }
     }
 
@@ -1403,7 +1616,28 @@ struct SpendingHistoryModel: Sendable {
 struct SpendingGroupDetailSelection: Identifiable {
     let month: SpendingHistoryMonth
     let group: SpendingHistoryGroupTotal
-    var id: String { "\(month.month.timeIntervalSince1970):\(group.id)" }
+    let periodStartMonth: Date
+
+    init(
+        month: SpendingHistoryMonth,
+        group: SpendingHistoryGroupTotal,
+        periodStartMonth: Date? = nil
+    ) {
+        self.month = month
+        self.group = group
+        self.periodStartMonth = periodStartMonth ?? month.month
+    }
+
+    var id: String {
+        "\(periodStartMonth.timeIntervalSince1970):\(month.month.timeIntervalSince1970):\(group.id)"
+    }
+
+    var periodLabel: String {
+        SpendingPeriodFormatter.label(
+            from: periodStartMonth,
+            through: month.month
+        )
+    }
 }
 
 /// Off-main aggregation: maps approved cached transactions plus the
@@ -1497,7 +1731,7 @@ actor SpendingHistoryBuildActor {
 
 // MARK: - Group detail
 
-/// Month/group drill-down: categories retain the selected month's totals and
+/// Period/group drill-down: categories retain the selected period's totals and
 /// transaction list, with a separate path to complete cached history.
 struct SpendingGroupDetailSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
@@ -1517,7 +1751,7 @@ struct SpendingGroupDetailSheet: View {
                     ForEach(selection.group.categories) { category in
                         NavigationLink {
                             SpendingCategoryMonthDetailView(
-                                month: selection.month.month,
+                                periodLabel: selection.periodLabel,
                                 category: category,
                                 reportingRole: selection.group.reportingRole
                             )
@@ -1537,7 +1771,7 @@ struct SpendingGroupDetailSheet: View {
                 }
             }
             .navigationTitle(
-                "\(selection.group.name) · \(selection.month.month.formatted(.dateTime.month(.abbreviated).year()))"
+                "\(selection.group.name) · \(selection.periodLabel)"
             )
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1557,7 +1791,7 @@ struct SpendingGroupDetailSheet: View {
 
 private struct SpendingCategoryMonthDetailView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
-    let month: Date
+    let periodLabel: String
     let category: SpendingHistoryCategoryTotal
     let reportingRole: CategoryReportingRole?
 
@@ -1586,7 +1820,7 @@ private struct SpendingCategoryMonthDetailView: View {
                 }
             }
 
-            Section(month.formatted(.dateTime.month(.wide).year())) {
+            Section(periodLabel) {
                 ForEach(monthTransactions, id: \.id) { row in
                     NavigationLink {
                         PlaidTransactionReviewEditor(

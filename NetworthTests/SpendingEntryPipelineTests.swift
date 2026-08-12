@@ -165,6 +165,7 @@ struct SpendingEntryPipelineTests {
             calendar: Calendar(identifier: .gregorian)
         )
         #expect(months.count == 1)
+        #expect(months[0].incomeMilliunits == 80_000)
         #expect(months[0].totalMilliunits == 0)
     }
 

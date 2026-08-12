@@ -92,14 +92,17 @@ public struct FixedCommitmentDetector: Sendable {
         }
 
         let recent = occurrences.suffix(6).map(\.value)
-        let median = BudgetDateMath.median(of: recent)
+        let mean = BudgetDateMath.mean(of: recent)
         // Stability is judged on the last three occurrences so a price change
         // converges onto the new amount instead of dragging old history:
         // stable within 2% (or a dollar) plans with the latest amount,
-        // variable amounts plan with the median of recent occurrences.
+        // variable amounts plan with the mean of recent occurrences so lumpy
+        // charges are fully amortized.
         let window = recent.suffix(3)
         let spread = (window.map(\.milliunits).max() ?? 0)
             - (window.map(\.milliunits).min() ?? 0)
+        // Median is retained only as an anomaly-resistant scale for the 2%
+        // stability test. It does not determine the reserved bill amount.
         let windowMedian = BudgetDateMath.median(of: Array(window))
         let tolerance = max(windowMedian.milliunits * 2 / 100, 1_000)
         let isStable = spread <= tolerance
@@ -110,8 +113,8 @@ public struct FixedCommitmentDetector: Sendable {
             categoryKey: group.categoryKey,
             categoryName: group.categoryName,
             cadence: cadence,
-            amountBasis: isStable ? .latestAmount : .recentMedian,
-            suggestedAmount: isStable ? last.value : median,
+            amountBasis: isStable ? .latestAmount : .recentMean,
+            suggestedAmount: isStable ? last.value : mean,
             occurrenceCount: occurrences.count,
             firstDate: first.key,
             lastDate: last.key,
@@ -125,6 +128,8 @@ public struct FixedCommitmentDetector: Sendable {
         occurrenceCount: Int,
         calendar: Calendar
     ) -> CommitmentCadence? {
+        // Median gap classifies cadence without one late or early posting
+        // changing weekly/monthly detection. It is not a money calculation.
         guard let medianGap = medianInt(gaps) else { return nil }
         switch medianGap {
         case 5...9:

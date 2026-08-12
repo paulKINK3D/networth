@@ -26,7 +26,7 @@ public enum GoalKind: String, Codable, Sendable, CaseIterable, Identifiable {
 public enum GoalTargetMode: String, Codable, Sendable, CaseIterable {
     /// User-entered fixed amount.
     case fixed
-    /// Derived: months × median monthly ordinary spend × reduction percent.
+    /// Derived: months × average monthly ordinary spend × reduction percent.
     case emergencyMonths
 }
 
@@ -289,30 +289,26 @@ public enum EmergencyFundMath {
     public static let adoptionFloorMilliunits: Int64 = 250_000
     /// …or at least this fraction of the current target.
     public static let adoptionFraction: Decimal = 0.05
-    /// Fewer complete months than this ⇒ no derived median (manual fallback).
+    /// Fewer complete months than this ⇒ no derived mean (manual fallback).
     public static let minimumSampleMonths = 2
 
-    /// Median of complete-month ordinary totals. Nil below the sample floor.
-    public static func medianOfCompleteMonths(_ totals: [Money]) -> Money? {
+    /// Arithmetic mean of complete-month ordinary totals. Nil below the
+    /// sample floor. Lumpy purchases and timing shifts remain represented.
+    public static func meanOfCompleteMonths(_ totals: [Money]) -> Money? {
         guard totals.count >= minimumSampleMonths else { return nil }
-        let sorted = totals.map(\.milliunits).sorted()
-        let mid = sorted.count / 2
-        let median: Int64 = sorted.count.isMultiple(of: 2)
-            ? (sorted[mid - 1] + sorted[mid]) / 2
-            : sorted[mid]
-        return Money(milliunits: median)
+        return BudgetDateMath.mean(of: totals)
     }
 
-    /// months × median × reductionPercent/100, then rounded to the nearest
+    /// months × mean × reductionPercent/100, then rounded to the nearest
     /// $100 so adopted targets read as intentional numbers.
     public static func target(
-        medianMonthly: Money,
+        averageMonthly: Money,
         months: Int,
         reductionPercent: Int
     ) -> Money {
         guard months > 0, reductionPercent > 0,
-              medianMonthly.milliunits > 0 else { return .zero }
-        let raw = medianMonthly.scaled(
+              averageMonthly.milliunits > 0 else { return .zero }
+        let raw = averageMonthly.scaled(
             by: Decimal(months) * Decimal(reductionPercent) / 100
         )
         return rounded(raw)

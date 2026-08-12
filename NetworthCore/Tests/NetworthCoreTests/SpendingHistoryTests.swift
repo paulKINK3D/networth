@@ -111,6 +111,34 @@ struct SpendingHistoryTests {
         #expect(months[0].totalMilliunits == Money.dollars(50).milliunits)
     }
 
+    @Test func countsOnlyPositiveExplicitIncome() {
+        let months = SpendingHistoryBuilder.build(
+            entries: [
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(3_000),
+                    treatment: .income
+                ),
+                entry(
+                    date: day(2026, 8, 2),
+                    amount: Money.dollars(-200),
+                    treatment: .income
+                ),
+                entry(
+                    date: day(2026, 8, 3),
+                    amount: Money.dollars(25),
+                    treatment: .refund
+                )
+            ],
+            monthsBack: 1,
+            now: day(2026, 8, 4),
+            calendar: calendar
+        )
+
+        #expect(months[0].incomeMilliunits == Money.dollars(3_000).milliunits)
+        #expect(months[0].ordinaryTotalMilliunits == 0)
+    }
+
     @Test func includesNetSavingsAndInvestmentAlongsideOrdinarySpending() {
         let now = day(2026, 8, 4)
         let months = SpendingHistoryBuilder.build(
@@ -415,6 +443,142 @@ struct SpendingHistoryTests {
         #expect(display.groupAmountsByID["g:b"] == Money.dollars(10))
         #expect(display.groupAmountsByID.values.sum()
             == display.ordinaryHeadline)
+    }
+
+    @Test func aggregatesMonthsWithoutLosingDrillDownData() throws {
+        let months = SpendingHistoryBuilder.build(
+            entries: [
+                entry(
+                    id: "june-dining",
+                    date: day(2026, 6, 2),
+                    amount: Money.dollars(-10)
+                ),
+                entry(
+                    id: "july-groceries",
+                    date: day(2026, 7, 2),
+                    amount: Money.dollars(-20),
+                    category: ("c:groceries", "Groceries")
+                ),
+                entry(
+                    id: "august-dining",
+                    date: day(2026, 8, 2),
+                    amount: Money.dollars(-30)
+                ),
+                entry(
+                    id: "july-investing",
+                    date: day(2026, 7, 3),
+                    amount: Money.dollars(-40),
+                    treatment: .investmentContribution,
+                    reportingRole: .investment,
+                    group: ("g:investing", "Investing"),
+                    category: ("c:contribution", "Contributions")
+                ),
+                entry(
+                    id: "june-income",
+                    date: day(2026, 6, 1),
+                    amount: Money.dollars(2_000),
+                    treatment: .income
+                ),
+                entry(
+                    id: "july-income",
+                    date: day(2026, 7, 1),
+                    amount: Money.dollars(2_100),
+                    treatment: .income
+                )
+            ],
+            monthsBack: 3,
+            now: day(2026, 8, 4),
+            calendar: calendar
+        )
+
+        let aggregate = try #require(
+            SpendingHistoryBuilder.aggregate(months: months)
+        )
+        #expect(aggregate.month == day(2026, 8, 1))
+        #expect(aggregate.incomeMilliunits == Money.dollars(4_100).milliunits)
+        #expect(aggregate.totalMilliunits == Money.dollars(100).milliunits)
+        #expect(
+            aggregate.ordinaryTotalMilliunits
+                == Money.dollars(60).milliunits
+        )
+
+        let food = try #require(aggregate.groups.first { $0.id == "g:food" })
+        #expect(food.spentMilliunits == Money.dollars(60).milliunits)
+        #expect(food.categories.count == 2)
+        let dining = try #require(
+            food.categories.first { $0.id == "c:dining" }
+        )
+        #expect(dining.transactionIds == ["june-dining", "august-dining"])
+        #expect(
+            dining.lineAmountsByTransactionId["june-dining"]
+                == Money.dollars(-10).milliunits
+        )
+
+        let investing = try #require(
+            aggregate.groups.first { $0.id == "g:investing" }
+        )
+        #expect(investing.reportingRole == .investment)
+        #expect(investing.spentMilliunits == Money.dollars(40).milliunits)
+    }
+
+    @Test func aggregatingNoMonthsReturnsNil() {
+        #expect(SpendingHistoryBuilder.aggregate(months: []) == nil)
+    }
+
+    @Test func aggregateRefundsOffsetEarlierSpendingInTheSameGroup() throws {
+        let months = SpendingHistoryBuilder.build(
+            entries: [
+                entry(
+                    date: day(2026, 7, 2),
+                    amount: Money.dollars(-100)
+                ),
+                entry(
+                    date: day(2026, 8, 2),
+                    amount: Money.dollars(40),
+                    treatment: .refund
+                )
+            ],
+            monthsBack: 2,
+            now: day(2026, 8, 4),
+            calendar: calendar
+        )
+
+        let aggregate = try #require(
+            SpendingHistoryBuilder.aggregate(months: months)
+        )
+        #expect(aggregate.ordinaryTotalMilliunits == Money.dollars(60).milliunits)
+        #expect(
+            aggregate.groups.first?.spentMilliunits
+                == Money.dollars(60).milliunits
+        )
+    }
+
+    @Test func wholeDollarIncomeSpentAndRetainedReconcile() {
+        let month = SpendingHistoryBuilder.build(
+            entries: [
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(Decimal(string: "100.51")!),
+                    treatment: .income
+                ),
+                entry(
+                    date: day(2026, 8, 2),
+                    amount: Money.dollars(Decimal(string: "-40.49")!)
+                )
+            ],
+            monthsBack: 1,
+            now: day(2026, 8, 4),
+            calendar: calendar
+        )[0]
+
+        let display = month.wholeDollarDisplay
+        #expect(display.incomeHeadline == Money.dollars(101))
+        #expect(display.ordinaryHeadline == Money.dollars(40))
+        #expect(display.retainedHeadline == Money.dollars(61))
+        #expect(
+            display.incomeHeadline - display.ordinaryHeadline
+                == display.retainedHeadline
+        )
     }
 
 }

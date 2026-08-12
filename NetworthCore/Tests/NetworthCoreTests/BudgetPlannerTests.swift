@@ -184,7 +184,7 @@ struct BudgetPlannerTests {
 
     // MARK: - Necessities envelope
 
-    @Test("Envelope is the median of 12 completed months including zero months")
+    @Test("Envelope is the mean of 12 completed months including zero months")
     func envelopeIncludesZeroMonths() {
         // Spending in Jan–Jun 2026 only; Jul–Dec 2025 are zero months.
         let transactions = (1...6).map { month in
@@ -200,8 +200,40 @@ struct BudgetPlannerTests {
             aggregation: aggregation,
             latestCompleted: BudgetMonth(year: 2026, month: 6)
         )
-        // Sorted window is six zeros + six 100s → median 50.
+        // Six zeros + six 100s average to 50.
         #expect(envelope == .dollars(50))
+    }
+
+    @Test("Envelope amortizes a lumpy expense across the full window")
+    func envelopeAmortizesLumpyExpense() {
+        var transactions = (1...11).map { month in
+            txn(
+                date: date(2025 + (month + 5) / 12, (month + 5) % 12 + 1, 10),
+                amount: .dollars(-100),
+                payee: "Market",
+                category: "Groceries"
+            )
+        }
+        transactions.append(
+            txn(
+                date: date(2026, 6, 10),
+                amount: .dollars(-1_300),
+                payee: "Repair Co",
+                category: "Groceries"
+            )
+        )
+        let aggregation = aggregator.aggregate(
+            transactions: transactions,
+            assignments: assignments,
+            calendar: utc
+        )
+
+        let envelope = planner.necessitiesEnvelope(
+            aggregation: aggregation,
+            latestCompleted: BudgetMonth(year: 2026, month: 6)
+        )
+
+        #expect(envelope == .dollars(200))
     }
 
     @Test("The current partial month never enters the envelope")

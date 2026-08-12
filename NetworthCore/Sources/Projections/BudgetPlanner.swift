@@ -684,11 +684,11 @@ extension BudgetTransactionAggregator {
 // MARK: - Planner
 
 /// Composes the Phase 1 operating budget:
-/// expected income − fixed − typical necessities − surplus target = margin.
+/// expected income − fixed − averaged necessities − surplus target = margin.
 public struct MonthlyBudgetPlanner: Sendable {
     public init() {}
 
-    /// Rolling Necessities envelope: median of the latest `monthCount`
+    /// Rolling Necessities envelope: arithmetic mean of the latest `monthCount`
     /// completed months (zero-spend months included, current partial month
     /// excluded via `latestCompleted`).
     public func necessitiesEnvelope(
@@ -701,7 +701,7 @@ public struct MonthlyBudgetPlanner: Sendable {
             aggregation.actuals(for: latestCompleted.advanced(by: -offset))
                 .necessities
         }
-        return BudgetDateMath.median(of: values)
+        return BudgetDateMath.mean(of: values)
     }
 
     public func plan(

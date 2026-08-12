@@ -124,6 +124,8 @@ public struct IncomeAnalyzer: Sendable {
             calendar.dateComponents([.day], from: $1, to: $0).day
         }
         guard !gaps.isEmpty else { return nil }
+        // Median is deliberate signal detection: one delayed or off-cycle
+        // deposit must not change the inferred paycheck cadence.
         let medianGap = gaps.sorted()[gaps.count / 2]
         switch medianGap {
         case 5...9:
@@ -198,8 +200,9 @@ public struct IncomeAnalyzer: Sendable {
                     clusters.append([paycheck])
                 }
             }
-            // Merge adjacent clusters whose medians re-converged (one-off
-            // bonuses or corrections should not create phantom phases).
+            // These medians are deliberately anomaly-resistant signal
+            // detection: bonuses or corrections must not create phantom pay
+            // phases or inflate the recurring paycheck amount.
             var merged: [[Occurrence]] = []
             for cluster in clusters {
                 if let previous = merged.last,
