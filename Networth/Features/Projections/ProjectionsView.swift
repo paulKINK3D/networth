@@ -197,16 +197,14 @@ struct ProjectionsView: View {
                 )
             } else if let account = data.primaryPaymentAccountShortfall,
                       !data.showsPaymentFundingHeadline {
-                NwInlineNotice(
+                projectionIssueNotice(
                     "\(account.accountName) also needs funding",
-                    message: "Known commitments take this account to \(CurrencyFormatter.compact(account.projectedShortfallLowPoint?.balance ?? .zero)) on \(account.firstShortfallPoint?.date.formatted(.dateTime.month(.abbreviated).day()) ?? "the projected date").",
-                    tone: .warning
+                    message: "Known commitments take this account to \(CurrencyFormatter.compact(account.projectedShortfallLowPoint?.balance ?? .zero)) on \(account.firstShortfallPoint?.date.formatted(.dateTime.month(.abbreviated).day()) ?? "the projected date")."
                 )
             } else if let account = data.primaryOtherAccountShortfall {
-                NwInlineNotice(
+                projectionIssueNotice(
                     "Separate shortfall in \(account.accountName)",
-                    message: "Known activity takes this account to \(CurrencyFormatter.compact(account.projectedShortfallLowPoint?.balance ?? .zero)) on \(account.firstShortfallPoint?.date.formatted(.dateTime.month(.abbreviated).day()) ?? "the projected date").",
-                    tone: .warning
+                    message: "Known activity takes this account to \(CurrencyFormatter.compact(account.projectedShortfallLowPoint?.balance ?? .zero)) on \(account.firstShortfallPoint?.date.formatted(.dateTime.month(.abbreviated).day()) ?? "the projected date")."
                 )
             } else if let warning = data.incomeWarning {
                 settingsNotice(warning.title, message: warning.message)
@@ -217,6 +215,17 @@ struct ProjectionsView: View {
                     tone: .caution
                 )
             }
+        }
+    }
+
+    private func projectionIssueNotice(_ title: String, message: String) -> some View {
+        NwBanner(
+            title,
+            message: message,
+            tone: .warning,
+            actionTitle: "Why"
+        ) {
+            showingAssumptions = true
         }
     }
 
@@ -363,27 +372,37 @@ struct ProjectionsView: View {
             }
             .buttonStyle(.plain)
         } else {
-            HStack(alignment: .center, spacing: NwSpacing.md) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(data.headlineTitle)
-                        .font(NwTypography.bodyEmphasis)
-                        .foregroundStyle(data.statusColor)
-                    if let subtitle = data.headlineSubtitle {
-                        Text(subtitle)
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(NwAppColors.textSecondary)
+            Button {
+                showingAssumptions = true
+            } label: {
+                HStack(alignment: .center, spacing: NwSpacing.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(data.headlineTitle)
+                            .font(NwTypography.bodyEmphasis)
+                            .foregroundStyle(data.statusColor)
+                        if let subtitle = data.headlineSubtitle {
+                            Text(subtitle)
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                        }
                     }
+                    Spacer(minLength: NwSpacing.sm)
+                    if !data.showsTightBufferHeadline,
+                       let amount = data.headlineAmount {
+                        NwAmountText(
+                            amount,
+                            variant: .compact,
+                            showCents: false,
+                            color: data.statusColor
+                        )
+                    }
+                    NwIcon.chevron.image
+                        .foregroundStyle(NwAppColors.primary)
                 }
-                Spacer(minLength: NwSpacing.sm)
-                if let amount = data.headlineAmount {
-                    NwAmountText(
-                        amount,
-                        variant: .compact,
-                        showCents: false,
-                        color: data.statusColor
-                    )
-                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows why the projection has this status")
         }
     }
 
@@ -559,10 +578,35 @@ struct ProjectionsView: View {
             primaryPaymentAccountShortfall != nil && !aggregateCashShortfall
         }
 
+        var showsTightBufferHeadline: Bool {
+            !setupIncomplete
+                && !showsPaymentFundingHeadline
+                && result.status == .tight
+        }
+
+        var firstBufferBreachPoint: CashPositionPoint? {
+            guard let buffer = result.safeToSpend?.minimumCashBuffer else { return nil }
+            return result.expectedPoints.first { $0.balance < buffer }
+        }
+
+        var startsBelowBuffer: Bool {
+            guard let firstPoint = result.expectedPoints.first,
+                  let breachPoint = firstBufferBreachPoint else { return false }
+            return firstPoint.date == breachPoint.date
+        }
+
         var headlineAmount: Money? {
             if setupIncomplete { return nil }
             if showsPaymentFundingHeadline { return primaryPaymentAccountShortfall?.fundingNeeded }
+            if result.status == .tight { return result.safeToSpend?.bufferGap }
             return aggregateHeadlinePoint?.balance
+        }
+
+        var headlineAmountLabel: String {
+            if showsPaymentFundingHeadline { return "Transfer needed" }
+            if result.status == .tight { return "Buffer gap" }
+            if aggregateCashShortfall { return "Projected balance" }
+            return "Projected low"
         }
 
         var headlineSubtitle: String? {
@@ -575,6 +619,10 @@ struct ProjectionsView: View {
             if aggregateCashShortfall {
                 return "First negative projected balance on \(point.date.formatted(.dateTime.month(.abbreviated).day()))"
             }
+            if result.status == .tight {
+                let gap = result.safeToSpend?.bufferGap ?? .zero
+                return "Falls as much as \(CurrencyFormatter.compact(gap)) below on \(point.date.formatted(.dateTime.month(.abbreviated).day()))"
+            }
             return "Lowest projected total \(point.date.formatted(.dateTime.month(.abbreviated).day()))"
         }
 
@@ -582,23 +630,31 @@ struct ProjectionsView: View {
             if setupIncomplete {
                 return "Finish card timing and payment accounts first."
             }
-            if limitedHistory {
-                return "30 days of spending history required."
-            }
             if showsPaymentFundingHeadline, let account = primaryPaymentAccountShortfall {
                 let cause = account.lowPointEvent.map {
                     "After \($0.title) of \(CurrencyFormatter.compact($0.amount.absolute)). "
                 } ?? ""
                 return "\(cause)Total selected cash can cover known commitments, but at least \(CurrencyFormatter.compact(account.fundingNeeded)) must be in \(account.accountName) before then."
             }
-            let firstShortfallCause = limitedHistory
-                ? result.knownFirstShortfallEvent
-                : result.expectedFirstShortfallEvent
+            if limitedHistory {
+                if aggregateCashShortfall,
+                   let cause = result.knownFirstShortfallEvent {
+                    return "Based on known commitments only. After \(cause.title) of \(CurrencyFormatter.compact(cause.amount.absolute)), selected cash turns negative. At least 30 days of spending history is required to add everyday spending."
+                }
+                return "Only known commitments are included. At least 30 days of spending history is required to add everyday spending."
+            }
+            let firstShortfallCause = result.expectedFirstShortfallEvent
             if aggregateCashShortfall, let cause = firstShortfallCause {
-                return "After \(cause.title) of \(CurrencyFormatter.compact(cause.amount.absolute))."
+                return "After \(cause.title) of \(CurrencyFormatter.compact(cause.amount.absolute)), selected cash turns negative."
+            }
+            if aggregateCashShortfall {
+                return "Expected commitments and everyday spending bring selected cash below zero."
             }
             if let cause = result.lowPointEvent {
-                return "After \(cause.title) of \(CurrencyFormatter.compact(cause.amount.absolute))."
+                return "After \(cause.title) of \(CurrencyFormatter.compact(cause.amount.absolute)), selected cash reaches its projected low."
+            }
+            if result.status == .tight {
+                return "Expected commitments and everyday spending bring selected cash below your cash buffer."
             }
             return nil
         }
@@ -621,7 +677,16 @@ struct ProjectionsView: View {
             case .covered:
                 return "Covered through \(result.horizonEnd.formatted(.dateTime.month(.abbreviated).day()))"
             case .tight:
-                return "Cash gets tight on \(low.date.formatted(.dateTime.month(.abbreviated).day()))"
+                let buffer = result.safeToSpend.map {
+                    CurrencyFormatter.compact($0.minimumCashBuffer)
+                } ?? "your"
+                if startsBelowBuffer {
+                    return "Below \(buffer) buffer now"
+                }
+                if let breach = firstBufferBreachPoint {
+                    return "Below \(buffer) buffer on \(breach.date.formatted(.dateTime.month(.abbreviated).day()))"
+                }
+                return "Below \(buffer) buffer"
             case .shortfall:
                 let date = result.expectedFirstShortfallPoint?.date ?? low.date
                 return "Cash turns negative on \(date.formatted(.dateTime.month(.abbreviated).day()))"
@@ -1077,6 +1142,28 @@ private struct ProjectionAssumptionsSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Outlook") {
+                    VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                        Text(data.headlineTitle)
+                            .font(NwTypography.bodyEmphasis)
+                            .foregroundStyle(data.statusColor)
+                        if let subtitle = data.headlineSubtitle {
+                            Text(subtitle)
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                        }
+                        if let explanation = data.headlineExplanation {
+                            Text(explanation)
+                                .font(NwTypography.callout)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                        }
+                    }
+                    .padding(.vertical, NwSpacing.xs)
+
+                    if let amount = data.headlineAmount {
+                        detail(data.headlineAmountLabel, CurrencyFormatter.compact(amount))
+                    }
+                }
                 Section("Cash included") {
                     ForEach(data.selectedCashAccounts) { account in
                         HStack {

@@ -1,10 +1,30 @@
 # WORKING
 
-## Resume here — ordered next work (2026-08-12)
+## Resume here — ordered next work (2026-08-14)
 
 ### Repository handoff
 
-- Active branch: `spending-view`.
+- Active branch: `projection-explainability`.
+- Projection trouble states now have the same one-tap explainability path as
+  the healthy state. Tight, negative, setup-incomplete, limited-history, and
+  underfunded-account headlines open Projection Details; the previously unused
+  causal explanation is shown first, and secondary account-shortfall banners
+  expose an explicit Why action. The explanation distinguishes a dated event
+  from a gradual everyday-spending shortfall. Tight-state headlines use the
+  first below-buffer date rather than the later absolute-low date; if cash is
+  already below the buffer they say so directly. The supporting line names the
+  maximum buffer gap and its date, while the chart header keeps the exact
+  projected low. NetworthCore 220/220 and a generic-
+  device Debug build pass. The deeper projection-audit CSV milestone remains
+  separate and unimplemented.
+- Projection scenario coverage, required distinctions, and the Outlook card's
+  information hierarchy are recorded in
+  `docs/2026-08-14-projection-state-language.md`. Exact user-facing copy is not
+  approved; the current tight-buffer wording is an implementation checkpoint,
+  not a locked product decision.
+- Dark-mode readability was reported on a physical iPhone. No dark-mode repair
+  has been implemented on this branch; audit the affected surfaces before
+  treating the visual work as complete.
 - Spending range and comparison work is complete. The month is a left-aligned
   dropdown for the single-month view; 3/6/12-month summaries always use the
   preceding completed months and exclude the current partial month. Aggregate
@@ -65,8 +85,10 @@
   because simulator execution was not requested. The prior stabilization
   checkpoint also passed NetworthCore 214/214 and a generic-device Release
   build.
-- Immediate next step: **scope investment reconciliation controls correctly**
-  so ordinary banking accounts do not expose controls that cannot affect them.
+- Immediate next step: **approve the exact Outlook wording for each projection
+  scenario**, then apply it consistently to the headline, labeled metric,
+  supporting line, and Why details. Follow with the physical-device dark-mode
+  readability audit.
 
 ### Ordered backlog
 
