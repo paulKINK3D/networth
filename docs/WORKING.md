@@ -1,6 +1,6 @@
 # WORKING
 
-## Resume here — ordered next work (2026-08-14)
+## Resume here — ordered next work (2026-08-15)
 
 ### Repository handoff
 
@@ -22,9 +22,14 @@
   `docs/2026-08-14-projection-state-language.md`. Exact user-facing copy is not
   approved; the current tight-buffer wording is an implementation checkpoint,
   not a locked product decision.
-- Dark-mode readability was reported on a physical iPhone. No dark-mode repair
-  has been implemented on this branch; audit the affected surfaces before
-  treating the visual work as complete.
+- A later physical-device screenshot of Accounts & Sync disproved the earlier
+  conclusion that dark mode was fully resolved: fixed navy action text and
+  icons had inadequate contrast against dark cards. `NwAppColors.primary`,
+  `primaryDim`, `accent`, `info`, and `textOnPrimary` now have adaptive dark
+  variants. The app-level tint was moved above sheet presentation so modal
+  button labels inherit it, and the AccentColor asset now has a matching dark
+  variant as a system fallback. A generic-device Debug build passes; physical
+  review across the top-level screens remains required.
 - Spending range and comparison work is complete. The month is a left-aligned
   dropdown for the single-month view; 3/6/12-month summaries always use the
   preceding completed months and exclude the current partial month. Aggregate
@@ -48,7 +53,11 @@
   show the exact edit required before approval. Transaction editing now uses
   the same left-label/right-value layout for Type, Contact, and Category; the
   prior type-consequence and suggestion-explanation paragraphs are removed,
-  along with the redundant transaction-summary card below the editor.
+  along with the redundant transaction-summary card below the editor. Split
+  legs now use the same left-label/right-value layout for Type and
+  Category/Goal, with Amount as a separate aligned row. Each leg has its own
+  numbered card and header-level remove action so adjacent splits are visually
+  distinct.
 - The same primary-tap/secondary-swipe cleanup is applied to Spending Groups:
   tapping opens categories, while Rename and confirmed Delete are swipe
   actions. Spending legend names now select the chart series, amounts open
@@ -71,9 +80,9 @@
 - Goal Accounts now includes positive, active manual assets classified as
   Other. They contribute their effective reconciled value to the goal pool;
   non-account manual asset kinds remain excluded.
-- All five top-level tabs now use the same top-right overflow menu for Settings
-  and Refresh. Spending, Projections, Investments, and Goals append their own
-  management destination; Net Worth has no contextual item. Goals retains New
+- All four top-level tabs now use the same top-right overflow menu for Settings
+  and Refresh. Spending, Projections, and Goals append their own management
+  destination; Net Worth has no contextual item. Goals retains New
   Goal as the only separate toolbar action, and its Goal Accounts control no
   longer sits in the opposite corner.
 - All identified P0 correctness items are closed: reimbursement repair,
@@ -85,10 +94,43 @@
   because simulator execution was not requested. The prior stabilization
   checkpoint also passed NetworthCore 214/214 and a generic-device Release
   build.
-- Immediate next step: **approve the exact Outlook wording for each projection
-  scenario**, then apply it consistently to the headline, labeled metric,
-  supporting line, and Why details. Follow with the physical-device dark-mode
-  readability audit.
+- The Net Worth chart info sheet now gives a short user-facing explanation of
+  what is included and how history works. Account reconstruction, snapshot
+  counts, possible double-count warnings, manual/IBR contribution details, and
+  snapshot-store state remain available only in Debug builds. Generic-device
+  Debug and Release builds pass.
+- Inline status and action messages now share `NwInlineNotice`; the duplicate
+  `NwBanner` component and its project reference are removed. Existing tones,
+  messages, and actions remain intact. A generic-device Debug build passes.
+- Investments no longer shows the source/type-based Allocation section or
+  repeated holding percentages. The detail now stays focused on total value,
+  30-day balance change, the balance trend, and account-level Holdings. Add an
+  allocation section again only when genuine asset-class data such as stocks,
+  bonds, and cash is available. A generic-device Debug build passes.
+- Investments and Retirement now open separate, category-scoped portfolio
+  details from Net Worth. Current totals, 30-day change, historical charts,
+  holdings, empty states, and pending-review counts all use the same scope;
+  matched Plaid accounts retain the manual asset's authoritative category.
+  NetworthCore 221/221 and a generic-device Debug build pass.
+- Accounts & Sync now has a permanent Backend Access row showing whether the
+  private backend token is saved. Its secure sheet can set or replace the
+  Keychain value without displaying the existing credential, clearing it
+  first, or disconnecting Plaid accounts. Generic-device Debug and Release
+  builds pass.
+- Accounts & Sync now presents one YNAB Reference row instead of exposing the
+  legacy YNAB tools inline. Token access, account mapping, reference building,
+  imported-history review, and reclassification live in that submenu. The
+  surrounding settings copy no longer implies YNAB is part of normal sync.
+  Its list-row titles use primary text, blue is reserved for icons and
+  chevrons, and teal remains the confirmed/status color.
+- The tab bar is ordered Spending, Projections, Goals, Net Worth. Spending is
+  tag 0 and therefore the initial tab; no stale in-repo numeric tab routes were
+  found.
+- Final checkpoint validation: NetworthCore 221/221, generic-device Debug, and
+  generic-device Release builds pass. Simulator execution was not requested.
+- Immediate next step: **push this approved checkpoint and merge it into
+  `main`**. Projection wording remains parked; do not change it without a new
+  product discussion.
 
 ### Ordered backlog
 
@@ -107,26 +149,100 @@
 3. **Spending group management controls — complete**
    - Replace the current rename/edit affordances with native list-row
      management and swipe actions while preserving explicit ordering.
-4. **Scope investment reconciliation controls correctly**
-   - Hide investment reconciliation controls for ordinary banking accounts;
-     they do not affect banking, Spending, Projections, or Goals behavior.
-5. **Goals tab transition stall**
-   - Diagnose the occasional Liquid Glass tab-indicator stall when entering
-     Goals. Scrolling after the transition is already smooth.
-   - This is a physical-device observation; do not launch a simulator unless
-     the user explicitly requests it.
-6. **Cash Plus stale-balance investigation**
-   - A connected Cash Plus account temporarily had no usable live balance
-     until Plaid reconnect completed. Determine the stale-cache/recovery path
-     without weakening reconciliation or persistence safeguards.
-7. **Required projection-audit CSV export**
-   - This remains the next larger product milestone. Follow the complete
-     privacy, input-row, forecast-event, and total-reconciliation contract in
-     `docs/PLAN.md`; the shorter implementation checklist also remains below
-     in this file.
-8. **Lower-priority candidate: preserve YNAB memos in reference suggestions**
-   - Memos would make transfer identification easier. Keep this behind the
-     required work above.
+4. **Scope investment reconciliation controls correctly — no issue**
+   - Verified conceptually with Vanguard: its cash account appears under
+     Banking, while investment accounts use Investment Account Review. The
+     separate data paths are behaving as intended; no change is planned.
+5. **Goals tab transition stall — resolved**
+   - Confirmed fixed during physical-device use on 2026-08-14. Reopen only if
+     the transition stall returns.
+6. **Cash Plus stale-balance investigation — resolved**
+   - Plaid reconnection restored the account and Cash Plus is updating
+     normally as of 2026-08-14. Reopen the investigation if its balance
+     disappears or stops updating again.
+7. **Move Investments beneath Net Worth — complete**
+   - Investments is removed from the tab bar, leaving four tabs. The
+     Investments and Retirement categories in the Net Worth Balance Sheet each
+     present a scoped portfolio detail with its own total, 30-day balance
+     change, trend, holdings, and account drill-downs. The freed tab slot
+     remains empty.
+   - NetworthCore 220/220 and a generic-device Debug build pass. Simulator
+     execution was not requested. The four-tab layout and Net Worth investment
+     drill-down were confirmed on the physical device on 2026-08-14.
+8. **Reduce Spending screen load — complete**
+   - The main page now shows a compact 12-month Spending Trends preview instead
+     of the full history chart. It opens a dedicated detail with fixed-width
+     6/12/24-month views, an explicit series picker, selected-month values, and
+     group-detail access; no horizontal chart scrolling is required.
+   - Category legend rows now have one full-row action that opens detail. The
+     prior name-versus-amount split action, hidden chart-reset tap, and legend
+     reorder context menu are removed; group reordering remains visible in
+     Manage Spending Groups.
+   - NetworthCore 220/220 and a generic-device Debug build pass. Simulator
+     execution was not requested.
+9. **Preserve YNAB memos in reference suggestions — closed as obsolete**
+   - Historical import and review are complete. Adding memo evidence to the
+     temporary YNAB reference workflow would no longer improve an active task.
+10. **Hide Net Worth implementation diagnostics — complete**
+   - The normal chart info sheet explains included assets and liabilities,
+     historical balances, and the meaning of the 30-day change.
+   - Developer-only account, snapshot, backfill, and double-count diagnostics
+     are compiled into Debug builds only.
+   - Generic-device Debug and Release builds pass. Simulator execution was not
+     requested.
+11. **Consolidate inline message components — complete**
+   - `NwInlineNotice` now supports optional actions, replacing every
+     `NwBanner` use while preserving message tone and behavior.
+   - The obsolete `NwBanner` source file and Xcode project references are
+     removed. A generic-device Debug build passes.
+12. **Remove pseudo-allocation from Investments — complete**
+   - The removed section grouped balances by account source/type rather than
+     actual investment asset class and repeated the Holdings list.
+   - Holdings retain account type, institution, value, and drill-downs without
+     a repeated percentage. Genuine stocks/bonds/cash allocation can be added
+     later if the underlying data supports it.
+   - A generic-device Debug build passes.
+13. **Reconcile investment details to Net Worth categories — complete**
+   - The prior Investments destination recombined brokerage, crypto, and
+     retirement data even though the Net Worth balance sheet displayed
+     Investments and Retirement as separate totals.
+   - Both rows now open the rich portfolio detail with one authoritative scope
+   applied to the headline, 30-day change, historical inputs, holdings,
+   empty state, and pending-review count. Plaid matches follow the manual
+   asset classification; standalone Plaid accounts use subtype classification.
+   Legacy YNAB investment balances are excluded from both current and
+   historical detail after Plaid becomes the primary financial source, matching
+   the Net Worth breakdown.
+   - NetworthCore 221/221 and a generic-device Debug build pass.
+14. **Add a normal private-backend token management path — complete**
+   - Settings → Accounts & Sync now shows Backend Access as Saved or Missing
+     and opens a secure Set/Replace Private Token sheet.
+   - Replacement overwrites the Keychain credential through the existing
+     `SecretStore` path and reconfigures the client without exposing the saved
+     value, clearing it first, or disconnecting accounts.
+   - Generic-device Debug and Release builds pass.
+15. **Repair dark-mode action contrast at the design-system level — complete**
+   - The static navy primary was unreadable as foreground text and icons on
+     dark cards. Primary, dim-primary, accent, info, and on-primary colors now
+     resolve to explicit light/dark variants in `NwAppColors`. Root tinting now
+     reaches presented sheets, and AccentColor has a matching dark fallback.
+   - A generic-device Debug build passes. Physical-device review remains the
+     acceptance check because simulator execution was not requested.
+16. **Collect legacy YNAB tools into a submenu — complete**
+   - Accounts & Sync now exposes one YNAB Reference row and status. Its child
+     screen contains token management, account mapping, explicit reference
+     import, history review, and reclassification.
+   - Normal transaction-import copy no longer names YNAB. A generic-device
+     Debug build passes.
+
+### Parked
+
+- Exact Outlook wording across projection scenarios.
+- Full Projection Audit and local reproducibility CSV export.
+- Removal of legacy YNAB scaffolding and relocation of repair tools to
+  Advanced.
+- New product surfaces: Can I Afford This, Safe-to-Spend widget, cash alerts,
+  What Changed summaries, and forecast-confidence treatment.
 
 ## Stabilization checkpoint (2026-08-11)
 

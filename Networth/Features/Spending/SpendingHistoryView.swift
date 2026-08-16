@@ -25,12 +25,148 @@ private enum SpendingPeriodFormatter {
     }
 }
 
+private enum SpendingTrendSeries {
+    static let all = "networth:spending:all"
+}
+
+private enum SpendingTrendRange: Int, CaseIterable, Identifiable {
+    case sixMonths = 6
+    case twelveMonths = 12
+    case twentyFourMonths = 24
+
+    var id: Int { rawValue }
+    var label: String { "\(rawValue) mo" }
+    var axisStride: Int {
+        switch self {
+        case .sixMonths: return 1
+        case .twelveMonths: return 2
+        case .twentyFourMonths: return 3
+        }
+    }
+}
+
+private struct SpendingTrendDatum: Identifiable {
+    let month: Date
+    let amount: Money
+    let isPartial: Bool
+
+    var id: Date { month }
+}
+
+private func spendingTrendData(
+    model: SpendingHistoryModel,
+    monthCount: Int,
+    seriesID: String,
+    calendar: Calendar = .current
+) -> [SpendingTrendDatum] {
+    model.months.suffix(monthCount).map { month in
+        let milliunits: Int64
+        if seriesID == SpendingTrendSeries.all {
+            milliunits = month.ordinaryTotalMilliunits
+        } else {
+            milliunits = max(
+                0,
+                month.groups.first { $0.id == seriesID }?.spentMilliunits ?? 0
+            )
+        }
+        return SpendingTrendDatum(
+            month: month.month,
+            amount: Money(milliunits: milliunits),
+            isPartial: calendar.isDate(
+                month.month,
+                equalTo: .now,
+                toGranularity: .month
+            )
+        )
+    }
+}
+
+private struct SpendingTrendChart: View {
+    let data: [SpendingTrendDatum]
+    let color: Color
+    let compact: Bool
+    let axisStride: Int
+    let selectedMonth: Date?
+    var onSelect: ((Date) -> Void)? = nil
+
+    var body: some View {
+        Chart(data) { datum in
+            BarMark(
+                x: .value("Month", datum.month, unit: .month),
+                y: .value("Monthly spending", datum.amount.doubleValue),
+                width: .ratio(0.68)
+            )
+            .foregroundStyle(
+                color.opacity(
+                    datum.isPartial
+                        ? 0.45
+                        : selectedMonth == nil || selectedMonth == datum.month
+                            ? 0.9
+                            : 0.55
+                )
+            )
+            .cornerRadius(3)
+        }
+        .chartLegend(.hidden)
+        .chartXAxis {
+            AxisMarks(
+                values: .stride(by: .month, count: axisStride)
+            ) { value in
+                AxisGridLine()
+                    .foregroundStyle(NwAppColors.strokeSubtle)
+                AxisValueLabel {
+                    if let month = value.as(Date.self) {
+                        Text(
+                            month.formatted(
+                                compact
+                                    ? .dateTime.month(.narrow)
+                                    : .dateTime.month(.abbreviated)
+                            )
+                        )
+                        .font(NwTypography.caption)
+                    }
+                }
+            }
+        }
+        .chartYAxis {
+            if !compact {
+                AxisMarks(position: .leading) { value in
+                    AxisGridLine()
+                        .foregroundStyle(NwAppColors.strokeSubtle)
+                    AxisValueLabel {
+                        if let dollars = value.as(Double.self) {
+                            Text(
+                                CurrencyFormatter.compact(
+                                    Money(
+                                        milliunits: Int64(dollars * 1000)
+                                    )
+                                )
+                            )
+                            .font(NwTypography.caption)
+                        }
+                    }
+                }
+            }
+        }
+        .chartYScale(domain: .automatic(includesZero: true))
+        .chartGesture { proxy in
+            SpatialTapGesture()
+                .onEnded { value in
+                    guard let month: Date = proxy.value(
+                        atX: value.location.x
+                    ) else { return }
+                    onSelect?(month)
+                }
+        }
+    }
+}
+
 /// Spending History — the Spending tab (Phase 1 step 3).
 ///
 /// Month navigation, the review card for posted transactions awaiting
-/// approval, the selected month's total and per-group columns, and a
-/// 24-month selectable spending trend. Only approved activity counts; the
-/// current month is month-to-date, completed months are final.
+/// approval, the selected month's total and per-group columns, and a compact
+/// link to the dedicated Spending Trends detail. Only approved activity
+/// counts; the current month is month-to-date, completed months are final.
 struct SpendingHistoryView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
 
@@ -61,8 +197,6 @@ struct SpendingHistoryView: View {
     @State private var model: SpendingHistoryModel?
     @State private var selectedMonth: Date?
     @State private var summaryRange = SummaryRange.oneMonth
-    @State private var selectedChartSeriesID = "networth:spending:all"
-    @State private var historyChartScrollPosition = Date.now
     @State private var detailSelection: SpendingGroupDetailSelection?
     @State private var showingGroupedReview = false
     @State private var showingIndividualReview = false
@@ -70,7 +204,6 @@ struct SpendingHistoryView: View {
     @State private var rebuildTask: Task<Void, Never>?
 
     private let calendar = Calendar.current
-    private let historyVisibleDuration: TimeInterval = 60 * 60 * 24 * 30.5 * 8
     private let visibleMonthCount = 24
 
     var body: some View {
@@ -86,7 +219,7 @@ struct SpendingHistoryView: View {
                             monthTotalCard(period, model: model)
                             spendingBreakdown(period, model: model)
                         }
-                        historyChartCard(model)
+                        spendingTrendPreview(model)
                         allTransactionsLink
                     } else {
                         NwLoadingState("Loading spending…")
@@ -383,9 +516,6 @@ struct SpendingHistoryView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .contentShape(Rectangle())
-        .onTapGesture {
-            selectedChartSeriesID = Self.allSpendingSeriesID
-        }
         .gesture(
             DragGesture(minimumDistance: 30)
                 .onEnded { value in
@@ -404,7 +534,6 @@ struct SpendingHistoryView: View {
         .accessibilityAction(named: "Next Month") {
             moveDisplayedMonth(in: model, by: 1)
         }
-        .accessibilityHint("Double-tap to show all spending history")
     }
 
     private func companionMetric(
@@ -478,9 +607,9 @@ struct SpendingHistoryView: View {
     /// month is sized against the trailing 12-month arithmetic mean; aggregate
     /// periods show composition only because their own monthly average is
     /// already displayed in the summary card.
-    /// The legend below carries selection and reorder, and marks
-    /// non-spending groups (transfers, savings, investing, unassigned) with a
-    /// hollow swatch since they sit outside the pie.
+    /// Each row opens its category detail. Non-spending groups (transfers,
+    /// savings, investing, unassigned) use a hollow swatch because they sit
+    /// outside the pie.
     private func spendingBreakdown(
         _ period: DisplayedPeriod,
         model: SpendingHistoryModel
@@ -560,78 +689,60 @@ struct SpendingHistoryView: View {
         }
     }
 
-    /// A legend row beneath the pie: color key, group name, and amount. A
-    /// filled swatch matches a pie slice; a hollow swatch marks a group that
-    /// sits outside the spending pie (transfers, savings, investing,
-    /// unassigned). The name selects the group's 24-month history; the amount
-    /// opens the selected month's category and transaction detail. The context
-    /// menu keeps the quick reorder action available.
+    /// One full-row action beneath the pie: open this group's category and
+    /// transaction detail. Trend selection lives in Spending Trends.
+    @ViewBuilder
     private func legendRow(
         _ group: SpendingHistoryGroupTotal,
         month: SpendingHistoryMonth,
         periodStartMonth: Date,
         displayAmount: Money
     ) -> some View {
-        let isSelected = selectedChartSeriesID == group.id
-        let isSpending = group.isOrdinarySpending
-        return HStack(spacing: NwSpacing.sm) {
+        if group.categories.isEmpty {
+            legendRowContent(group, displayAmount: displayAmount)
+        } else {
             Button {
-                selectedChartSeriesID = group.id
+                detailSelection = SpendingGroupDetailSelection(
+                    month: month,
+                    group: group,
+                    periodStartMonth: periodStartMonth
+                )
             } label: {
-                HStack(spacing: NwSpacing.sm) {
-                    swatch(for: group, isSpending: isSpending)
-                    Text(group.name)
-                        .font(
-                            isSelected
-                                ? NwTypography.bodyEmphasis
-                                : NwTypography.body
-                        )
-                        .foregroundStyle(
-                            isSelected
-                                ? NwAppColors.primary
-                                : NwAppColors.textPrimary
-                        )
-                        .lineLimit(1)
-                    Spacer(minLength: NwSpacing.sm)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                legendRowContent(
+                    group,
+                    displayAmount: displayAmount,
+                    showsDisclosure: true
+                )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(group.name)
-            .accessibilityValue(isSelected ? "Selected" : "")
-            .accessibilityHint("Shows this group's spending history")
+            .accessibilityLabel(
+                "Open \(group.name) details, \(CurrencyFormatter.currency(displayAmount))"
+            )
+        }
+    }
 
-            if group.categories.isEmpty {
-                legendAmount(group, amount: displayAmount)
-            } else {
-                Button {
-                    detailSelection = SpendingGroupDetailSelection(
-                        month: month,
-                        group: group,
-                        periodStartMonth: periodStartMonth
-                    )
-                } label: {
-                    legendAmount(group, amount: displayAmount)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    "Open \(group.name) details, \(CurrencyFormatter.currency(displayAmount))"
-                )
+    private func legendRowContent(
+        _ group: SpendingHistoryGroupTotal,
+        displayAmount: Money,
+        showsDisclosure: Bool = false
+    ) -> some View {
+        HStack(spacing: NwSpacing.sm) {
+            swatch(for: group, isSpending: group.isOrdinarySpending)
+            Text(group.name)
+                .font(NwTypography.body)
+                .foregroundStyle(NwAppColors.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: NwSpacing.sm)
+            legendAmount(group, amount: displayAmount)
+            if showsDisclosure {
+                NwIcon.chevron.image
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.tertiary)
             }
         }
         .padding(.horizontal, NwSpacing.md)
         .padding(.vertical, NwSpacing.rowVertical)
-        .contextMenu {
-            if group.id != SpendingHistoryBuilder.ungroupedIdentity
-                && group.id != SpendingGroupSetup.unassignedIdentity {
-                Button {
-                    moveGroupEarlier(group.id)
-                } label: {
-                    Label("Move Up", systemImage: "arrow.up")
-                }
-            }
-        }
+        .contentShape(Rectangle())
     }
 
     private func legendAmount(
@@ -664,81 +775,6 @@ struct SpendingHistoryView: View {
         }
     }
 
-    /// Column order is user-owned: swap the group one position earlier
-    /// after normalizing display orders to a clean sequence.
-    private func moveGroupEarlier(_ identity: String) {
-        let ctx = container.modelContainer.mainContext
-        let groups = ((try? ctx.fetch(
-            FetchDescriptor<DurableCategoryGroup>()
-        )) ?? [])
-            .filter { SpendingGroupSetup.isUserGroup($0) }
-            .sorted {
-                if $0.displayOrder != $1.displayOrder {
-                    return $0.displayOrder < $1.displayOrder
-                }
-                return $0.name.localizedCaseInsensitiveCompare($1.name)
-                    == .orderedAscending
-            }
-        guard let index = groups.firstIndex(where: {
-            $0.groupIdentity == identity
-        }), index > 0 else { return }
-        for (position, group) in groups.enumerated() {
-            group.displayOrder = position
-        }
-        groups[index].displayOrder = index - 1
-        groups[index - 1].displayOrder = index
-        groups[index].updatedAt = .now
-        groups[index - 1].updatedAt = .now
-        ctx.safeSave(source: "spending.groupReorder")
-    }
-
-    // MARK: - 24-month chart
-
-    private static let allSpendingSeriesID = "networth:spending:all"
-
-    private struct ChartDatum: Identifiable {
-        let month: Date
-        let dollars: Double
-        let isPartial: Bool
-        var id: Date { month }
-    }
-
-    private func chartData(
-        _ model: SpendingHistoryModel
-    ) -> [ChartDatum] {
-        selectableMonths(in: model).map { month in
-            let milliunits: Int64
-            if selectedChartSeriesID == Self.allSpendingSeriesID {
-                // Out-of-pocket basis: matches the "Spent" headline, so
-                // investing and savings transfers don't inflate the series.
-                milliunits = month.ordinaryTotalMilliunits
-            } else {
-                milliunits = max(
-                    0,
-                    month.groups.first {
-                        $0.id == selectedChartSeriesID
-                    }?.spentMilliunits ?? 0
-                )
-            }
-            return ChartDatum(
-                month: month.month,
-                dollars: Double(milliunits) / 1000,
-                isPartial: isCurrentMonth(month.month)
-            )
-        }
-    }
-
-    private func selectedChartSeriesName(
-        in model: SpendingHistoryModel
-    ) -> String {
-        guard selectedChartSeriesID != Self.allSpendingSeriesID else {
-            return "All Spending"
-        }
-        return model.months.lazy
-            .flatMap(\.groups)
-            .first { $0.id == selectedChartSeriesID }?.name ?? "All Spending"
-    }
-
     private func color(for groupID: String) -> Color {
         guard let index = model?.paletteIndex(for: groupID) else {
             return NwAppColors.chartOther
@@ -746,93 +782,49 @@ struct SpendingHistoryView: View {
         return NwAppColors.chartCategorical[index]
     }
 
-    private func historyChartCard(_ model: SpendingHistoryModel) -> some View {
-        let data = chartData(model)
-        let seriesName = selectedChartSeriesName(in: model)
-        let chartColor = selectedChartSeriesID == Self.allSpendingSeriesID
-            ? NwAppColors.primary
-            : color(for: selectedChartSeriesID)
-        return NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                Text(seriesName)
-                    .font(NwTypography.body.weight(.semibold))
-                    .foregroundStyle(NwAppColors.textPrimary)
-
-                Chart(data) { datum in
-                    BarMark(
-                        x: .value("Month", datum.month, unit: .month),
-                        y: .value("Monthly spending", datum.dollars),
-                        width: .ratio(0.68)
-                    )
-                    .foregroundStyle(
-                        chartColor.opacity(datum.isPartial ? 0.45 : 0.9)
-                    )
-                    .cornerRadius(3)
-                }
-                .chartLegend(.hidden)
-                .chartYAxis {
-                    AxisMarks(position: .leading) { value in
-                        AxisGridLine().foregroundStyle(NwAppColors.strokeSubtle)
-                        AxisValueLabel {
-                            if let dollars = value.as(Double.self) {
-                                Text(
-                                    CurrencyFormatter.compact(
-                                        Money(milliunits: Int64(dollars * 1000))
-                                    )
-                                )
-                                .font(NwTypography.caption)
-                            }
+    private func spendingTrendPreview(
+        _ model: SpendingHistoryModel
+    ) -> some View {
+        let data = spendingTrendData(
+            model: model,
+            monthCount: 12,
+            seriesID: SpendingTrendSeries.all,
+            calendar: calendar
+        )
+        return NavigationLink {
+            SpendingTrendsView(model: model)
+        } label: {
+            NwCard(style: .primary) {
+                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Spending Trends")
+                                .font(NwTypography.headline)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                            Text("Last 12 months")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(NwAppColors.textSecondary)
                         }
+                        Spacer()
+                        NwIcon.chevron.image
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.tertiary)
                     }
-                }
-                .chartYScale(domain: .automatic(includesZero: true))
-                .chartScrollableAxes(.horizontal)
-                .chartXVisibleDomain(length: historyVisibleDuration)
-                .chartScrollPosition(x: $historyChartScrollPosition)
-                .frame(height: 220)
-                .accessibilityLabel(
-                    "Monthly \(seriesName)"
-                )
-                .chartGesture { proxy in
-                    SpatialTapGesture()
-                        .onEnded { value in
-                            handleChartTap(
-                                atX: value.location.x,
-                                proxy: proxy,
-                                model: model,
-                                seriesID: selectedChartSeriesID
-                            )
-                    }
+
+                    SpendingTrendChart(
+                        data: data,
+                        color: NwAppColors.primary,
+                        compact: true,
+                        axisStride: 3,
+                        selectedMonth: nil
+                    )
+                    .frame(height: 110)
+                    .allowsHitTesting(false)
                 }
             }
         }
-    }
-
-    /// A tap selects the underlying month. For a selected group, it also opens
-    /// that month's unsmoothed category detail.
-    private func handleChartTap(
-        atX xPosition: CGFloat,
-        proxy: ChartProxy,
-        model: SpendingHistoryModel,
-        seriesID: String
-    ) {
-        guard let tappedDate: Date = proxy.value(atX: xPosition),
-              let monthStart = calendar.dateInterval(
-                of: .month, for: tappedDate
-              )?.start,
-              let month = model.months.first(where: {
-                  $0.month == monthStart
-              }) else {
-            return
-        }
-        selectedMonth = month.month
-        summaryRange = .oneMonth
-        guard seriesID != Self.allSpendingSeriesID,
-              let group = month.groups.first(where: { $0.id == seriesID }),
-              !group.categories.isEmpty else { return }
-        detailSelection = SpendingGroupDetailSelection(
-            month: month, group: group
-        )
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows detailed monthly spending trends")
     }
 
     // MARK: - Build
@@ -850,18 +842,215 @@ struct SpendingHistoryView: View {
         }.value
         guard let built, !Task.isCancelled else { return }
         model = built
-        if selectedChartSeriesID != Self.allSpendingSeriesID,
-           !built.months.contains(where: { month in
-               month.groups.contains { $0.id == selectedChartSeriesID }
-           }) {
-            selectedChartSeriesID = Self.allSpendingSeriesID
-        }
         if let selectedMonth,
            !selectableMonths(in: built).contains(where: {
                $0.month == selectedMonth
            }) {
             self.selectedMonth = nil
         }
+    }
+}
+
+// MARK: - Spending trends
+
+private struct SpendingTrendGroupOption: Identifiable {
+    let id: String
+    let name: String
+}
+
+private struct SpendingTrendsView: View {
+    let model: SpendingHistoryModel
+
+    @State private var range = SpendingTrendRange.twentyFourMonths
+    @State private var selectedSeriesID = SpendingTrendSeries.all
+    @State private var selectedMonth: Date?
+    @State private var detailSelection: SpendingGroupDetailSelection?
+
+    private let calendar = Calendar.current
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                controlsCard
+                chartCard
+            }
+            .padding(.horizontal, NwSpacing.screenPadding)
+            .padding(.vertical, NwSpacing.lg)
+        }
+        .background(NwAppColors.background.ignoresSafeArea())
+        .navigationTitle("Spending Trends")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $detailSelection) { selection in
+            SpendingGroupDetailSheet(selection: selection)
+        }
+        .onChange(of: range) { _, _ in
+            selectedMonth = nil
+        }
+        .onChange(of: selectedSeriesID) { _, _ in
+            selectedMonth = nil
+        }
+    }
+
+    private var controlsCard: some View {
+        NwCard(style: .primary) {
+            VStack(spacing: NwSpacing.md) {
+                HStack {
+                    Text("Series")
+                        .font(NwTypography.body)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                    Spacer()
+                    Picker("Series", selection: $selectedSeriesID) {
+                        Text("All Spending")
+                            .tag(SpendingTrendSeries.all)
+                        ForEach(groupOptions) { option in
+                            Text(option.name).tag(option.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+
+                Picker("History range", selection: $range) {
+                    ForEach(SpendingTrendRange.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+        }
+    }
+
+    private var chartCard: some View {
+        NwCard(style: .primary) {
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
+                if let datum = displayedDatum {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(monthLabel(for: datum))
+                            .font(NwTypography.bodyEmphasis)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                        Spacer()
+                        NwAmountText(
+                            datum.amount,
+                            variant: .large,
+                            showCents: false
+                        )
+                    }
+                }
+
+                SpendingTrendChart(
+                    data: data,
+                    color: seriesColor,
+                    compact: false,
+                    axisStride: range.axisStride,
+                    selectedMonth: selectedMonth,
+                    onSelect: selectMonth
+                )
+                .frame(height: 300)
+                .accessibilityLabel("Monthly \(selectedSeriesName)")
+
+                if let group = selectedGroup,
+                   !group.categories.isEmpty,
+                   let month = selectedHistoryMonth {
+                    Button {
+                        detailSelection = SpendingGroupDetailSelection(
+                            month: month,
+                            group: group
+                        )
+                    } label: {
+                        HStack {
+                            Text("View \(group.name) details")
+                                .font(NwTypography.bodyEmphasis)
+                            Spacer()
+                            NwIcon.chevron.image
+                                .font(NwTypography.footnote)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(NwAppColors.primary)
+                }
+
+                Text("The current month is month to date.")
+                    .font(NwTypography.caption)
+                    .foregroundStyle(NwAppColors.textSecondary)
+            }
+        }
+    }
+
+    private var data: [SpendingTrendDatum] {
+        spendingTrendData(
+            model: model,
+            monthCount: range.rawValue,
+            seriesID: selectedSeriesID,
+            calendar: calendar
+        )
+    }
+
+    private var displayedDatum: SpendingTrendDatum? {
+        guard let selectedMonth else { return data.last }
+        return data.first { $0.month == selectedMonth } ?? data.last
+    }
+
+    private var selectedHistoryMonth: SpendingHistoryMonth? {
+        guard let selectedMonth else { return nil }
+        return model.months.first { $0.month == selectedMonth }
+    }
+
+    private var selectedGroup: SpendingHistoryGroupTotal? {
+        guard selectedSeriesID != SpendingTrendSeries.all else { return nil }
+        return selectedHistoryMonth?.groups.first {
+            $0.id == selectedSeriesID
+        }
+    }
+
+    private var selectedSeriesName: String {
+        guard selectedSeriesID != SpendingTrendSeries.all else {
+            return "All Spending"
+        }
+        return groupOptions.first { $0.id == selectedSeriesID }?.name
+            ?? "Spending"
+    }
+
+    private var seriesColor: Color {
+        guard selectedSeriesID != SpendingTrendSeries.all else {
+            return NwAppColors.primary
+        }
+        guard let index = model.paletteIndex(for: selectedSeriesID) else {
+            return NwAppColors.chartOther
+        }
+        return NwAppColors.chartCategorical[index]
+    }
+
+    private var groupOptions: [SpendingTrendGroupOption] {
+        var byID: [String: SpendingTrendGroupOption] = [:]
+        for month in model.months.reversed() {
+            for group in month.groups where byID[group.id] == nil {
+                byID[group.id] = SpendingTrendGroupOption(
+                    id: group.id,
+                    name: group.name
+                )
+            }
+        }
+        return byID.values.sorted { lhs, rhs in
+            let lhsOrder = model.orderIndex(for: lhs.id)
+            let rhsOrder = model.orderIndex(for: rhs.id)
+            if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+                == .orderedAscending
+        }
+    }
+
+    private func selectMonth(_ date: Date) {
+        guard let nearest = data.min(by: {
+            abs($0.month.timeIntervalSince(date))
+                < abs($1.month.timeIntervalSince(date))
+        }) else { return }
+        selectedMonth = nearest.month
+    }
+
+    private func monthLabel(for datum: SpendingTrendDatum) -> String {
+        let month = datum.month.formatted(.dateTime.month(.wide).year())
+        return datum.isPartial ? "\(month) · MTD" : month
     }
 }
 

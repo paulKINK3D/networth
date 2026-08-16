@@ -40,7 +40,7 @@ The ideal headline is an interpreted answer, not merely a balance or chart. For 
 
 ### Product Direction
 
-The near-term priority is to make Projections the clearest and most trustworthy workflow in the app: one headline answer, a chronological timeline, transparent assumptions, and drill-down explanations. Net Worth remains the long-term scorecard supporting that workflow. The information architecture is fixed at five tabs (Goals added 2026-08-07) until a separate scope decision changes it.
+The near-term priority is to make Projections the clearest and most trustworthy workflow in the app: one headline answer, a chronological timeline, transparent assumptions, and drill-down explanations. Net Worth remains the long-term scorecard supporting that workflow. The information architecture is fixed at four tabs; investment reporting is reached through Net Worth under the 2026-08-14 scope decision.
 
 ## Distribution & Scope
 - iPhone only (no iPad, no Catalyst).
@@ -134,18 +134,17 @@ When at least four complete monthly samples are available, Safe to Spend also sh
 - The **rolled-up net worth total snapshots daily**, using the last known manual-asset values between updates.
 
 ### Information Architecture
-- **5-tab structure** (Accounts left the tab bar 2026-08-02; Goals added 2026-08-07; direct Net Worth account drill-down adopted 2026-08-11):
-  1. **Net Worth** — current total, historical chart, and breakdown by account type; Balance Sheet categories drill into their contributing accounts and source-specific detail screens.
-  2. **Spending** — the "where did the money go?" awareness surface: user-defined drillable groups, 24-month stacked history, judgment-free.
-  3. **Projections** — chronological credit-card payment timeline, evolving into the near-term cash-confidence headline and explainable low-point workflow described above.
-  4. **Investments** — portfolio total and 30-day movement, reconstructed balance trend, allocation by source/type, and drill-down holdings.
-  5. **Goals** — named allocations backed by explicitly selected accounts; optional target progress, atomic staged allocation, and one optional goal that receives the live remainder. Goal spending is attributed through reviewed Goal Spend/Refund transaction types.
-- **Settings** opens from the shared top-right management menu on every tab (token entry, Face ID toggle, sync controls, manual asset CRUD) — not a tab. This uses the last tab-bar slot; a sixth tab would trigger the system More tab.
+- **4-tab structure** (Accounts left the tab bar 2026-08-02; Goals added 2026-08-07; direct Net Worth account drill-down adopted 2026-08-11; Investments moved beneath Net Worth 2026-08-14):
+  1. **Spending** — the initial tab and "where did the money go?" awareness surface: user-defined drillable groups, 24-month stacked history, judgment-free.
+  2. **Projections** — chronological credit-card payment timeline, evolving into the near-term cash-confidence headline and explainable low-point workflow described above.
+  3. **Goals** — named allocations backed by explicitly selected accounts; optional target progress, atomic staged allocation, and one optional goal that receives the live remainder. Goal spending is attributed through reviewed Goal Spend/Refund transaction types.
+  4. **Net Worth** — current total, historical chart, and breakdown by account type; Balance Sheet categories drill into their contributing accounts and source-specific detail screens. Investments and Retirement each open a portfolio detail whose total, balance history, holdings, and review state are restricted to that category.
+- **Settings** opens from the shared top-right management menu on every tab (backend access, Face ID toggle, sync controls, manual asset CRUD) — not a tab. Legacy YNAB reference/import tools are collected under one YNAB Reference submenu in Accounts & Sync. The freed tab slot remains intentionally empty.
 - No transactions tab; users open YNAB if they need to browse transactions.
 - No privacy mode (tap-to-blur amounts) in v1.
 
 ### Design Language
-- **Theme:** "Deep Slate" — navy/teal accent (≈ `#1E3A8A` primary, teal for positive deltas, muted red for liabilities/regressions).
+- **Theme:** "Deep Slate" — navy/teal accent (≈ `#1E3A8A` primary, teal for positive deltas, muted red for liabilities/regressions). Interactive semantic colors use explicit light/dark variants; fixed navy is not used as a dark-mode foreground.
 - Modeled on WorkoutApp's design-system patterns (`Lift*` token enums, card variants, modal scaffolds).
 - Design system **built first**, screens assembled from primitives.
 
@@ -187,14 +186,28 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 - [x] **Phase 4 — Projections tab rebuild:** Cash-confidence headline, Known Commitments and Expected Spending curves, configurable horizon and cash pool, explainable low point, multi-cycle card autopays, and drill-down details.
 - [x] **Phase 5 — Accounts tab:** List + drill-down, recent activity (read-only from cache).
 - [x] **Phase 6 — Polish:** Face ID toggle, error states, empty states, splash/onboarding, sync indicators.
-- [x] **Phase 7 — Investments tab:** Portfolio summary, reconstructed balance history, allocation, holding details, and manual value-update access.
+- [x] **Phase 7 — Investment reporting:** Portfolio summary, reconstructed balance history, allocation, holding details, and manual value-update access. Originally shipped as a tab; moved beneath Net Worth by the 2026-08-14 decision.
 - [x] **Phase 8 — Local IBR bridge:** Opt-in App Group student-loan summary, current liability reporting, local chart overlay, Accounts detail, and deep link back to BL IBR.
 - [x] **Phase 9 — Plaid Investments:** Private backend contract, native Link flow, local investment cache, explicit duplicate reconciliation, holding-level reporting, and reconciled contribution to Net Worth.
 - [x] **Phase 10 — Plaid Transactions migration foundation:** Product-aware Items, 24-month cursor sync, canonical account reconciliation, YNAB-history matching, local learning rules, opt-in privacy-bounded Claude fallback, review inbox, and explicit Plaid-primary cutover.
 
-The foundational capabilities and four core tab realignment have shipped. Projections serves the cash-confidence north star, while Net Worth, Accounts, and Investments provide the supporting scorecard and drill-down reporting. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
+The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-08-14** — The four tabs are ordered Spending, Projections, Goals, and
+  Net Worth. Spending is the initial tab, reflecting the app's everyday review
+  flow; Net Worth remains the supporting long-term scorecard at the trailing
+  position. No destinations or capabilities change.
+- **2026-08-14** — **Investments moves beneath Net Worth.** Remove Investments
+  as a top-level tab and leave the app with four tabs: Net Worth, Spending,
+  Projections, and Goals. The Net Worth Investments and Retirement Balance
+  Sheet categories open separately scoped portfolio details. Each headline,
+  30-day balance movement, history, holdings list, review count, and account
+  drill-down must reconcile to the category row that opened it. The former
+  source/type Allocation section is removed because it was not asset-class
+  allocation and repeated Holdings. The freed tab slot remains intentionally
+  empty. This supersedes the 2026-08-07 five-tab decision without changing
+  Plaid investment sync, reconciliation, or contribution-to-Net-Worth behavior.
 - **2026-08-12** — **All Transactions** moves from the bottom of Net Worth to
   the bottom of Spending. The destination, search, category filter, paging,
   and transaction editing behavior are unchanged; only its top-level entry

@@ -52,7 +52,6 @@ struct SettingsView: View {
     @Query(sort: \DurableRecurringExpectation.nextOccurrenceAt)
     private var recurringExpectations: [DurableRecurringExpectation]
 
-    @State private var showingTokenSheet = false
     @State private var showingAssetForm: DurableManualAsset? = nil
     @State private var showingNewAsset = false
     @State private var showingExpectationForm: DurableRecurringExpectation? = nil
@@ -60,15 +59,13 @@ struct SettingsView: View {
     @State private var showingCardSheet: CardSettingsTarget? = nil
     @State private var showingExclusionsSheet = false
     @State private var showingForceResyncConfirm = false
-    @State private var showingGroupedReview = false
-    @State private var showingAccountMapping = false
-    @State private var showingTransactionSearch = false
     @State private var showingIncludedClosed = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
     @State private var showingPlaidConnection = false
     @State private var showingPlaidReview = false
     @State private var showingPlaidBankingConnection = false
+    @State private var showingPlaidBackendToken = false
     @State private var showingClaudeConsent = false
     @State private var plaidItemToRemove: CachedPlaidItem?
     @State private var plaidManagedManualAsset: DurableManualAsset?
@@ -188,14 +185,12 @@ struct SettingsView: View {
 
             if page == .connections {
                 Section {
-                    Button {
-                        showingTokenSheet = true
+                    NavigationLink {
+                        YNABReferenceSettingsView()
                     } label: {
                         HStack {
                             Label {
-                                Text(container.hasYNABToken
-                                    ? "YNAB Token"
-                                    : "Add YNAB Token")
+                                Text("YNAB Reference")
                             } icon: {
                                 NwIcon.keychain.image
                                     .foregroundStyle(NwAppColors.primary)
@@ -208,101 +203,15 @@ struct SettingsView: View {
                                     icon: .success
                                 )
                             } else {
-                                NwIcon.chevron.image
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    if container.hasYNABToken, hasTransactionConnection {
-                        Button {
-                            showingAccountMapping = true
-                        } label: {
-                            HStack {
-                                Label {
-                                    Text("Map YNAB Accounts")
-                                } icon: {
-                                    NwIcon.accounts.image
-                                        .foregroundStyle(NwAppColors.primary)
-                                }
-                                Spacer()
-                                NwIcon.chevron.image
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        Button {
-                            Task { await container.buildYNABReference() }
-                        } label: {
-                            Label {
-                                Text("Build YNAB Reference")
-                            } icon: {
-                                NwIcon.sync.image
-                                    .foregroundStyle(NwAppColors.primary)
-                            }
-                        }
-                        .disabled(isReferenceImportRunning)
-
-                        switch container.ynabReferenceImportCoordinator.phase {
-                        case .running(let label):
-                            HStack(spacing: NwSpacing.sm) {
-                                ProgressView().controlSize(.small)
-                                Text(label).foregroundStyle(.secondary)
-                            }
-                        case .error(let message):
-                            Text(message)
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(NwAppColors.caution)
-                        case .completed(let summary):
-                            Text("Reference built: \(summary)")
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(.secondary)
-                        case .idle:
-                            EmptyView()
-                        }
-
-                        Button {
-                            showingGroupedReview = true
-                        } label: {
-                            HStack {
-                                Label {
-                                    Text("Review Imported History")
-                                } icon: {
-                                    NwIcon.confirm.image
-                                        .foregroundStyle(NwAppColors.primary)
-                                }
-                                Spacer()
-                                let pending = container
-                                    .plaidTransactionSyncCoordinator
-                                    .pendingTransactionReviewCount
-                                if pending > 0 {
-                                    Text("\(pending)")
-                                        .foregroundStyle(.secondary)
-                                }
-                                NwIcon.chevron.image
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        Button {
-                            showingTransactionSearch = true
-                        } label: {
-                            HStack {
-                                Label {
-                                    Text("Find & Reclassify")
-                                } icon: {
-                                    Image(systemName: "magnifyingglass")
-                                        .foregroundStyle(NwAppColors.primary)
-                                }
-                                Spacer()
-                                NwIcon.chevron.image
+                                Text("Not set")
                                     .foregroundStyle(.secondary)
                             }
                         }
                     }
                 } header: {
-                    Text("YNAB")
+                    Text("Reference Data")
                 } footer: {
-                    Text("Used only when you explicitly import YNAB history as reference data. Networth never syncs YNAB on its own.")
+                    Text("Optional legacy history tools.")
                 }
             }
 
@@ -404,7 +313,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Transaction Import")
                 } footer: {
-                    Text("Networth learns names and categories from reviewed YNAB history and future corrections.")
+                    Text("Networth learns names and categories from reviewed history and future corrections.")
                 }
             }
 
@@ -498,6 +407,34 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("Investment Account Review")
+                }
+            }
+
+            if page == .connections {
+                Section {
+                    Button {
+                        showingPlaidBackendToken = true
+                    } label: {
+                        HStack(spacing: NwSpacing.md) {
+                            NwIcon.keychain.image
+                                .foregroundStyle(NwAppColors.primary)
+                            Text(container.hasPlaidBackendToken
+                                 ? "Replace Private Token"
+                                 : "Set Private Token")
+                                .foregroundStyle(NwAppColors.textPrimary)
+                            Spacer()
+                            NwStatusBadge(
+                                container.hasPlaidBackendToken ? "Saved" : "Missing",
+                                style: container.hasPlaidBackendToken ? .positive : .caution,
+                                icon: container.hasPlaidBackendToken ? .success : .warning
+                            )
+                            NwIcon.chevron.image.foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Backend Access")
+                } footer: {
+                    Text("Stored securely in Keychain. Replacing it does not disconnect your accounts.")
                 }
             }
 
@@ -757,9 +694,6 @@ struct SettingsView: View {
         }
             .navigationTitle(page?.title ?? "Settings")
             .navigationBarTitleDisplayMode(page == nil ? .large : .inline)
-            .sheet(isPresented: $showingTokenSheet) {
-                PATEntrySheet().environment(container)
-            }
             .sheet(isPresented: $showingNewAsset) {
                 ManualAssetForm(asset: nil)
                     .environment(container)
@@ -781,15 +715,6 @@ struct SettingsView: View {
             .sheet(isPresented: $showingExclusionsSheet) {
                 ExcludedCategoriesSheet().environment(container)
             }
-            .sheet(isPresented: $showingGroupedReview) {
-                GroupedHistoricalReviewSheet().environment(container)
-            }
-            .sheet(isPresented: $showingAccountMapping) {
-                PlaidAccountMappingSheet().environment(container)
-            }
-            .sheet(isPresented: $showingTransactionSearch) {
-                TransactionSearchReclassifySheet().environment(container)
-            }
             .sheet(isPresented: $showingIncludedClosed) {
                 IncludedClosedAccountsSheet().environment(container)
             }
@@ -807,6 +732,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingPlaidBankingConnection) {
                 PlaidBankingConnectionSheet().environment(container)
+            }
+            .sheet(isPresented: $showingPlaidBackendToken) {
+                PlaidBackendTokenSheet().environment(container)
             }
             .alert("Use Claude for Difficult Transactions?", isPresented: $showingClaudeConsent) {
                 Button("Cancel", role: .cancel) {}
@@ -1143,6 +1071,180 @@ struct SettingsView: View {
     }
 }
 
+private struct YNABReferenceSettingsView: View {
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query private var plaidItems: [CachedPlaidItem]
+
+    @State private var showingTokenSheet = false
+    @State private var showingAccountMapping = false
+    @State private var showingGroupedReview = false
+    @State private var showingTransactionSearch = false
+
+    var body: some View {
+        List {
+            Section {
+                Button {
+                    showingTokenSheet = true
+                } label: {
+                    HStack {
+                        Label {
+                            Text(container.hasYNABToken
+                                 ? "Replace YNAB Token"
+                                 : "Add YNAB Token")
+                                .foregroundStyle(NwAppColors.textPrimary)
+                        } icon: {
+                            NwIcon.keychain.image
+                                .foregroundStyle(NwAppColors.primary)
+                        }
+                        Spacer()
+                        if container.hasYNABToken {
+                            NwStatusBadge(
+                                "Stored",
+                                style: .positive,
+                                icon: .success
+                            )
+                        }
+                    }
+                }
+            } header: {
+                Text("Access")
+            } footer: {
+                Text("Used only when you explicitly import YNAB history as reference data. Networth never syncs YNAB on its own.")
+            }
+
+            if container.hasYNABToken {
+                Section {
+                    if hasTransactionConnection {
+                        Button {
+                            showingAccountMapping = true
+                        } label: {
+                            HStack {
+                                Label {
+                                    Text("Map YNAB Accounts")
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                } icon: {
+                                    NwIcon.accounts.image
+                                        .foregroundStyle(NwAppColors.primary)
+                                }
+                                Spacer()
+                                NwIcon.chevron.image
+                                    .foregroundStyle(NwAppColors.primary)
+                            }
+                        }
+
+                        Button {
+                            Task { await container.buildYNABReference() }
+                        } label: {
+                            Label {
+                                Text("Build YNAB Reference")
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                            } icon: {
+                                NwIcon.sync.image
+                                    .foregroundStyle(NwAppColors.primary)
+                            }
+                        }
+                        .disabled(isReferenceImportRunning)
+
+                        switch container.ynabReferenceImportCoordinator.phase {
+                        case .running(let label):
+                            HStack(spacing: NwSpacing.sm) {
+                                ProgressView().controlSize(.small)
+                                Text(label).foregroundStyle(.secondary)
+                            }
+                        case .error(let message):
+                            Text(message)
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(NwAppColors.caution)
+                        case .completed(let summary):
+                            Text("Reference built: \(summary)")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        case .idle:
+                            EmptyView()
+                        }
+
+                        Button {
+                            showingGroupedReview = true
+                        } label: {
+                            HStack {
+                                Label {
+                                    Text("Review Imported History")
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                } icon: {
+                                    NwIcon.confirm.image
+                                        .foregroundStyle(NwAppColors.primary)
+                                }
+                                Spacer()
+                                let pending = container
+                                    .plaidTransactionSyncCoordinator
+                                    .pendingTransactionReviewCount
+                                if pending > 0 {
+                                    Text("\(pending)")
+                                        .foregroundStyle(.secondary)
+                                }
+                                NwIcon.chevron.image
+                                    .foregroundStyle(NwAppColors.primary)
+                            }
+                        }
+
+                        Button {
+                            showingTransactionSearch = true
+                        } label: {
+                            HStack {
+                                Label {
+                                    Text("Find & Reclassify")
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                } icon: {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundStyle(NwAppColors.primary)
+                                }
+                                Spacer()
+                                NwIcon.chevron.image
+                                    .foregroundStyle(NwAppColors.primary)
+                            }
+                        }
+                    } else {
+                        NwInlineNotice(
+                            "Banking connection required",
+                            message: "Connect your Plaid banking accounts before importing YNAB reference history.",
+                            tone: .info
+                        )
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                    }
+                } header: {
+                    Text("Reference Import")
+                }
+            }
+        }
+        .navigationTitle("YNAB Reference")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showingTokenSheet) {
+            PATEntrySheet().environment(container)
+        }
+        .sheet(isPresented: $showingAccountMapping) {
+            PlaidAccountMappingSheet().environment(container)
+        }
+        .sheet(isPresented: $showingGroupedReview) {
+            GroupedHistoricalReviewSheet().environment(container)
+        }
+        .sheet(isPresented: $showingTransactionSearch) {
+            TransactionSearchReclassifySheet().environment(container)
+        }
+    }
+
+    private var hasTransactionConnection: Bool {
+        plaidItems.contains { $0.products.contains("transactions") }
+    }
+
+    private var isReferenceImportRunning: Bool {
+        if case .running = container.ynabReferenceImportCoordinator.phase {
+            return true
+        }
+        return false
+    }
+}
+
 private struct ProjectionCashAccountsSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
@@ -1365,6 +1467,89 @@ private struct MinimumCashBufferSheet: View {
             return
         }
         dismiss()
+    }
+}
+
+private struct PlaidBackendTokenSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+
+    @State private var token = ""
+    @State private var saving = false
+    @State private var saveError: String?
+
+    var body: some View {
+        NwModalLayout(
+            title: container.hasPlaidBackendToken
+                ? "Replace Private Token"
+                : "Set Private Token",
+            onClose: { dismiss() },
+            onConfirm: save,
+            confirmDisabled: trimmedToken.isEmpty || saving
+        ) {
+            VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                NwInlineNotice(
+                    container.hasPlaidBackendToken
+                        ? "Existing connections stay connected"
+                        : "Backend access required",
+                    message: container.hasPlaidBackendToken
+                        ? "Saving replaces only the credential Networth uses for its private backend."
+                        : "This token authorizes Networth to use your private Plaid and Claude services.",
+                    tone: .info
+                )
+
+                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                    Text("Private Token")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    SecureField(
+                        "Paste the new token",
+                        text: $token,
+                        prompt: Text("Paste the new token")
+                    )
+                    .textContentType(.password)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(NwTypography.body)
+                    .padding(NwSpacing.md)
+                    .background(NwAppColors.cardSurface)
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: NwCornerRadius.md,
+                            style: .continuous
+                        )
+                    )
+                }
+
+                if let saveError {
+                    NwInlineNotice(
+                        "Couldn't save",
+                        message: saveError,
+                        tone: .warning
+                    )
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private var trimmedToken: String {
+        token.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func save() {
+        saving = true
+        saveError = nil
+        Task { @MainActor in
+            do {
+                try await container.savePlaidBackendToken(trimmedToken)
+                dismiss()
+            } catch {
+                saveError = error.localizedDescription
+                saving = false
+            }
+        }
     }
 }
 
@@ -3577,87 +3762,13 @@ struct PlaidTransactionReviewEditor: View {
     private var splitControls: some View {
         VStack(alignment: .leading, spacing: NwSpacing.sm) {
             reviewSectionTitle("Split details")
-            NwCard(style: .primary, padding: 0) {
-                VStack(spacing: 0) {
-                    ForEach($splitDrafts) { $draft in
-                        HStack(spacing: NwSpacing.md) {
-                            VStack(
-                                alignment: .leading,
-                                spacing: NwSpacing.xs
-                            ) {
-                                Text("Type")
-                                    .font(NwTypography.caption)
-                                    .foregroundStyle(.secondary)
-                                Picker(
-                                    "Type",
-                                    selection: $draft.treatment
-                                ) {
-                                    Text("Select")
-                                        .tag(ForecastTreatment?.none)
-                                    ForEach(splitTypeChoices, id: \.self) {
-                                        Text($0.displayName)
-                                            .tag(Optional($0))
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                                .tint(NwAppColors.primary)
-
-                                if draft.treatment?.requiresCategory == true {
-                                    NavigationLink {
-                                        PlaidCategoryPicker(
-                                            selection: $draft.categoryName,
-                                            groups: splitLegCategoryGroups,
-                                            onSelect: { option in
-                                                draft.categoryID = option.categoryID
-                                            }
-                                        )
-                                    } label: {
-                                        Text(
-                                            draft.categoryName.isEmpty
-                                                ? "Select category"
-                                                : draft.categoryName
-                                        )
-                                        .lineLimit(1)
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                } else if let splitType = draft.treatment,
-                                          TransactionTypeRules.requiresGoal(
-                                            splitType
-                                          ) {
-                                    Picker("Goal", selection: $draft.goalId) {
-                                        Text("Select goal").tag(UUID?.none)
-                                        ForEach(activeGoals) { goal in
-                                            Text(goal.name)
-                                                .tag(Optional(goal.id))
-                                        }
-                                    }
-                                    .labelsHidden()
-                                    .pickerStyle(.menu)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                            NwAccessoryCurrencyTextField(
-                                    text: $draft.amountText,
-                                    onFocusChange: { focused in
-                                        if focused {
-                                            splitAmountFocusedID = draft.id
-                                        } else if splitAmountFocusedID
-                                            == draft.id {
-                                            splitAmountFocusedID = nil
-                                        }
-                                    }
-                                )
-                                .accessibilityLabel("Split amount")
-                                .frame(width: 80)
-                                .onDisappear {
-                                    if splitAmountFocusedID == draft.id {
-                                        splitAmountFocusedID = nil
-                                    }
-                                }
-
+            ForEach($splitDrafts) { $draft in
+                NwCard(style: .primary, padding: 0) {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("Split \(splitNumber(for: draft.id))")
+                                .font(NwTypography.bodyEmphasis)
+                            Spacer()
                             Button {
                                 deleteSplitDraft(id: draft.id)
                             } label: {
@@ -3670,27 +3781,123 @@ struct PlaidTransactionReviewEditor: View {
                         }
                         .padding(NwSpacing.md)
 
-                        if draft.id != splitDrafts.last?.id {
-                            Divider()
-                        }
-                    }
+                        Divider()
 
-                    Divider()
-                    Button {
-                        splitDrafts.append(PlaidSplitDraft(
-                            treatment: isIncomingSplit
-                                ? .income
-                                : .ordinarySpending
-                        ))
-                    } label: {
-                        Label("Add Split", systemImage: "plus.circle.fill")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
+                        HStack {
+                            Text("Type")
+                            Spacer()
+                            Picker(
+                                "",
+                                selection: $draft.treatment
+                            ) {
+                                Text("Select")
+                                    .tag(ForecastTreatment?.none)
+                                ForEach(splitTypeChoices, id: \.self) {
+                                    Text($0.displayName)
+                                        .tag(Optional($0))
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .tint(NwAppColors.textSecondary)
+                        }
+                        .padding(NwSpacing.md)
+
+                        Divider()
+
+                        if draft.treatment?.requiresCategory == true {
+                            NavigationLink {
+                                PlaidCategoryPicker(
+                                    selection: $draft.categoryName,
+                                    groups: splitLegCategoryGroups,
+                                    onSelect: { option in
+                                        draft.categoryID = option.categoryID
+                                    }
+                                )
+                            } label: {
+                                LabeledContent("Category") {
+                                    Text(
+                                        draft.categoryName.isEmpty
+                                            ? "Select category"
+                                            : draft.categoryName
+                                    )
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .padding(NwSpacing.md)
+                        } else if let splitType = draft.treatment,
+                                  TransactionTypeRules.requiresGoal(
+                                    splitType
+                                  ) {
+                            Picker("Goal", selection: $draft.goalId) {
+                                Text("Select goal").tag(UUID?.none)
+                                ForEach(activeGoals) { goal in
+                                    Text(goal.name)
+                                        .tag(Optional(goal.id))
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .tint(NwAppColors.textSecondary)
+                            .padding(NwSpacing.md)
+                        } else {
+                            LabeledContent("Category") {
+                                Text(
+                                    draft.treatment.map(
+                                        noCategoryLabel(for:)
+                                    ) ?? "Select type"
+                                )
+                                .foregroundStyle(.secondary)
+                            }
+                            .padding(NwSpacing.md)
+                        }
+
+                        Divider()
+
+                        HStack(spacing: NwSpacing.md) {
+                            Text("Amount")
+                            Spacer()
+                            NwAccessoryCurrencyTextField(
+                                text: $draft.amountText,
+                                onFocusChange: { focused in
+                                    if focused {
+                                        splitAmountFocusedID = draft.id
+                                    } else if splitAmountFocusedID
+                                        == draft.id {
+                                        splitAmountFocusedID = nil
+                                    }
+                                }
+                            )
+                            .accessibilityLabel("Split amount")
+                            .frame(width: 110)
+                            .onDisappear {
+                                if splitAmountFocusedID == draft.id {
+                                    splitAmountFocusedID = nil
+                                }
+                            }
+                        }
+                        .padding(NwSpacing.md)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(NwAppColors.primary)
-                    .padding(NwSpacing.md)
                 }
+            }
+
+            NwCard(style: .primary, padding: 0) {
+                Button {
+                    splitDrafts.append(PlaidSplitDraft(
+                        treatment: isIncomingSplit
+                            ? .income
+                            : .ordinarySpending
+                    ))
+                } label: {
+                    Label("Add Split", systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(NwAppColors.primary)
+                .padding(NwSpacing.md)
             }
 
             if splitAmountFocusedID == nil {
@@ -3835,6 +4042,10 @@ struct PlaidTransactionReviewEditor: View {
             return (categoryID, exact.name)
         }
         return nil
+    }
+
+    private func splitNumber(for id: UUID) -> Int {
+        (splitDrafts.firstIndex { $0.id == id } ?? 0) + 1
     }
 
     private func deleteSplitDraft(id: UUID) {

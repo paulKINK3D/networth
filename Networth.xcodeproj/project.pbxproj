@@ -27,7 +27,6 @@
 		4BAA7FC4AAD9F5D777496F59 /* NetworthApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B47DA2858D069AAFE00B503 /* NetworthApp.swift */; };
 		59DC4BA6A3F6BF7CF6CB39C6 /* CachedYNABModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C602AFAC1CD6353CD890A9C /* CachedYNABModels.swift */; };
 		5B9406B5529A3ADDF1C837C8 /* CardSettingsForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 341C0448EBF9D1C9337844CE /* CardSettingsForm.swift */; };
-		5D451344A885A586CDC2C212 /* NwBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84A0A2BD0F9EEB1AE4BF359E /* NwBanner.swift */; };
 		6FC19701C4FFBE492EED552F /* NwLoadingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31B61BCD772811EAD2BE147F /* NwLoadingState.swift */; };
 		78A4A695C94AFA056D8AF11C /* NwAppColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = C67F5A89172289A05D285547 /* NwAppColors.swift */; };
 		7AACF46A41E0C5B0E7C3E660 /* NwCornerRadius.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9E3D99E3745BEFD8F3CED25 /* NwCornerRadius.swift */; };
@@ -106,7 +105,6 @@
 		52297C05613F92A328100ACC /* NwTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwTypography.swift; sourceTree = "<group>"; };
 		7A3ACC0B9996D2E60E099AC7 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		82874A066698E71B6954CECE /* YNABClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YNABClient.swift; sourceTree = "<group>"; };
-		84A0A2BD0F9EEB1AE4BF359E /* NwBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwBanner.swift; sourceTree = "<group>"; };
 		84B00A602FD614A800F81F22 /* TrendDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrendDetailView.swift; sourceTree = "<group>"; };
 		9B47DA2858D069AAFE00B503 /* NetworthApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworthApp.swift; sourceTree = "<group>"; };
 		9C602AFAC1CD6353CD890A9C /* CachedYNABModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachedYNABModels.swift; sourceTree = "<group>"; };
@@ -220,7 +218,6 @@
 			children = (
 				166DB3AC79F36E2C0D14A3B4 /* NwAmountText.swift */,
 				C67F5A89172289A05D285547 /* NwAppColors.swift */,
-				84A0A2BD0F9EEB1AE4BF359E /* NwBanner.swift */,
 				A0640132B868410EFCA27FBB /* NwButtonStyles.swift */,
 				31B717C7AC171203E3E7B365 /* NwCard.swift */,
 				A9E3D99E3745BEFD8F3CED25 /* NwCornerRadius.swift */,
@@ -482,7 +479,6 @@
 				4BAA7FC4AAD9F5D777496F59 /* NetworthApp.swift in Sources */,
 				D79AEDEE90E63A7EA2D99DFA /* NwAmountText.swift in Sources */,
 				78A4A695C94AFA056D8AF11C /* NwAppColors.swift in Sources */,
-				5D451344A885A586CDC2C212 /* NwBanner.swift in Sources */,
 				B270E19D380583D0CEE0AFB1 /* NwButtonStyles.swift in Sources */,
 				87720F33E363A78B86DD9F18 /* NwCard.swift in Sources */,
 				7AACF46A41E0C5B0E7C3E660 /* NwCornerRadius.swift in Sources */,

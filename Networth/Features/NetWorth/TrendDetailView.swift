@@ -1,5 +1,5 @@
 import SwiftUI
-    import SwiftData
+import SwiftData
 import NetworthCore
 
 private func label(for kind: AccountKind) -> String {
@@ -22,7 +22,8 @@ private func label(for kind: AccountKind) -> String {
     }
 }
 
-/// Diagnostic sheet for the Net Worth trend chart. Lets the user inspect:
+/// Plain-language explanation of the Net Worth trend chart. Debug builds also
+/// expose diagnostics for inspecting:
 ///   - Which accounts currently contribute to the reconstruction (same filter
 ///     the backfill uses: `!deleted && !closed`, scoped to the selected budget).
 ///   - How many snapshots exist per month and the month-end net worth value.
@@ -55,6 +56,37 @@ struct TrendDetailView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("What Net Worth Includes") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Assets")
+                            .font(NwTypography.bodyEmphasis)
+                        Text("Cash, investments, property, and other assets")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Liabilities")
+                            .font(NwTypography.bodyEmphasis)
+                        Text("Credit cards, loans, and other debts")
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                    Text("Net worth is included assets minus included liabilities.")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                }
+
+                Section("How History Works") {
+                    Text("Connected accounts use their synced balances. Manual assets use their recorded value history, and linked student loans use their dated IBR balances.")
+                    Text("Networth stores balance snapshots for the trend. The 30-day change is a balance difference, not investment return.")
+                }
+
+#if DEBUG
+                Section("Diagnostics") {
+                    Text("The sections below are visible only in Debug builds.")
+                        .foregroundStyle(NwAppColors.textSecondary)
+                }
+
                 if contributingAccounts.isEmpty {
                     Section {
                         Text("No accounts. Sync to populate.")
@@ -217,9 +249,10 @@ struct TrendDetailView: View {
                 } footer: {
                     Text("Recorded and reconstructed points.")
                 }
+#endif
 
             }
-            .navigationTitle("Trend Detail")
+            .navigationTitle("About Net Worth")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

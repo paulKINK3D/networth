@@ -28,6 +28,7 @@ struct ContentView: View {
                     .transition(.opacity)
             }
         }
+        .tint(NwAppColors.primary)
         .animation(.easeOut(duration: 0.25), value: container.unlocked)
         .animation(.easeOut(duration: 0.25), value: container.bootstrapped)
         .animation(.easeOut(duration: 0.25), value: splashMinimumElapsed)
@@ -104,23 +105,19 @@ struct ContentView: View {
 
     private var tabs: some View {
         TabView(selection: $selection) {
-            NetWorthView()
-                .tabItem { Label("Net Worth", systemImage: NwIcon.netWorth.rawValue) }
-                .tag(0)
             SpendingHistoryView()
                 .tabItem { Label("Spending", systemImage: NwIcon.budget.rawValue) }
-                .tag(1)
+                .tag(0)
             ProjectionsView()
                 .tabItem { Label("Projections", systemImage: NwIcon.projections.rawValue) }
-                .tag(2)
-            InvestmentsView()
-                .tabItem { Label("Investments", systemImage: NwIcon.investment.rawValue) }
-                .tag(3)
+                .tag(1)
             GoalsView()
                 .tabItem { Label("Goals", systemImage: NwIcon.goals.rawValue) }
-                .tag(4)
+                .tag(2)
+            NetWorthView()
+                .tabItem { Label("Net Worth", systemImage: NwIcon.netWorth.rawValue) }
+                .tag(3)
         }
-        .tint(NwAppColors.primary)
     }
 }
 

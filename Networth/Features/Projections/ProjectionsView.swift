@@ -219,7 +219,7 @@ struct ProjectionsView: View {
     }
 
     private func projectionIssueNotice(_ title: String, message: String) -> some View {
-        NwBanner(
+        NwInlineNotice(
             title,
             message: message,
             tone: .warning,

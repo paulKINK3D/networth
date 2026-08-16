@@ -24,13 +24,6 @@ private enum InvestmentRange: String, CaseIterable, Identifiable {
     }
 }
 
-private struct InvestmentAllocation: Identifiable {
-    let id: String
-    let title: String
-    let icon: NwIcon
-    let amount: Money
-}
-
 private enum InvestmentHolding: Identifiable {
     case ynab(CachedAccount)
     case manual(DurableManualAsset)
@@ -93,9 +86,10 @@ private enum InvestmentHolding: Identifiable {
     }
 }
 
-/// Portfolio view for YNAB investment accounts and manually tracked brokerage,
-/// retirement, and crypto holdings.
+/// Category-scoped portfolio detail reached from the Net Worth balance sheet.
 struct InvestmentsView: View {
+    let scope: InvestmentCategoryScope
+
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
@@ -127,7 +121,8 @@ struct InvestmentsView: View {
             "\(accounts.count)",
             "\(manualAssets.count)", "\(plaidBalanceSnapshots.count)",
             "\(plaidAccounts.count)", "\(plaidTreatments.count)",
-            range.rawValue
+            userSettings.first?.primaryFinancialDataSourceRaw ?? "",
+            range.rawValue, scope.rawValue
         ].joined(separator: "|")
     }
 
@@ -148,28 +143,29 @@ struct InvestmentsView: View {
                 let dataActor = InvestmentsDataActor(
                     modelContainer: modelContainer
                 )
-                return await dataActor.build(rangeMonths: rangeMonths)
+                return await dataActor.build(
+                    rangeMonths: rangeMonths,
+                    scope: scope
+                )
             }.value
             guard !Task.isCancelled else { return }
             cachedPoints = points
         }
     }
 
-    private static let investmentManualKinds: Set<ManualAssetKind> = [
-        .brokerage, .retirement, .crypto
-    ]
-
     private var ynabInvestments: [CachedAccount] {
-        accounts.filter { !$0.deleted && !$0.closed && $0.kind == .investment }
-    }
-
-    private var historicalYNABInvestments: [CachedAccount] {
-        accounts.filter { !$0.deleted && $0.kind == .investment }
+        guard scope.includesLegacyInvestmentAccounts,
+              userSettings.first?.primaryFinancialDataSource != .plaid else {
+            return []
+        }
+        return accounts.filter {
+            !$0.deleted && !$0.closed && $0.kind == .investment
+        }
     }
 
     private var manualInvestments: [DurableManualAsset] {
         manualAssets.filter {
-            !$0.deleted && Self.investmentManualKinds.contains($0.kind)
+            !$0.deleted && scope.includes(manualAssetKind: $0.kind)
         }
     }
 
@@ -185,16 +181,25 @@ struct InvestmentsView: View {
         manualInvestments.filter { !plaidResolver.isReplacing($0) }
     }
 
+    private var scopedPlaidAccounts: [CachedPlaidAccount] {
+        plaidResolver.contributingPlaidAccounts.filter { account in
+            if plaidResolver.matchedManualAssetID(for: account) != nil {
+                return true
+            }
+            return scope.includes(plaidSubtype: account.subtype)
+        }
+    }
+
     private var totalValue: Money {
         ynabInvestments.map(\.balance).sum()
             + unreplacedManualInvestments.map(\.currentValue).sum()
-            + plaidResolver.contributingPlaidAccounts.compactMap(\.currentBalance).sum()
+            + scopedPlaidAccounts.compactMap(\.currentBalance).sum()
     }
 
     private var holdings: [InvestmentHolding] {
         let values = ynabInvestments.map(InvestmentHolding.ynab)
             + unreplacedManualInvestments.map(InvestmentHolding.manual)
-            + plaidResolver.contributingPlaidAccounts.map(InvestmentHolding.plaid)
+            + scopedPlaidAccounts.map(InvestmentHolding.plaid)
         return values.sorted {
             if $0.value != $1.value { return $0.value > $1.value }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -204,84 +209,82 @@ struct InvestmentsView: View {
     private var isEmpty: Bool { holdings.isEmpty }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                    if pendingPlaidReviewCount > 0 {
-                        NwBanner(
-                            "Review connected accounts",
-                            message: "Review balances before inclusion.",
-                            tone: .caution,
-                            actionTitle: "Review",
-                            action: { showingPlaidReview = true }
-                        )
-                    } else if case .error(let message) = container.plaidSyncCoordinator.phase {
-                        NwBanner(
-                            "Investment sync issue",
-                            message: message,
-                            tone: .caution,
-                            actionTitle: "Retry",
-                            action: { Task { await container.syncPlaidInvestments() } }
-                        )
-                    }
-
-                    if isEmpty {
-                        NwEmptyState(
-                            title: "No investments yet",
-                            message: "Connect an investment account or add one manually.",
-                            icon: .investment
-                        )
-                        .frame(minHeight: 320)
-                    } else if let points = cachedPoints {
-                        heroCard(history: points)
-                        trendCard(history: points)
-                        allocationSection
-                        holdingsSection
-                    } else {
-                        // Cold load: history builds off the render path.
-                        NwLoadingState("Loading investments…")
-                            .frame(minHeight: 320)
-                    }
-                }
-                .padding(.horizontal, NwSpacing.screenPadding)
-                .padding(.vertical, NwSpacing.lg)
-            }
-            .background(NwAppColors.background.ignoresSafeArea())
-            .navigationTitle("Investments")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    NwTopLevelMenu(
-                        canRefresh: container.hasPlaidBackendToken,
-                        contextualActions: [
-                            NwTopLevelMenuAction(
-                                title: "Manage Investment Accounts",
-                                systemImage: NwIcon.accounts.rawValue,
-                                action: { SettingsRouter.open(.connections) }
-                            )
-                        ],
-                        onRefresh: {
-                            Task { await container.syncNow() }
-                        },
-                        onSettings: { SettingsRouter.open() }
+        ScrollView {
+            VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                if pendingPlaidReviewCount > 0 {
+                    NwInlineNotice(
+                        "Review connected accounts",
+                        message: "Review balances before inclusion.",
+                        tone: .caution,
+                        actionTitle: "Review",
+                        action: { showingPlaidReview = true }
+                    )
+                } else if case .error(let message) = container.plaidSyncCoordinator.phase {
+                    NwInlineNotice(
+                        "Investment sync issue",
+                        message: message,
+                        tone: .caution,
+                        actionTitle: "Retry",
+                        action: { Task { await container.syncPlaidInvestments() } }
                     )
                 }
-            }
-            .sheet(isPresented: $showingPlaidReview) {
-                PlaidAccountReviewSheet().environment(container)
-            }
-            .task { refreshCache() }
-            .onAppear {
-                isVisible = true
-                refreshCache()
-            }
-            .onDisappear { isVisible = false }
-            .onChange(of: range) { _, _ in refreshCache(force: true) }
-            .onReceive(Self.saveEvents) { _ in
-                if isVisible {
-                    refreshCache(force: true)
+
+                if isEmpty {
+                    NwEmptyState(
+                        title: "No \(scopeTitle.lowercased()) yet",
+                        message: "Connect an account or add one manually.",
+                        icon: scope == .retirement ? .retirement : .investment
+                    )
+                    .frame(minHeight: 320)
+                } else if let points = cachedPoints {
+                    heroCard(history: points)
+                    trendCard(history: points)
+                    holdingsSection
                 } else {
-                    cacheFingerprint = ""
+                    // Cold load: history builds off the render path.
+                    NwLoadingState("Loading \(scopeTitle.lowercased())…")
+                        .frame(minHeight: 320)
                 }
+            }
+            .padding(.horizontal, NwSpacing.screenPadding)
+            .padding(.vertical, NwSpacing.lg)
+        }
+        .background(NwAppColors.background.ignoresSafeArea())
+        .navigationTitle(scopeTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NwTopLevelMenu(
+                    canRefresh: container.hasPlaidBackendToken,
+                    contextualActions: [
+                        NwTopLevelMenuAction(
+                            title: "Manage Investment Accounts",
+                            systemImage: NwIcon.accounts.rawValue,
+                            action: { SettingsRouter.open(.connections) }
+                        )
+                    ],
+                    onRefresh: {
+                        Task { await container.syncNow() }
+                    },
+                    onSettings: { SettingsRouter.open() }
+                )
+            }
+        }
+        .sheet(isPresented: $showingPlaidReview) {
+            PlaidAccountReviewSheet().environment(container)
+        }
+        .task { refreshCache() }
+        .onAppear {
+            isVisible = true
+            refreshCache()
+        }
+        .onDisappear { isVisible = false }
+        .onChange(of: range) { _, _ in refreshCache(force: true) }
+        .onReceive(Self.saveEvents) { _ in
+            if isVisible {
+                refreshCache(force: true)
+            } else {
+                cacheFingerprint = ""
             }
         }
     }
@@ -381,49 +384,6 @@ struct InvestmentsView: View {
         .onChange(of: range) { _, _ in scrubbedDate = nil }
     }
 
-    private var allocationSection: some View {
-        VStack(alignment: .leading, spacing: NwSpacing.md) {
-            Text("Allocation")
-                .font(NwTypography.titleSmall)
-
-            NwCard(style: .primary, padding: 0) {
-                VStack(spacing: 0) {
-                    ForEach(Array(allocations.enumerated()), id: \.element.id) { index, allocation in
-                        allocationRow(allocation)
-                        if index < allocations.count - 1 {
-                            Divider().padding(.leading, 52)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func allocationRow(_ allocation: InvestmentAllocation) -> some View {
-        let share = allocationShare(for: allocation.amount)
-        return HStack(spacing: NwSpacing.md) {
-            allocation.icon.image
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(NwAppColors.accent)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: NwSpacing.xs) {
-                HStack {
-                    Text(allocation.title)
-                        .font(NwTypography.bodyEmphasis)
-                    Spacer()
-                    Text(share.formatted(.percent.precision(.fractionLength(0))))
-                        .font(NwTypography.footnoteEm)
-                        .foregroundStyle(.secondary)
-                }
-                ProgressView(value: max(0, min(1, share)))
-                    .tint(NwAppColors.accent)
-            }
-            NwAmountText(allocation.amount, variant: .body, showCents: false)
-                .frame(minWidth: 76, alignment: .trailing)
-        }
-        .padding(NwSpacing.md)
-    }
-
     private var holdingsSection: some View {
         VStack(alignment: .leading, spacing: NwSpacing.md) {
             Text("Holdings")
@@ -458,7 +418,7 @@ struct InvestmentsView: View {
                 Text(holding.name)
                     .font(NwTypography.bodyEmphasis)
                     .foregroundStyle(NwAppColors.textPrimary)
-                Text("\(holding.subtitle), \(holdingShareText(holding.value))")
+                Text(holding.subtitle)
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -484,80 +444,6 @@ struct InvestmentsView: View {
             PlaidInvestmentAccountDetailView(account: account)
         }
     }
-
-    private var allocations: [InvestmentAllocation] {
-        var result: [InvestmentAllocation] = []
-        let ynabTotal = ynabInvestments.map(\.balance).sum()
-        if !ynabTotal.isZero {
-            result.append(InvestmentAllocation(
-                id: "ynab",
-                title: "YNAB Investments",
-                icon: .investment,
-                amount: ynabTotal
-            ))
-        }
-
-        let connectedRetirementTotal = plaidResolver.contributingPlaidAccounts
-            .filter {
-                PlaidRetirementClassifier.isRetirement(subtype: $0.subtype)
-            }
-            .compactMap(\.currentBalance)
-            .sum()
-        if !connectedRetirementTotal.isZero {
-            result.append(InvestmentAllocation(
-                id: "plaid-retirement",
-                title: "Connected Retirement",
-                icon: .retirement,
-                amount: connectedRetirementTotal
-            ))
-        }
-
-        let connectedBrokerageTotal = plaidResolver.contributingPlaidAccounts
-            .filter {
-                !PlaidRetirementClassifier.isRetirement(subtype: $0.subtype)
-            }
-            .compactMap(\.currentBalance)
-            .sum()
-        if !connectedBrokerageTotal.isZero {
-            result.append(InvestmentAllocation(
-                id: "plaid-brokerage",
-                title: "Connected Brokerage",
-                icon: .brokerage,
-                amount: connectedBrokerageTotal
-            ))
-        }
-
-        let kinds: [(ManualAssetKind, String, NwIcon)] = [
-            (.brokerage, "Brokerage", .brokerage),
-            (.retirement, "Retirement", .retirement),
-            (.crypto, "Crypto", .crypto)
-        ]
-        for (kind, title, icon) in kinds {
-            let amount = unreplacedManualInvestments
-                .filter { $0.kind == kind }
-                .map(\.currentValue)
-                .sum()
-            if !amount.isZero {
-                result.append(InvestmentAllocation(
-                    id: kind.rawValue,
-                    title: title,
-                    icon: icon,
-                    amount: amount
-                ))
-            }
-        }
-        return result.sorted { $0.amount > $1.amount }
-    }
-
-    private func allocationShare(for amount: Money) -> Double {
-        guard totalValue > .zero else { return 0 }
-        return amount.doubleValue / totalValue.doubleValue
-    }
-
-    private func holdingShareText(_ amount: Money) -> String {
-        allocationShare(for: amount).formatted(.percent.precision(.fractionLength(0)))
-    }
-
 
     private func sampledHistoryPoints(
         from points: [InvestmentHistoryBuilder.Point]
@@ -603,7 +489,14 @@ struct InvestmentsView: View {
     }
 
     private var pendingPlaidReviewCount: Int {
-        plaidAccounts.filter { plaidTreatment(for: $0.id) == .pendingReview }.count
+        plaidAccounts.filter {
+            scope.includes(plaidSubtype: $0.subtype)
+                && plaidTreatment(for: $0.id) == .pendingReview
+        }.count
+    }
+
+    private var scopeTitle: String {
+        scope == .retirement ? "Retirement" : "Investments"
     }
 
     private func plaidTreatment(for accountID: String) -> PlaidAccountTreatment {
@@ -909,7 +802,10 @@ struct PlaidInvestmentAccountDetailView: View {
 /// ModelContext; the view renders only finished results.
 @ModelActor
 private actor InvestmentsDataActor {
-    func build(rangeMonths: Int) -> [InvestmentHistoryBuilder.Point] {
+    func build(
+        rangeMonths: Int,
+        scope: InvestmentCategoryScope
+    ) -> [InvestmentHistoryBuilder.Point] {
         let calendar = Calendar(identifier: .gregorian)
         guard let start = calendar.date(
             byAdding: .month, value: -rangeMonths, to: .now
@@ -923,6 +819,9 @@ private actor InvestmentsDataActor {
         let accounts = (try? context.fetch(
             FetchDescriptor<CachedAccount>()
         )) ?? []
+        let settings = try? context.fetch(
+            FetchDescriptor<DurableUserSettings>()
+        ).first
         let manualAssets = (try? context.fetch(
             FetchDescriptor<DurableManualAsset>()
         )) ?? []
@@ -931,12 +830,29 @@ private actor InvestmentsDataActor {
                 sortBy: [SortDescriptor(\.date)]
             )
         )) ?? []
+        let plaidAccounts = (try? context.fetch(
+            FetchDescriptor<CachedPlaidAccount>()
+        )) ?? []
         let historicalInvestments = accounts.filter {
-            !$0.deleted && $0.kind == .investment
+            scope.includesLegacyInvestmentAccounts
+                && settings?.primaryFinancialDataSource != .plaid
+                && !$0.deleted && $0.kind == .investment
         }
         let manualInvestments = manualAssets.filter {
-            !$0.deleted
-                && [.brokerage, .retirement, .crypto].contains($0.kind)
+            !$0.deleted && scope.includes(manualAssetKind: $0.kind)
+        }
+        let manualInvestmentIDs = Set(manualInvestments.map(\.id))
+        let subtypeByPlaidAccountID = Dictionary(
+            uniqueKeysWithValues: plaidAccounts.map { ($0.id, $0.subtype) }
+        )
+        let scopedPlaidSnapshots = plaidSnapshots.filter { snapshot in
+            if let manualAssetID = snapshot.matchedManualAssetId {
+                return manualInvestmentIDs.contains(manualAssetID)
+            }
+            return scope.includes(
+                plaidSubtype: subtypeByPlaidAccountID[snapshot.plaidAccountId]
+                    ?? nil
+            )
         }
         let byAccount = Dictionary(
             grouping: transactions
@@ -952,7 +868,7 @@ private actor InvestmentsDataActor {
         return InvestmentHistoryBuilder(calendar: calendar).build(
             accounts: inputs,
             manualAssets: manualInvestments.map { $0.toSnapshot() },
-            plaidSnapshots: plaidSnapshots.map { $0.toHistorySnapshot() },
+            plaidSnapshots: scopedPlaidSnapshots.map { $0.toHistorySnapshot() },
             from: start,
             to: .now
         )

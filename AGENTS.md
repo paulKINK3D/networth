@@ -25,7 +25,7 @@ Personal financial radar that helps the user understand their real financial pos
 - Single-user app gated by a Face ID toggle that defaults ON when the device supports biometrics. A versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows forward so iCloud-restored or cross-device settings never silently leave the user unlocked.
 - YNAB Personal Access Token entered once in Settings, stored in iCloud-synced Keychain so a future device swap is zero-friction.
 - On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, `YNABClient` and `PlaidClient` actors, `ModelContainer`, `ConnectivityMonitor`, the read-only `IBRLoanStore`, and local `IBRLoanHistorySettingsStore`.
-- 5-tab structure: Net Worth · Spending · Projections · Investments · Goals. Accounts is reached from an "All Accounts" card on Net Worth. Settings is opened from a sheet behind the Net Worth toolbar (not a tab).
+- 4-tab structure: Spending · Projections · Goals · Net Worth. Investment reporting is reached through the separately scoped Investments and Retirement categories on Net Worth; account details are reached through Balance Sheet categories. Settings is opened from the shared top-right menu (not a tab).
 - Sync strategy: SwiftData local cache for re-fetchable YNAB and Plaid data; CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings, account identity decisions, merchant rules, and transaction corrections).
 - Optional IBR loan sharing uses `group.com.bluelava.me.financial`. The decoded summary stays in memory; its dated balances overlay the chart locally and must never be copied into SwiftData or CloudKit.
 
@@ -131,9 +131,9 @@ cd PlaidWorker && npm test && npm run check
 - History views should reuse the same entry display formatting used in logging/detail screens so wording, units, and layout stay consistent.
 - Avoid duplicating cross-cutting helpers across views; prefer one shared utility so
   fixes apply globally.
-- **Theme:** "Deep Slate" — navy/teal accent (`#1E3A8A` family); teal for positive deltas, muted red for liabilities/regressions. Defined in `NwAppColors`.
+- **Theme:** "Deep Slate" — navy/teal accent (`#1E3A8A` family); teal for positive deltas, muted red for liabilities/regressions. Defined in `NwAppColors`. Brand and semantic colors must use adaptive light/dark definitions there; never use a fixed navy as an interactive foreground in dark mode.
 - **Currency display:** never show raw milliunits. Always route through `NetworthCore.Money` formatters. Hide cents where the design calls for compact metrics; show full precision in detail rows.
-- **Information architecture is fixed at 5 tabs:** Net Worth · Spending · Projections · Investments · Goals (Accounts lives behind Net Worth, scope decision 2026-08-02; Goals added by scope decision 2026-08-07 — both logged in `docs/PLAN.md`). Settings is opened from a sheet behind the Net Worth toolbar (not a tab). This uses the last tab-bar slot; do not add tabs without a scope decision logged in `docs/PLAN.md`.
+- **Information architecture is fixed at 4 tabs:** Spending · Projections · Goals · Net Worth. Spending is the initial tab. Investments moved beneath Net Worth by scope decision 2026-08-14; its reporting remains available by opening the Investments Balance Sheet category. Accounts remain Balance Sheet drill-downs rather than a tab. Settings opens from the shared top-right menu (not a tab). Do not add or restore tabs without a scope decision logged in `docs/PLAN.md`.
 - **No privacy/blur mode** in v1 (explicitly scoped out).
 - **No transactions tab** in v1 (explicitly scoped out — users open YNAB to browse transactions).
 

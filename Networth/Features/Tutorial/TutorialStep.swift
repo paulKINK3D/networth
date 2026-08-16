@@ -63,9 +63,9 @@ enum TutorialContent {
             title: "Investments",
             lede: "One portfolio across YNAB, Plaid, and manual balances.",
             bullets: [
+                "Open Investments from the Net Worth Balance Sheet.",
                 "Connect supported institutions through Plaid.",
-                "Review connected accounts before inclusion.",
-                "Tap a holding for balance history and details."
+                "Review connected accounts, then tap a holding for details."
             ],
             footnote: "Balance change includes deposits and withdrawals; it is not investment return."
         ),

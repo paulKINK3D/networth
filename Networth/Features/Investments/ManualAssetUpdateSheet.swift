@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 import NetworthCore
 
-/// Quick update flow for a manual asset, surfaced from the Investments tab.
+/// Quick update flow for a manual asset, surfaced from investment details.
 ///
 /// Two input modes:
 /// - **Update Total** — enter the new absolute value as of a date.

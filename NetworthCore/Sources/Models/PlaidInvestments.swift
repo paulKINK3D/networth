@@ -29,6 +29,32 @@ public enum PlaidRetirementClassifier {
     }
 }
 
+/// The two investment categories shown separately on the Net Worth balance
+/// sheet. This scope is shared by current holdings and historical charts so a
+/// detail screen always reconciles to the category that opened it.
+public enum InvestmentCategoryScope: String, Sendable, Hashable, Codable {
+    case investments
+    case retirement
+
+    public var includesLegacyInvestmentAccounts: Bool {
+        self == .investments
+    }
+
+    public func includes(manualAssetKind: ManualAssetKind) -> Bool {
+        switch self {
+        case .investments:
+            [.brokerage, .crypto].contains(manualAssetKind)
+        case .retirement:
+            manualAssetKind == .retirement
+        }
+    }
+
+    public func includes(plaidSubtype: String?) -> Bool {
+        PlaidRetirementClassifier.isRetirement(subtype: plaidSubtype)
+            == (self == .retirement)
+    }
+}
+
 public struct PlaidInvestmentItem: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public let institutionName: String

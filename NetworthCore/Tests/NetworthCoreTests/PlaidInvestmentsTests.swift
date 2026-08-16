@@ -73,6 +73,21 @@ struct PlaidInvestmentsTests {
         #expect(!PlaidRetirementClassifier.isRetirement(subtype: nil))
     }
 
+    @Test func investmentCategoryScopesKeepRetirementSeparate() {
+        #expect(InvestmentCategoryScope.investments.includesLegacyInvestmentAccounts)
+        #expect(!InvestmentCategoryScope.retirement.includesLegacyInvestmentAccounts)
+
+        #expect(InvestmentCategoryScope.investments.includes(manualAssetKind: .brokerage))
+        #expect(InvestmentCategoryScope.investments.includes(manualAssetKind: .crypto))
+        #expect(!InvestmentCategoryScope.investments.includes(manualAssetKind: .retirement))
+        #expect(InvestmentCategoryScope.retirement.includes(manualAssetKind: .retirement))
+
+        #expect(InvestmentCategoryScope.investments.includes(plaidSubtype: "brokerage"))
+        #expect(!InvestmentCategoryScope.investments.includes(plaidSubtype: "ira"))
+        #expect(InvestmentCategoryScope.retirement.includes(plaidSubtype: "401k"))
+        #expect(!InvestmentCategoryScope.retirement.includes(plaidSubtype: nil))
+    }
+
     private func itemDTO() -> PlaidItemDTO {
         PlaidItemDTO(
             id: "item-1",

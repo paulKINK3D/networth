@@ -6,11 +6,21 @@ public struct NwInlineNotice: View {
     public let tone: Tone
     public let title: String
     public let message: String?
+    public let actionTitle: String?
+    public let action: (() -> Void)?
 
-    public init(_ title: String, message: String? = nil, tone: Tone = .info) {
+    public init(
+        _ title: String,
+        message: String? = nil,
+        tone: Tone = .info,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) {
         self.title = title
         self.message = message
         self.tone = tone
+        self.actionTitle = actionTitle
+        self.action = action
     }
 
     public var body: some View {
@@ -28,6 +38,10 @@ public struct NwInlineNotice: View {
                 }
             }
             Spacer(minLength: 0)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .buttonStyle(NwTintedButtonStyle())
+            }
         }
         .padding(NwSpacing.cardPadding)
         .background(color.opacity(0.10))

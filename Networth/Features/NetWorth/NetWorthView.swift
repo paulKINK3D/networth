@@ -157,7 +157,7 @@ struct NetWorthView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
                     if !hasPrimaryConnection {
-                        NwBanner(
+                        NwInlineNotice(
                             "Connect your accounts",
                             message: "Connect your bank through Plaid in Settings to start tracking.",
                             tone: .info,
@@ -165,7 +165,7 @@ struct NetWorthView: View {
                             action: { SettingsRouter.open() }
                         )
                     } else if case .error(let msg) = container.plaidTransactionSyncCoordinator.phase {
-                        NwBanner(
+                        NwInlineNotice(
                             "Sync issue",
                             message: msg,
                             tone: .caution,
@@ -527,7 +527,11 @@ struct NetWorthView: View {
         let entries = entries(for: category)
         let amount = amount(for: category)
         return NavigationLink {
-            NetWorthCategoryDetailView(category: category, entries: entries, total: amount)
+            categoryDestination(
+                category,
+                entries: entries,
+                total: amount
+            )
         } label: {
             HStack(spacing: NwSpacing.md) {
                 category.icon.image
@@ -557,6 +561,26 @@ struct NetWorthView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func categoryDestination(
+        _ category: NetWorthCategory,
+        entries: [NetWorthEntry],
+        total: Money
+    ) -> some View {
+        switch category {
+        case .investments:
+            InvestmentsView(scope: .investments)
+        case .retirement:
+            InvestmentsView(scope: .retirement)
+        default:
+            NetWorthCategoryDetailView(
+                category: category,
+                entries: entries,
+                total: total
+            )
+        }
     }
 
     private var assetCategories: [NetWorthCategory] {
