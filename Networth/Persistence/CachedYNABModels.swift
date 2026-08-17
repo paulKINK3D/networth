@@ -537,10 +537,10 @@ public final class CachedFinancialAccount {
         Money(milliunits: currentBalanceMilliunits ?? 0)
     }
 
-    public func toAccountSnapshot() -> AccountSnapshot {
+    public func toAccountSnapshot(displayName: String? = nil) -> AccountSnapshot {
         AccountSnapshot(
             id: canonicalAccountId,
-            name: name,
+            name: displayName ?? name,
             kind: kind,
             balance: balance,
             clearedBalance: balance,

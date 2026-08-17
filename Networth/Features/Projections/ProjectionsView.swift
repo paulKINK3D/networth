@@ -4,6 +4,23 @@ import Charts
 import Combine
 import NetworthCore
 
+enum ProjectionAccountWarningCopy {
+    static func title(for account: CashAccountProjection) -> String {
+        "\(account.accountName) may be overdrawn"
+    }
+
+    static func message(for account: CashAccountProjection) -> String {
+        guard let lowPoint = account.projectedShortfallLowPoint else {
+            return "This account is projected to fall below $0."
+        }
+        let amount = CurrencyFormatter.compact(lowPoint.balance.absolute)
+        let date = lowPoint.date.formatted(
+            .dateTime.month(.abbreviated).day()
+        )
+        return "Projected to fall \(amount) below $0 on \(date)."
+    }
+}
+
 /// The app's daily decision surface: what cash is available, what will move,
 /// and whether known obligations plus ordinary spending remain above buffer.
 struct ProjectionsView: View {
@@ -198,13 +215,13 @@ struct ProjectionsView: View {
             } else if let account = data.primaryPaymentAccountShortfall,
                       !data.showsPaymentFundingHeadline {
                 projectionIssueNotice(
-                    "\(account.accountName) also needs funding",
-                    message: "Known commitments take this account to \(CurrencyFormatter.compact(account.projectedShortfallLowPoint?.balance ?? .zero)) on \(account.firstShortfallPoint?.date.formatted(.dateTime.month(.abbreviated).day()) ?? "the projected date")."
+                    ProjectionAccountWarningCopy.title(for: account),
+                    message: ProjectionAccountWarningCopy.message(for: account)
                 )
             } else if let account = data.primaryOtherAccountShortfall {
                 projectionIssueNotice(
-                    "Separate shortfall in \(account.accountName)",
-                    message: "Known activity takes this account to \(CurrencyFormatter.compact(account.projectedShortfallLowPoint?.balance ?? .zero)) on \(account.firstShortfallPoint?.date.formatted(.dateTime.month(.abbreviated).day()) ?? "the projected date")."
+                    ProjectionAccountWarningCopy.title(for: account),
+                    message: ProjectionAccountWarningCopy.message(for: account)
                 )
             } else if let warning = data.incomeWarning {
                 settingsNotice(warning.title, message: warning.message)
@@ -1543,8 +1560,18 @@ private actor ProjectionsDataActor {
                 predicate: #Predicate { !$0.deleted }
             )
         )) ?? []
+        let accountNicknames = (try? context.fetch(
+            FetchDescriptor<DurableAccountNickname>()
+        )) ?? []
+        let accountNameResolver = AccountDisplayNameResolver(
+            nicknames: accountNicknames
+        )
         let availableAccounts = usesPlaid
-            ? financialRows.map { $0.toAccountSnapshot() }
+            ? financialRows.map {
+                $0.toAccountSnapshot(
+                    displayName: accountNameResolver.name(for: $0)
+                )
+            }
             : accountRows.map { $0.toSnapshot() }
         let cashAccountOverrides = (try? context.fetch(
             FetchDescriptor<DurableProjectionCashAccountOverride>()

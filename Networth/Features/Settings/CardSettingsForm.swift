@@ -18,6 +18,7 @@ struct CardSettingsForm: View {
     @Query(sort: \CachedFinancialAccount.name)
     private var financialAccounts: [CachedFinancialAccount]
     @Query private var canonicalBindings: [DurableCanonicalAccountBinding]
+    @Query private var accountNicknames: [DurableAccountNickname]
 
     @State private var cycleDay: Int = 1
     @State private var dueDay: Int = 1
@@ -161,7 +162,14 @@ struct CardSettingsForm: View {
         if target.isCanonical {
             return financialAccounts
                 .filter { !$0.deleted && $0.type.isCashLike }
-                .map { ($0.canonicalAccountId, $0.name) }
+                .map {
+                    (
+                        $0.canonicalAccountId,
+                        AccountDisplayNameResolver(
+                            nicknames: accountNicknames
+                        ).name(for: $0)
+                    )
+                }
         }
         return accounts
             .filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }

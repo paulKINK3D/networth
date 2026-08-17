@@ -82,6 +82,10 @@ struct AppContainerTests {
             creditLimitMilliunits: nil,
             isoCurrencyCode: "USD"
         ))
+        context.insert(DurableAccountNickname(
+            plaidAccountId: "private-provider-account-id",
+            nickname: "Household Checking"
+        ))
         let confirmed = FinancialTransactionSummary(
             id: "plaid:confirmed",
             externalId: "confirmed",
@@ -174,7 +178,7 @@ struct AppContainerTests {
         let uploaded = await plaidClient.uploadedClaudeSnapshots
         let snapshot = try #require(uploaded.last)
         #expect(snapshot.accounts.count == 1)
-        #expect(snapshot.accounts[0].name == "Checking")
+        #expect(snapshot.accounts[0].name == "Household Checking")
         #expect(snapshot.transactions.count == 1)
         #expect(snapshot.transactions[0].contactName == "Market")
         #expect(settings.claudeDataSyncEnabled)
@@ -185,6 +189,77 @@ struct AppContainerTests {
         #expect(await plaidClient.claudeAccessRevoked)
         #expect(settings.claudeDataSyncEnabled == false)
         #expect(settings.claudeDataLastSyncedAt == nil)
+    }
+
+    @Test func accountDisplayNameUsesNewestDurableNickname() {
+        let providerAccount = CachedPlaidAccount(
+            id: "plaid-account",
+            itemId: "item",
+            institutionName: "Bank",
+            name: "Imported Name"
+        )
+        let old = DurableAccountNickname(
+            plaidAccountId: providerAccount.id,
+            nickname: "Old Name",
+            updatedAt: Date(timeIntervalSince1970: 1)
+        )
+        let newest = DurableAccountNickname(
+            plaidAccountId: providerAccount.id,
+            nickname: "Travel Account",
+            updatedAt: Date(timeIntervalSince1970: 2)
+        )
+
+        let resolver = AccountDisplayNameResolver(
+            nicknames: [newest, old]
+        )
+
+        #expect(resolver.name(for: providerAccount) == "Travel Account")
+        #expect(providerAccount.name == "Imported Name")
+    }
+
+    @Test func accountWarningUsesTheProjectedLowPointAmountAndDate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let firstBreachDate = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 1,
+            day: 15,
+            hour: 12
+        )))
+        let lowPointDate = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 1,
+            day: 20,
+            hour: 12
+        )))
+        let firstBreach = CashPositionPoint(
+            date: firstBreachDate,
+            balance: Money.dollars(-62)
+        )
+        let lowPoint = CashPositionPoint(
+            date: lowPointDate,
+            balance: Money.dollars(-125)
+        )
+        let account = CashAccountProjection(
+            accountId: "checking",
+            accountName: "Bills Checking",
+            startingBalance: Money.dollars(1_000),
+            points: [firstBreach, lowPoint],
+            lowPoint: lowPoint,
+            firstShortfallPoint: firstBreach,
+            projectedShortfallLowPoint: lowPoint,
+            lowPointEvent: nil,
+            fundsCardPayments: false
+        )
+
+        #expect(
+            ProjectionAccountWarningCopy.title(for: account)
+                == "Bills Checking may be overdrawn"
+        )
+        #expect(
+            ProjectionAccountWarningCopy.message(for: account)
+                == "Projected to fall $125 below $0 on Jan 20."
+        )
     }
 
     @Test func bootstrapRunsPendingHistoricalReconciliationWithoutNetworkSync() async throws {

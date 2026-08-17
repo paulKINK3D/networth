@@ -1,6 +1,8 @@
 # Projection State and Language Plan
 
-**Status:** Planning reference; scenario coverage is defined, but final user-facing wording is not yet approved.
+**Status:** Planning reference. Account-underfunding copy was approved on
+2026-08-16; final user-facing wording for the other scenarios is not yet
+approved.
 
 The Projections screen needs to distinguish four fundamentally different kinds of states. Their language and metrics must not be used interchangeably:
 
@@ -58,6 +60,20 @@ Each state should use the same information hierarchy:
 3. **Supporting line:** Lowest balance and date, or the immediate cause.
 4. **Why:** The full calculation and contributing events.
 
+## Approved Account-Underfunding Copy
+
+For either a payment account or another individual cash account whose projected
+balance falls below zero:
+
+- **Title:** `[Account name] may be overdrawn`
+- **Message:** `Projected to fall $X below $0 on [date].`
+
+The amount and date must come from the same projected account low point. Do not
+pair the worst-balance amount with the earlier first-breach date.
+
 ## Next Product Decision
 
-Choose and approve the exact wording for every scenario before changing the implementation again. The language must make the distinction between comfort-level warnings, actual shortages, account-transfer needs, and incomplete forecasts immediately clear.
+Choose and approve the exact wording for every remaining scenario before
+changing its implementation again. The language must make the distinction
+between comfort-level warnings, actual shortages, account-transfer needs, and
+incomplete forecasts immediately clear.

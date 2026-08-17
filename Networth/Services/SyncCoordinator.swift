@@ -4485,6 +4485,11 @@ enum ClaudeFinancialSnapshotBuilder {
         let plaidTreatments = try mainContext.fetch(
             FetchDescriptor<DurablePlaidAccountTreatment>()
         )
+        let accountNameResolver = AccountDisplayNameResolver(
+            nicknames: try mainContext.fetch(
+                FetchDescriptor<DurableAccountNickname>()
+            )
+        )
         let resolver = PlaidContributionResolver(
             plaidAccounts: plaidAccounts,
             treatments: plaidTreatments,
@@ -4497,7 +4502,8 @@ enum ClaudeFinancialSnapshotBuilder {
             accounts: try accountDTOs(
                 mainContext: mainContext,
                 source: primarySource,
-                budgetID: settings?.selectedBudgetId
+                budgetID: settings?.selectedBudgetId,
+                accountNameResolver: accountNameResolver
             ),
             manualAssets: manualAssets
                 .map {
@@ -4515,7 +4521,8 @@ enum ClaudeFinancialSnapshotBuilder {
                 mainContext: mainContext,
                 accounts: plaidAccounts,
                 includedAccountIDs:
-                    resolver.contributingPlaidAccountIDs
+                    resolver.contributingPlaidAccountIDs,
+                accountNameResolver: accountNameResolver
             ),
             transactions: try transactionDTOs(
                 mainContext: mainContext,
@@ -4531,7 +4538,8 @@ enum ClaudeFinancialSnapshotBuilder {
     private static func accountDTOs(
         mainContext: ModelContext,
         source: FinancialDataSource,
-        budgetID: String?
+        budgetID: String?,
+        accountNameResolver: AccountDisplayNameResolver
     ) throws -> [ClaudeAccountDTO] {
         if source == .plaid {
             return try mainContext.fetch(
@@ -4540,7 +4548,7 @@ enum ClaudeFinancialSnapshotBuilder {
             .filter { !$0.deleted }
             .map {
                 ClaudeAccountDTO(
-                    name: $0.name,
+                    name: accountNameResolver.name(for: $0),
                     institutionName:
                         $0.institutionName?.trimmed.nilIfEmpty,
                     type: $0.type.rawValue,
@@ -4576,7 +4584,8 @@ enum ClaudeFinancialSnapshotBuilder {
     private static func holdingDTOs(
         mainContext: ModelContext,
         accounts: [CachedPlaidAccount],
-        includedAccountIDs: Set<String>
+        includedAccountIDs: Set<String>,
+        accountNameResolver: AccountDisplayNameResolver
     ) throws -> [ClaudeHoldingDTO] {
         let accountByID = Dictionary(
             uniqueKeysWithValues: accounts.compactMap {
@@ -4604,7 +4613,7 @@ enum ClaudeFinancialSnapshotBuilder {
                 ?? security.tickerSymbol?.trimmed.nilIfEmpty
                 ?? "Unknown security"
             return ClaudeHoldingDTO(
-                accountName: account.name,
+                accountName: accountNameResolver.name(for: account),
                 institutionName:
                     account.institutionName.trimmed.nilIfEmpty,
                 securityName: securityName,

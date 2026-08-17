@@ -68,7 +68,8 @@ The near-term priority is to make Projections the clearest and most trustworthy 
   - Daily per-account Plaid investment balances and inactive end markers
   - User settings, projection configuration, Face ID toggle
   - Canonical account mappings, editable YNAB-seeded contacts/categories,
-    Plaid aliases, and transaction-specific decisions
+    Plaid aliases, user-authored Plaid account nicknames, and
+    transaction-specific decisions
 - Daily net worth snapshot job runs once per day.
 - **Local App Group only:** BL IBR's opt-in loan summary and dated balances remain in `group.com.bluelava.me.financial`. Networth holds the decoded document in memory and does not copy IBR fields into SwiftData or CloudKit.
 
@@ -194,6 +195,19 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-08-16** — Imported Plaid account names remain unchanged in the local
+  provider cache. A user may assign a durable display name from banking, card,
+  or investment account detail; the additive private-CloudKit override is
+  keyed by Plaid account ID and applies consistently throughout the app and to
+  the optional Claude financial snapshot. Restoring the imported name deletes
+  the override. All fields have defaults, no legacy-field cleanup is required,
+  and removing an override immediately falls back to the current provider
+  name.
+- **2026-08-16** — Account-specific projection warnings use
+  `[Account name] may be overdrawn` and `Projected to fall $X below $0 on
+  [date].` The amount and date describe the same projected low point. This
+  approves only account-underfunding copy; exact language for other projection
+  scenarios remains a separate product decision.
 - **2026-08-14** — The four tabs are ordered Spending, Projections, Goals, and
   Net Worth. Spending is the initial tab, reflecting the app's everyday review
   flow; Net Worth remains the supporting long-term scorecard at the trailing

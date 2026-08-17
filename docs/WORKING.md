@@ -1,10 +1,29 @@
 # WORKING
 
-## Resume here — ordered next work (2026-08-15)
+## Resume here — ordered next work (2026-08-16)
 
 ### Repository handoff
 
 - Active branch: `projection-explainability`.
+- Plaid banking, card, and investment accounts now support durable custom
+  names from their detail screens. The user-authored name is stored as an
+  additive private-CloudKit override keyed by Plaid account ID; imported names
+  remain untouched in the disposable cache and are shown in detail for context
+  and reset. The override is used consistently in Net Worth, Projections,
+  Investments, Goals, Settings, transaction account labels, and the optional
+  Claude financial snapshot. Resetting to the imported name deletes the
+  override. The additive model has defaulted fields, requires no legacy-field
+  cleanup, and does not rename or migrate provider cache rows.
+- Account-specific projection warnings now use the approved wording
+  `[Account name] may be overdrawn` with `Projected to fall $X below $0 on
+  [date].` Both the amount and date come from the projected account low point,
+  avoiding the prior mismatch between a first-breach date and worst-balance
+  amount. Exact wording for the other projection scenarios remains parked.
+- Validation for this checkpoint: generic-device Debug
+  `build-for-testing` and a generic-device Release build pass. The app test
+  bundle includes regression coverage for nickname precedence and for pairing
+  the warning's amount and date to the same low point. Tests were not run
+  because simulator execution was not requested; NetworthCore was unchanged.
 - Projection trouble states now have the same one-tap explainability path as
   the healthy state. Tight, negative, setup-incomplete, limited-history, and
   underfunded-account headlines open Projection Details; the previously unused
@@ -128,9 +147,10 @@
   found.
 - Final checkpoint validation: NetworthCore 221/221, generic-device Debug, and
   generic-device Release builds pass. Simulator execution was not requested.
-- Immediate next step: **push this approved checkpoint and merge it into
-  `main`**. Projection wording remains parked; do not change it without a new
-  product discussion.
+- Immediate next step: **review one renamed banking or investment account and
+  its Projections warning on the physical device**, then commit and push this
+  checkpoint. Wording for projection scenarios other than account overdraft
+  remains parked; do not change it without a new product discussion.
 
 ### Ordered backlog
 
@@ -234,10 +254,28 @@
      import, history review, and reclassification.
    - Normal transaction-import copy no longer names YNAB. A generic-device
      Debug build passes.
+17. **Add durable custom account names — complete**
+   - Plaid banking, card, and investment account details expose a rename
+     action. The imported provider name remains visible and can be restored.
+   - The private-CloudKit override is used across account labels, projections,
+     goals, settings, transaction review, and the optional Claude snapshot.
+18. **Clarify account-specific projection warnings — complete**
+   - Warnings say the named account may be overdrawn and state how far below
+     zero its projected low falls and on which date.
+   - Amount and date are derived from the same low point.
+19. **Rethink account-management organization — open**
+   - Account viewing and management are scattered across Net Worth category
+     drill-downs, investment details, Settings → Accounts & Sync, Projection
+     cash-account selection, and Goal Accounts.
+   - Reconsider the information architecture so there is one obvious place to
+     find an account, rename it, review its source and sync state, control its
+     inclusion, and reach feature-specific settings without duplicating those
+     controls or rebuilding an Accounts tab by default.
 
 ### Parked
 
-- Exact Outlook wording across projection scenarios.
+- Exact Outlook wording across projection scenarios other than the approved
+  account-underfunding warning.
 - Full Projection Audit and local reproducibility CSV export.
 - Removal of legacy YNAB scaffolding and relocation of repair tools to
   Advanced.

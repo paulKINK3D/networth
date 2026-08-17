@@ -802,6 +802,63 @@ public final class DurableCanonicalAccountBinding {
     }
 }
 
+/// User-authored display name for a Plaid account. Provider names remain in
+/// the disposable caches and continue refreshing normally; this durable
+/// override is applied only when presenting an account to the user.
+@Model
+public final class DurableAccountNickname {
+    public var id: UUID = UUID()
+    public var plaidAccountId: String = ""
+    public var nickname: String = ""
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        plaidAccountId: String = "",
+        nickname: String = "",
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.plaidAccountId = plaidAccountId
+        self.nickname = nickname
+        self.updatedAt = updatedAt
+    }
+}
+
+/// Read-only lookup used by views and services so the durable nickname policy
+/// is identical everywhere. Duplicate legacy rows resolve deterministically
+/// to the most recently updated non-empty value.
+struct AccountDisplayNameResolver {
+    private let nicknameByPlaidAccountId: [String: String]
+
+    init(nicknames: [DurableAccountNickname]) {
+        var resolved: [String: String] = [:]
+        for row in nicknames.sorted(by: { $0.updatedAt < $1.updatedAt }) {
+            let accountID = row.plaidAccountId.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let nickname = row.nickname.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !accountID.isEmpty, !nickname.isEmpty else { continue }
+            resolved[accountID] = nickname
+        }
+        nicknameByPlaidAccountId = resolved
+    }
+
+    func name(plaidAccountId: String, providerName: String) -> String {
+        nicknameByPlaidAccountId[plaidAccountId] ?? providerName
+    }
+
+    func name(for account: CachedFinancialAccount) -> String {
+        name(plaidAccountId: account.externalId, providerName: account.name)
+    }
+
+    func name(for account: CachedPlaidAccount) -> String {
+        name(plaidAccountId: account.id, providerName: account.name)
+    }
+}
+
 @Model
 public final class DurableMerchantRule {
     public var id: UUID = UUID()

@@ -124,6 +124,7 @@ struct NetWorthView: View {
     @Query private var userSettings: [DurableUserSettings]
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
+    @Query private var accountNicknames: [DurableAccountNickname]
 
     @State private var range: Range = .twelveMonths
     @State private var showingTrendDetail = false
@@ -683,7 +684,7 @@ struct NetWorthView: View {
                 let mask = account.mask.map { " •••• \($0)" } ?? ""
                 return NetWorthEntry(
                     id: "financial:\(account.canonicalAccountId)",
-                    name: account.name,
+                    name: accountNameResolver.name(for: account),
                     subtitle: "\(account.institutionName ?? accountKindLabel(account.kind))\(mask)",
                     amount: category.isLiability ? account.balance.absolute : account.balance,
                     updatedAt: account.updatedAt,
@@ -723,7 +724,7 @@ struct NetWorthView: View {
                 let mask = account.mask.map { " •••• \($0)" } ?? ""
                 return NetWorthEntry(
                     id: "plaid:\(account.id)",
-                    name: account.name,
+                    name: accountNameResolver.name(for: account),
                     subtitle: "\(account.institutionName)\(mask)",
                     amount: balance,
                     updatedAt: nil,
@@ -752,6 +753,10 @@ struct NetWorthView: View {
             if lhs.amount != rhs.amount { return lhs.amount > rhs.amount }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
+    }
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
     }
 
     private func manualAsset(

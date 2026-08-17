@@ -400,6 +400,7 @@ struct GoalReservePickerSheet: View {
     @Query private var accounts: [CachedFinancialAccount]
     @Query private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
+    @Query private var accountNicknames: [DurableAccountNickname]
     @Query(sort: \DurableManualAsset.name)
     private var manualAssets: [DurableManualAsset]
     @Query private var reserveRows: [DurableGoalReserveAccount]
@@ -434,13 +435,19 @@ struct GoalReservePickerSheet: View {
                     && ($0.isoCurrencyCode ?? "USD") == "USD"
             }
             .sorted {
-                return $0.name.localizedCaseInsensitiveCompare($1.name)
-                    == .orderedAscending
+                return accountNameResolver.name(for: $0)
+                    .localizedCaseInsensitiveCompare(
+                        accountNameResolver.name(for: $1)
+                    ) == .orderedAscending
             }
     }
 
     private var activeReserveIds: Set<String> {
         Set(reserveRows.filter(\.active).map(\.canonicalAccountId))
+    }
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
     }
 
     private var manualResolver: PlaidContributionResolver {
@@ -520,7 +527,7 @@ struct GoalReservePickerSheet: View {
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(account.name)
+                    Text(accountNameResolver.name(for: account))
                         .font(NwTypography.body)
                         .foregroundStyle(NwAppColors.textPrimary)
                     HStack(spacing: NwSpacing.xs) {
@@ -563,7 +570,7 @@ struct GoalReservePickerSheet: View {
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(account.name)
+                    Text(accountNameResolver.name(for: account))
                         .font(NwTypography.body)
                         .foregroundStyle(NwAppColors.textPrimary)
                     HStack(spacing: NwSpacing.xs) {
@@ -671,7 +678,7 @@ struct GoalReservePickerSheet: View {
                     reattach(reserve, to: candidate)
                 } label: {
                     Label(
-                        "Re-attach to \(candidate.name)",
+                        "Re-attach to \(accountNameResolver.name(for: candidate))",
                         systemImage: "link"
                     )
                     .font(NwTypography.footnote)
@@ -709,9 +716,14 @@ struct GoalReservePickerSheet: View {
                     try service.removeReserveAccount(row)
                 }
             } else if account.currentBalanceMilliunits == nil {
-                failure = "\(account.name) has no reported balance yet."
+                failure = "\(accountNameResolver.name(for: account)) has no reported balance yet."
             } else {
-                try service.addReserveAccount(account)
+                try service.addReserveAccount(
+                    canonicalAccountId: account.canonicalAccountId,
+                    accountName: accountNameResolver.name(for: account),
+                    institutionName: account.institutionName ?? "",
+                    mask: account.mask ?? ""
+                )
             }
         } catch {
             failure = error.localizedDescription
@@ -735,7 +747,7 @@ struct GoalReservePickerSheet: View {
                 // The Plaid account id is the reserve key for investments.
                 try service.addReserveAccount(
                     canonicalAccountId: account.id,
-                    accountName: account.name,
+                    accountName: accountNameResolver.name(for: account),
                     institutionName: account.institutionName,
                     mask: account.mask ?? ""
                 )
@@ -1115,6 +1127,7 @@ struct GoalTransferRequestSheet: View {
     @Query private var reserves: [DurableGoalReserveAccount]
     @Query private var transactions: [CachedFinancialTransaction]
     @Query private var financialAccounts: [CachedFinancialAccount]
+    @Query private var accountNicknames: [DurableAccountNickname]
     let requestId: UUID
 
     @State private var matchCandidateId: String?
@@ -1153,8 +1166,10 @@ struct GoalTransferRequestSheet: View {
                 && $0.currentBalanceMilliunits != nil
                 && ($0.isoCurrencyCode ?? "USD") == "USD"
         }.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name)
-                == .orderedAscending
+            accountNameResolver.name(for: $0)
+                .localizedCaseInsensitiveCompare(
+                    accountNameResolver.name(for: $1)
+                ) == .orderedAscending
         }
     }
 
@@ -1196,7 +1211,8 @@ struct GoalTransferRequestSheet: View {
                         ) {
                             Text("Select Account").tag(String?.none)
                             ForEach(cashflowAccounts) { account in
-                                Text(account.name).tag(String?.some(
+                                Text(accountNameResolver.name(for: account))
+                                    .tag(String?.some(
                                     account.canonicalAccountId
                                 ))
                             }
@@ -1292,6 +1308,10 @@ struct GoalTransferRequestSheet: View {
                 }
             }
         }
+    }
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
     }
 
     private func goalAccountBinding(

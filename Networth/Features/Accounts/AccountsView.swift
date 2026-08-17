@@ -12,6 +12,7 @@ struct AccountsView: View {
     @Query private var plaidItems: [CachedPlaidItem]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
     @Query private var canonicalBindings: [DurableCanonicalAccountBinding]
+    @Query private var accountNicknames: [DurableAccountNickname]
     @Query private var plaidTransactionCursors: [PlaidTransactionCursor]
     @Query(sort: \DurableCanonicalPayee.name)
     private var canonicalPayees: [DurableCanonicalPayee]
@@ -434,7 +435,8 @@ struct AccountsView: View {
                 .foregroundStyle(isLiability ? NwAppColors.liability : NwAppColors.primary)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text(account.name).font(NwTypography.body)
+                Text(accountNameResolver.name(for: account))
+                    .font(NwTypography.body)
                 Text(financialAccountSubtitle(account))
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
@@ -478,7 +480,9 @@ struct AccountsView: View {
 
     private var standalonePlaidInvestmentAccounts: [CachedPlaidAccount] {
         plaidResolver.standalonePlaidAccounts.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            accountNameResolver.name(for: $0).localizedCaseInsensitiveCompare(
+                accountNameResolver.name(for: $1)
+            ) == .orderedAscending
         }
     }
 
@@ -498,7 +502,8 @@ struct AccountsView: View {
                 .foregroundStyle(NwAppColors.primary)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text(account.name).font(NwTypography.body)
+                Text(accountNameResolver.name(for: account))
+                    .font(NwTypography.body)
                 Text("\(account.institutionName)\(mask)")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
@@ -519,6 +524,10 @@ struct AccountsView: View {
         return financialAccounts.first {
             $0.canonicalAccountId == canonicalID && !$0.deleted
         }
+    }
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
     }
 
     private func accountSectionTotal(_ section: AccountSection) -> Money {
@@ -614,7 +623,10 @@ struct AccountsView: View {
                     return account.kind == .otherLiability
                 }
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name)
+                    == .orderedAscending
+            }
             guard !matching.isEmpty else { return nil }
             return AccountSection(kind: kind, accounts: matching)
         }
@@ -634,7 +646,12 @@ struct AccountsView: View {
                 case .otherLiabilities: account.type == .other && account.balance.isNegative
                 }
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .sorted {
+                accountNameResolver.name(for: $0)
+                    .localizedCaseInsensitiveCompare(
+                        accountNameResolver.name(for: $1)
+                    ) == .orderedAscending
+            }
             guard !matching.isEmpty else { return nil }
             return FinancialAccountSection(kind: kind, accounts: matching)
         }
@@ -971,9 +988,121 @@ struct LinkedIBRLoanDetailView: View {
     }
 }
 
+struct AccountNicknameSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var context
+    @Query private var nicknames: [DurableAccountNickname]
+    @Query private var goalReserves: [DurableGoalReserveAccount]
+
+    let plaidAccountId: String
+    let canonicalAccountId: String?
+    let providerName: String
+
+    @State private var name: String
+    @State private var saveError: String?
+
+    init(
+        plaidAccountId: String,
+        canonicalAccountId: String? = nil,
+        providerName: String,
+        currentName: String
+    ) {
+        self.plaidAccountId = plaidAccountId
+        self.canonicalAccountId = canonicalAccountId
+        self.providerName = providerName
+        _name = State(initialValue: currentName)
+    }
+
+    var body: some View {
+        NwModalLayout(
+            title: "Account Name",
+            onClose: { dismiss() },
+            onConfirm: save,
+            confirmDisabled: cleanedName.isEmpty
+        ) {
+            if let saveError {
+                NwInlineNotice(
+                    "Couldn't save",
+                    message: saveError,
+                    tone: .warning
+                )
+            }
+
+            TextField("Account name", text: $name)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+                .padding(NwSpacing.md)
+                .background(NwAppColors.cardSurface)
+                .clipShape(RoundedRectangle(
+                    cornerRadius: NwCornerRadius.md,
+                    style: .continuous
+                ))
+
+            VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                Text("Imported name")
+                    .font(NwTypography.caption)
+                    .foregroundStyle(.secondary)
+                Text(providerName)
+                    .font(NwTypography.body)
+            }
+
+            if cleanedName != cleanedProviderName {
+                Button("Use Imported Name") {
+                    name = providerName
+                    saveError = nil
+                }
+                .buttonStyle(NwSecondaryButtonStyle())
+            }
+        }
+    }
+
+    private var cleanedName: String {
+        String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+    }
+
+    private var cleanedProviderName: String {
+        providerName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func save() {
+        let matches = nicknames.filter {
+            $0.plaidAccountId == plaidAccountId
+        }
+        if cleanedName == cleanedProviderName {
+            matches.forEach(context.delete)
+        } else if let existing = matches.first {
+            existing.nickname = cleanedName
+            existing.updatedAt = .now
+            matches.dropFirst().forEach(context.delete)
+        } else {
+            context.insert(DurableAccountNickname(
+                plaidAccountId: plaidAccountId,
+                nickname: cleanedName
+            ))
+        }
+
+        let reserveIDs = Set([plaidAccountId, canonicalAccountId].compactMap {
+            $0
+        })
+        for reserve in goalReserves
+        where reserveIDs.contains(reserve.canonicalAccountId) {
+            reserve.accountName = cleanedName
+            reserve.updatedAt = .now
+        }
+
+        guard context.safeSave(source: "account.nickname.save") else {
+            saveError = "Your account name wasn't saved. Try again."
+            return
+        }
+        dismiss()
+    }
+}
+
 struct FinancialAccountDetailView: View {
     let account: CachedFinancialAccount
     @Query private var recentTransactions: [CachedFinancialTransaction]
+    @Query private var accountNicknames: [DurableAccountNickname]
+    @State private var showingRename = false
 
     init(account: CachedFinancialAccount) {
         self.account = account
@@ -1007,6 +1136,11 @@ struct FinancialAccountDetailView: View {
                             variant: .large,
                             color: account.kind.isLiability ? NwAppColors.liability : nil
                         )
+                        if displayName != account.name {
+                            Text("Imported as \(account.name)")
+                                .font(NwTypography.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         if let available = account.availableBalanceMilliunits {
                             Divider()
                             HStack {
@@ -1101,8 +1235,31 @@ struct FinancialAccountDetailView: View {
             .padding(.vertical, NwSpacing.lg)
         }
         .background(NwAppColors.background.ignoresSafeArea())
-        .navigationTitle(account.name)
+        .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingRename = true
+                } label: {
+                    Image(systemName: "pencil.circle")
+                }
+                .accessibilityLabel("Rename account")
+            }
+        }
+        .sheet(isPresented: $showingRename) {
+            AccountNicknameSheet(
+                plaidAccountId: account.externalId,
+                canonicalAccountId: account.canonicalAccountId,
+                providerName: account.name,
+                currentName: displayName
+            )
+        }
+    }
+
+    private var displayName: String {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
+            .name(for: account)
     }
 
     private var moneyIn: Money {

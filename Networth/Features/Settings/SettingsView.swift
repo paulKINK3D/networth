@@ -45,6 +45,7 @@ struct SettingsView: View {
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
     @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
+    @Query private var accountNicknames: [DurableAccountNickname]
     @Query(sort: \DurableCanonicalPayee.name)
     private var canonicalPayees: [DurableCanonicalPayee]
     @Query(sort: \DurableCanonicalCategory.name)
@@ -1030,7 +1031,7 @@ struct SettingsView: View {
                 .map {
                     CardSettingsTarget(
                         id: $0.canonicalAccountId,
-                        name: $0.name,
+                        name: accountNameResolver.name(for: $0),
                         isCanonical: true
                     )
                 }
@@ -1049,13 +1050,20 @@ struct SettingsView: View {
         ]
         .compactMap { id -> String? in
             guard let id else { return nil }
-            return financialAccounts.first {
+            if let financialAccount = financialAccounts.first(where: {
                 $0.canonicalAccountId == id
-            }?.name ?? accounts.first { $0.id == id }?.name
+            }) {
+                return accountNameResolver.name(for: financialAccount)
+            }
+            return accounts.first { $0.id == id }?.name
         }
         .first
         guard let paymentName else { return "Finish setup" }
         return "Closes \(setting.statementCycleDay) · pays \(setting.paymentDueDay)\n\(paymentName)"
+    }
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
     }
 
     private func icon(for kind: ManualAssetKind) -> NwIcon {
@@ -1253,6 +1261,7 @@ private struct ProjectionCashAccountsSheet: View {
     @Query private var userSettings: [DurableUserSettings]
     @Query private var overrides: [DurableProjectionCashAccountOverride]
     @Query private var goalReserves: [DurableGoalReserveAccount]
+    @Query private var accountNicknames: [DurableAccountNickname]
 
     private var cashAccounts: [CachedAccount] {
         accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
@@ -1286,7 +1295,8 @@ private struct ProjectionCashAccountsSheet: View {
                                 NwIcon.forAccountKind(account.kind.rawValue).image
                                     .foregroundStyle(NwAppColors.primary)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(account.name).foregroundStyle(NwAppColors.textPrimary)
+                                    Text(accountNameResolver.name(for: account))
+                                        .foregroundStyle(NwAppColors.textPrimary)
                                     Text(isGoalReserve(account)
                                         ? "Backs goals — managed in Goals"
                                         : account.institutionName ?? "Plaid")
@@ -1345,7 +1355,18 @@ private struct ProjectionCashAccountsSheet: View {
     }
 
     private var plaidCashAccounts: [CachedFinancialAccount] {
-        financialAccounts.filter { !$0.deleted && $0.type.isCashLike }
+        financialAccounts
+            .filter { !$0.deleted && $0.type.isCashLike }
+            .sorted {
+                accountNameResolver.name(for: $0)
+                    .localizedCaseInsensitiveCompare(
+                        accountNameResolver.name(for: $1)
+                    ) == .orderedAscending
+            }
+    }
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
     }
 
     private func isGoalReserve(_ account: CachedFinancialAccount) -> Bool {
@@ -1958,6 +1979,7 @@ struct PlaidClassificationReviewSheet: View {
     @SwiftUI.Environment(\.modelContext) private var modelContext
     @Query(sort: \CachedFinancialAccount.name)
     private var financialAccounts: [CachedFinancialAccount]
+    @Query private var accountNicknames: [DurableAccountNickname]
     @State private var transactions: [CachedFinancialTransaction] = []
     @State private var isLoading = false
     @State private var hasMore = true
@@ -2189,7 +2211,8 @@ struct PlaidClassificationReviewSheet: View {
                 : transaction.forecastTreatment.displayName
         let account = plaidTransactionAccountLabel(
             for: transaction,
-            financialAccounts: financialAccounts
+            financialAccounts: financialAccounts,
+            accountNicknames: accountNicknames
         )
         return "\(classification) · \(account)"
     }
@@ -3241,6 +3264,7 @@ struct PlaidTransactionReviewEditor: View {
     @Query private var durableCategoryGroups: [DurableCategoryGroup]
     @Query(sort: \CachedFinancialAccount.name)
     private var financialAccounts: [CachedFinancialAccount]
+    @Query private var accountNicknames: [DurableAccountNickname]
     @Query(sort: \DurableGoal.name)
     private var goalRows: [DurableGoal]
     let transaction: CachedFinancialTransaction
@@ -4120,7 +4144,8 @@ struct PlaidTransactionReviewEditor: View {
     ) -> String {
         plaidTransactionAccountLabel(
             for: item,
-            financialAccounts: financialAccounts
+            financialAccounts: financialAccounts,
+            accountNicknames: accountNicknames
         )
     }
 
@@ -4193,7 +4218,8 @@ struct PlaidTransactionReviewEditor: View {
 
 private func plaidTransactionAccountLabel(
     for item: CachedFinancialTransaction,
-    financialAccounts: [CachedFinancialAccount]
+    financialAccounts: [CachedFinancialAccount],
+    accountNicknames: [DurableAccountNickname]
 ) -> String {
     guard let account = financialAccounts.first(where: {
         $0.canonicalAccountId == item.canonicalAccountId
@@ -4201,7 +4227,9 @@ private func plaidTransactionAccountLabel(
         return "Unknown account"
     }
     let mask = account.mask.map { " •••• \($0)" } ?? ""
-    return "\(account.name)\(mask)"
+    let name = AccountDisplayNameResolver(nicknames: accountNicknames)
+        .name(for: account)
+    return "\(name)\(mask)"
 }
 
 private struct CanonicalPayeePicker: View {
@@ -4788,6 +4816,7 @@ struct PlaidAccountReviewSheet: View {
     @Query(sort: \CachedAccount.name) private var ynabAccounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
     @Query private var treatments: [DurablePlaidAccountTreatment]
+    @Query private var accountNicknames: [DurableAccountNickname]
     @State private var matchRequest: PlaidMatchRequest?
 
     var body: some View {
@@ -4797,7 +4826,7 @@ struct PlaidAccountReviewSheet: View {
                     Section {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(account.name)
+                                Text(accountNameResolver.name(for: account))
                                     .font(NwTypography.bodyEmphasis)
                                 Text(accountSubtitle(account))
                                     .font(NwTypography.footnote)
@@ -4864,6 +4893,10 @@ struct PlaidAccountReviewSheet: View {
 
     private var eligibleYNABAccounts: [CachedAccount] {
         ynabAccounts.filter { !$0.deleted && !$0.closed && $0.kind == .investment }
+    }
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
     }
 
     private var eligibleManualAssets: [DurableManualAsset] {

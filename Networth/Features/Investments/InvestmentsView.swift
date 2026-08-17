@@ -97,6 +97,7 @@ struct InvestmentsView: View {
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidItems: [CachedPlaidItem]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
+    @Query private var accountNicknames: [DurableAccountNickname]
     @Query(sort: \DurablePlaidBalanceSnapshot.date) private var plaidBalanceSnapshots: [DurablePlaidBalanceSnapshot]
 
     @State private var range: InvestmentRange = .oneYear
@@ -121,6 +122,7 @@ struct InvestmentsView: View {
             "\(accounts.count)",
             "\(manualAssets.count)", "\(plaidBalanceSnapshots.count)",
             "\(plaidAccounts.count)", "\(plaidTreatments.count)",
+            "\(accountNicknames.count)",
             userSettings.first?.primaryFinancialDataSourceRaw ?? "",
             range.rawValue, scope.rawValue
         ].joined(separator: "|")
@@ -202,7 +204,9 @@ struct InvestmentsView: View {
             + scopedPlaidAccounts.map(InvestmentHolding.plaid)
         return values.sorted {
             if $0.value != $1.value { return $0.value > $1.value }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            return holdingName($0).localizedCaseInsensitiveCompare(
+                holdingName($1)
+            ) == .orderedAscending
         }
     }
 
@@ -415,7 +419,7 @@ struct InvestmentsView: View {
                 .foregroundStyle(NwAppColors.primary)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text(holding.name)
+                Text(holdingName(holding))
                     .font(NwTypography.bodyEmphasis)
                     .foregroundStyle(NwAppColors.textPrimary)
                 Text(holding.subtitle)
@@ -442,6 +446,16 @@ struct InvestmentsView: View {
                 .environment(container)
         case .plaid(let account):
             PlaidInvestmentAccountDetailView(account: account)
+        }
+    }
+
+    private func holdingName(_ holding: InvestmentHolding) -> String {
+        switch holding {
+        case .plaid(let account):
+            return AccountDisplayNameResolver(nicknames: accountNicknames)
+                .name(for: account)
+        default:
+            return holding.name
         }
     }
 
@@ -680,6 +694,8 @@ struct PlaidInvestmentAccountDetailView: View {
     @Query private var holdings: [CachedPlaidHolding]
     @Query private var securities: [CachedPlaidSecurity]
     @Query private var items: [CachedPlaidItem]
+    @Query private var accountNicknames: [DurableAccountNickname]
+    @State private var showingRename = false
 
     init(account: CachedPlaidAccount) {
         self.account = account
@@ -699,6 +715,11 @@ struct PlaidInvestmentAccountDetailView: View {
                             .font(NwTypography.caption)
                             .foregroundStyle(.secondary)
                         NwAmountText(account.currentBalance ?? .zero, variant: .large)
+                        if displayName != account.name {
+                            Text("Imported as \(account.name)")
+                                .font(NwTypography.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         HStack(spacing: NwSpacing.xl) {
                             balanceMetric("Holdings", holdingsTotal)
                             if !reconciliationDifference.isZero {
@@ -734,8 +755,30 @@ struct PlaidInvestmentAccountDetailView: View {
             .padding(.vertical, NwSpacing.lg)
         }
         .background(NwAppColors.background.ignoresSafeArea())
-        .navigationTitle(account.name)
+        .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingRename = true
+                } label: {
+                    Image(systemName: "pencil.circle")
+                }
+                .accessibilityLabel("Rename account")
+            }
+        }
+        .sheet(isPresented: $showingRename) {
+            AccountNicknameSheet(
+                plaidAccountId: account.id,
+                providerName: account.name,
+                currentName: displayName
+            )
+        }
+    }
+
+    private var displayName: String {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
+            .name(for: account)
     }
 
     private var securityByID: [String: CachedPlaidSecurity] {

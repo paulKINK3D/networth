@@ -103,6 +103,10 @@ cd PlaidWorker && npm test && npm run check
 - **Transaction inference is layered and privacy-bounded.** Apply confirmed local merchant rules first, then Apple on-device inference. Claude fallback is opt-in and may receive only transaction description, merchant/counterparty, Plaid category, payment channel, and direction—never amount, date, balance, account identifiers, or YNAB history.
 - **Plaid Worker secrets never enter git.** Use `.dev.vars` locally and `wrangler secret put` when deployed. Item access tokens must be AES-GCM encrypted before Workers KV persistence; the encryption key is a separate Worker secret.
 - **Plaid balances require reconciliation before inclusion.** A newly linked Plaid account remains excluded from Net Worth until the user confirms that it is not already represented by a YNAB account or manual asset. Account balances reconcile totals; holdings explain their composition and must not be added again.
+- **Account nicknames are durable display overrides.** Key them by Plaid
+  account ID in the private CloudKit store; never overwrite the disposable
+  provider cache name. User-facing account labels resolve the nickname first,
+  while detail and reset flows preserve the imported name.
 - **IBR history overrides are presentation-only.** With no override, linked-loan history begins on the earliest cached YNAB transaction date. A user-selected replacement date stays in local preferences. Before IBR's first dated balance, estimate backward from the earliest snapshot using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Never persist the estimated balances or infer capitalization events.
 
 ## UX And Design Consistency Requirements
