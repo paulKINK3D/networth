@@ -210,22 +210,6 @@ struct CanonicalDirectoryService {
                 override.updatedAt = now
             }
 
-            for (suggestion, legs) in scan.suggestions {
-                let topLevelMatch = suggestion.categoryCanonicalId == canonicalId
-                let updatedLegs = moveToUnassigned(
-                    legs,
-                    canonicalId: canonicalId
-                )
-                guard topLevelMatch || updatedLegs != legs else { continue }
-                if topLevelMatch {
-                    suggestion.categoryCanonicalId = nil
-                    suggestion.categoryNameSnapshot = nil
-                }
-                if updatedLegs != legs {
-                    suggestion.subtransactionsData = try encode(updatedLegs)
-                }
-            }
-
             for expectation in scan.recurringExpectations
             where expectation.categoryCanonicalId == canonicalId {
                 expectation.categoryCanonicalId = nil
@@ -262,11 +246,6 @@ struct CanonicalDirectoryService {
         let overrides:
             [(
                 DurableTransactionOverride,
-                [SubTransactionSummary]
-            )]
-        let suggestions:
-            [(
-                YNABReferenceSuggestion,
                 [SubTransactionSummary]
             )]
         let recurringExpectations: [DurableRecurringExpectation]
@@ -319,9 +298,6 @@ struct CanonicalDirectoryService {
         let overrides = try context.fetch(
             FetchDescriptor<DurableTransactionOverride>()
         ).map { ($0, try decode($0.subtransactionsData)) }
-        let suggestions = try context.fetch(
-            FetchDescriptor<YNABReferenceSuggestion>()
-        ).map { ($0, try decode($0.subtransactionsData)) }
         let recurringExpectations = try context.fetch(
             FetchDescriptor<DurableRecurringExpectation>()
         )
@@ -369,17 +345,6 @@ struct CanonicalDirectoryService {
                 ))
             referenceRecordCount += 1
         }
-        for (suggestion, legs) in suggestions
-        where suggestion.categoryCanonicalId == canonicalId
-            || containsCategory(legs, canonicalId: canonicalId)
-        {
-            transactionIDs.insert(
-                transactionKey(
-                    suggestion.plaidTransactionId,
-                    fallback: "suggestion:\(suggestion.ynabTransactionId)"
-                ))
-            referenceRecordCount += 1
-        }
         let affectedExpectations = recurringExpectations.filter {
             $0.categoryCanonicalId == canonicalId
         }
@@ -390,7 +355,6 @@ struct CanonicalDirectoryService {
             decisions: decisions,
             cachedTransactions: cachedTransactions,
             overrides: overrides,
-            suggestions: suggestions,
             recurringExpectations: recurringExpectations,
             impact: CanonicalCategoryDeletionImpact(
                 categoryRecordCount: categories.count,

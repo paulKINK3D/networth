@@ -278,8 +278,8 @@ public final class DurableUserSettings {
     /// they reset the chart to "start fresh" from a chosen date.
     /// `nil` = no floor (default behavior: 60 months back).
     public var chartStartDate: Date? = nil
-    /// `"ynab"` during comparison and `"plaid"` after explicit cutover.
-    public var primaryFinancialDataSourceRaw: String = FinancialDataSource.ynab.rawValue
+    /// Compatibility field retained for CloudKit; Plaid is always primary.
+    public var primaryFinancialDataSourceRaw: String = FinancialDataSource.plaid.rawValue
     public var plaidTransactionsEnabled: Bool = false
     public var claudeFallbackEnabled: Bool = false
     public var claudeFallbackConsentAt: Date? = nil
@@ -318,7 +318,7 @@ public final class DurableUserSettings {
     public init(id: String = "singleton") { self.id = id }
 
     public var primaryFinancialDataSource: FinancialDataSource {
-        get { FinancialDataSource(rawValue: primaryFinancialDataSourceRaw) ?? .ynab }
+        get { FinancialDataSource(rawValue: primaryFinancialDataSourceRaw) ?? .plaid }
         set { primaryFinancialDataSourceRaw = newValue.rawValue }
     }
 
@@ -785,7 +785,7 @@ public final class DurableIncludedClosedAccount {
     }
 }
 
-/// One row per YNAB category the user has opted out of the variable-spend
+/// One canonical category the user has opted out of the variable-spend
 /// projection. Stored in the CloudKit-backed store so the exclusion list
 /// follows the user across devices.
 @Model
@@ -802,8 +802,8 @@ public final class DurableExcludedSpendCategory {
     }
 }
 
-/// One user-excluded YNAB transaction or split leg. This is additive durable
-/// CloudKit data; transaction IDs remain stable across YNAB delta syncs.
+/// One user-excluded transaction or split leg. This is additive durable
+/// CloudKit data keyed by stable provider transaction identity.
 @Model
 public final class DurableExcludedSpendTransaction {
     public var id: UUID = UUID()
@@ -1123,7 +1123,11 @@ public final class DurablePlaidAccountTreatment {
     }
 
     public var treatment: PlaidAccountTreatment {
-        get { PlaidAccountTreatment(rawValue: treatmentRaw) ?? .pendingReview }
+        get {
+            let stored = PlaidAccountTreatment(rawValue: treatmentRaw)
+                ?? .pendingReview
+            return stored == .duplicateYNAB ? .included : stored
+        }
         set { treatmentRaw = newValue.rawValue }
     }
 }
@@ -1763,7 +1767,7 @@ struct PlaidContributionResolver {
         }
 
         standalonePlaidAccounts = plaidAccounts.filter { account in
-            treatmentByAccountID[account.id]?.treatment == .included
+            treatmentByAccountID[account.id]?.treatment.contributesToNetWorth == true
                 && Self.canContribute(account)
         }
 

@@ -164,13 +164,6 @@ struct CanonicalDirectoryServiceTests {
             subtransactionsData: targetSplits
         )
         context.insert(override)
-        let suggestion = YNABReferenceSuggestion(
-            plaidTransactionId: splitRow.id,
-            ynabTransactionId: "ynab-tx-2",
-            categoryNameSnapshot: "Split",
-            subtransactionsData: targetSplits
-        )
-        context.insert(suggestion)
         let expectation = DurableRecurringExpectation(
             accountCanonicalId: "checking",
             payeeName: "Annual trip",
@@ -187,7 +180,7 @@ struct CanonicalDirectoryServiceTests {
         #expect(preview.categoryRecordCount == 2)
         #expect(preview.transactionCount == 3)
         #expect(preview.recurringExpectationCount == 1)
-        #expect(preview.referenceRecordCount == 7)
+        #expect(preview.referenceRecordCount == 6)
 
         let deleted = try service.deleteCategory(canonicalId: targetID)
         #expect(deleted == preview)
@@ -216,8 +209,6 @@ struct CanonicalDirectoryServiceTests {
 
         #expect(override.subtransactions[0].categoryCanonicalId == nil)
         #expect(override.subtransactions[1].categoryCanonicalId == otherID)
-        #expect(suggestion.subtransactions[0].categoryCanonicalId == nil)
-        #expect(suggestion.subtransactions[1].categoryCanonicalId == otherID)
         #expect(expectation.categoryCanonicalId == nil)
         #expect(expectation.categoryName == nil)
         #expect(unrelatedRow.categoryCanonicalId == otherID)

@@ -30,16 +30,16 @@ enum TutorialContent {
 
         TutorialStep(
             id: 1,
-            icon: .keychain,
+            icon: .accounts,
             iconTint: NwAppColors.accent,
-            title: "Connect YNAB",
-            lede: "Networth reads your YNAB data and never writes back.",
+            title: "Connect Your Accounts",
+            lede: "Plaid supplies balances and transaction activity through your private backend.",
             bullets: [
-                "YNAB: My Account → Developer Settings → New Token.",
-                "Networth: Settings → Add YNAB Token.",
-                "Your token stays in iCloud Keychain."
+                "Open Settings → Accounts & Sync.",
+                "Connect banking and investment institutions.",
+                "Review each account before it contributes to Net Worth."
             ],
-            footnote: "Requires an active YNAB subscription and budget."
+            footnote: nil
         ),
 
         TutorialStep(
@@ -61,7 +61,7 @@ enum TutorialContent {
             icon: .investment,
             iconTint: NwAppColors.accent,
             title: "Investments",
-            lede: "One portfolio across YNAB, Plaid, and manual balances.",
+            lede: "One portfolio across Plaid and manual balances.",
             bullets: [
                 "Open Investments from the Net Worth Balance Sheet.",
                 "Connect supported institutions through Plaid.",

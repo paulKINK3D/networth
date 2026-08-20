@@ -2,19 +2,16 @@ import SwiftUI
 import SwiftData
 import NetworthCore
 
-/// Identity for a configurable card: canonical Plaid account id after the
-/// clean start, legacy YNAB account id before it.
+/// Identity for a configurable Plaid card.
 struct CardSettingsTarget: Identifiable, Hashable {
     let id: String
     let name: String
-    let isCanonical: Bool
 }
 
 struct CardSettingsForm: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppContainerController.self) private var container
     let target: CardSettingsTarget
-    @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \CachedFinancialAccount.name)
     private var financialAccounts: [CachedFinancialAccount]
     @Query private var canonicalBindings: [DurableCanonicalAccountBinding]
@@ -85,10 +82,13 @@ struct CardSettingsForm: View {
             if existing.paymentDueDay >= 1 {
                 dueDay = existing.paymentDueDay
             }
-            paymentAccountId = target.isCanonical
-                ? (existing.canonicalPaymentAccountId
-                    ?? existing.paymentAccountId ?? "")
-                : (existing.paymentAccountId ?? "")
+            paymentAccountId = existing.canonicalPaymentAccountId
+                ?? existing.paymentAccountId.flatMap { legacyID in
+                    canonicalBindings.first {
+                        $0.ynabAccountId == legacyID
+                    }?.canonicalAccountId
+                }
+                ?? ""
         }
     }
 
@@ -129,18 +129,8 @@ struct CardSettingsForm: View {
         setting.statementCycleDay = max(1, min(31, cycleDay))
         setting.paymentDueDay = max(1, min(31, dueDay))
         setting.paymentAccountId = paymentAccountId
-        if target.isCanonical {
-            // Post-clean-start path: card and payment ids are canonical.
-            setting.canonicalAccountId = target.id
-            setting.canonicalPaymentAccountId = paymentAccountId
-        } else {
-            setting.canonicalAccountId = canonicalBindings.first {
-                $0.ynabAccountId == target.id
-            }?.canonicalAccountId
-            setting.canonicalPaymentAccountId = canonicalBindings.first {
-                $0.ynabAccountId == paymentAccountId
-            }?.canonicalAccountId
-        }
+        setting.canonicalAccountId = target.id
+        setting.canonicalPaymentAccountId = paymentAccountId
         let succeeded = ctx.safeSave(source: "cardSettings.save")
         guard succeeded else {
             if isNew {
@@ -159,20 +149,15 @@ struct CardSettingsForm: View {
     }
 
     private var cashAccountOptions: [(id: String, name: String)] {
-        if target.isCanonical {
-            return financialAccounts
-                .filter { !$0.deleted && $0.type.isCashLike }
-                .map {
-                    (
-                        $0.canonicalAccountId,
-                        AccountDisplayNameResolver(
-                            nicknames: accountNicknames
-                        ).name(for: $0)
-                    )
-                }
-        }
-        return accounts
-            .filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
-            .map { ($0.id, $0.name) }
+        financialAccounts
+            .filter { !$0.deleted && $0.type.isCashLike }
+            .map {
+                (
+                    $0.canonicalAccountId,
+                    AccountDisplayNameResolver(
+                        nicknames: accountNicknames
+                    ).name(for: $0)
+                )
+            }
     }
 }

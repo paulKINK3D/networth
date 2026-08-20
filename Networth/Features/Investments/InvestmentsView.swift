@@ -25,13 +25,11 @@ private enum InvestmentRange: String, CaseIterable, Identifiable {
 }
 
 private enum InvestmentHolding: Identifiable {
-    case ynab(CachedAccount)
     case manual(DurableManualAsset)
     case plaid(CachedPlaidAccount)
 
     var id: String {
         switch self {
-        case .ynab(let account): return "ynab:\(account.id)"
         case .manual(let asset): return "manual:\(asset.id.uuidString)"
         case .plaid(let account): return "plaid:\(account.id)"
         }
@@ -39,7 +37,6 @@ private enum InvestmentHolding: Identifiable {
 
     var name: String {
         switch self {
-        case .ynab(let account): return account.name
         case .manual(let asset): return asset.name.isEmpty ? "Untitled Asset" : asset.name
         case .plaid(let account): return account.name
         }
@@ -47,7 +44,6 @@ private enum InvestmentHolding: Identifiable {
 
     var subtitle: String {
         switch self {
-        case .ynab: return "YNAB Investment"
         case .manual(let asset): return asset.kind.displayName
         case .plaid(let account):
             let kind = PlaidRetirementClassifier.isRetirement(
@@ -62,7 +58,6 @@ private enum InvestmentHolding: Identifiable {
 
     var icon: NwIcon {
         switch self {
-        case .ynab: return .investment
         case .manual(let asset):
             switch asset.kind {
             case .brokerage: return .brokerage
@@ -79,24 +74,10 @@ private enum InvestmentHolding: Identifiable {
 
     var value: Money {
         switch self {
-        case .ynab(let account): return account.balance
         case .manual(let asset): return asset.currentValue
         case .plaid(let account): return account.currentBalance ?? .zero
         }
     }
-}
-
-private struct InvestmentAccountDetailModel: Sendable {
-    struct RecentTransaction: Identifiable, Sendable {
-        let id: String
-        let title: String
-        let date: Date
-        let categoryName: String?
-        let amount: Money
-    }
-
-    let historyPoints: [InvestmentHistoryBuilder.Point]
-    let recentTransactions: [RecentTransaction]
 }
 
 /// Category-scoped portfolio detail reached from the Net Worth balance sheet.
@@ -104,9 +85,7 @@ struct InvestmentsView: View {
     let scope: InvestmentCategoryScope
 
     @Environment(AppContainerController.self) private var container
-    @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
-    @Query private var userSettings: [DurableUserSettings]
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
     @Query private var plaidItems: [CachedPlaidItem]
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
@@ -132,11 +111,9 @@ struct InvestmentsView: View {
 
     private var inputFingerprint: String {
         [
-            "\(accounts.count)",
             "\(manualAssets.count)", "\(plaidBalanceSnapshots.count)",
             "\(plaidAccounts.count)", "\(plaidTreatments.count)",
             "\(accountNicknames.count)",
-            userSettings.first?.primaryFinancialDataSourceRaw ?? "",
             range.rawValue, scope.rawValue
         ].joined(separator: "|")
     }
@@ -168,16 +145,6 @@ struct InvestmentsView: View {
         }
     }
 
-    private var ynabInvestments: [CachedAccount] {
-        guard scope.includesLegacyInvestmentAccounts,
-              userSettings.first?.primaryFinancialDataSource != .plaid else {
-            return []
-        }
-        return accounts.filter {
-            !$0.deleted && !$0.closed && $0.kind == .investment
-        }
-    }
-
     private var manualInvestments: [DurableManualAsset] {
         manualAssets.filter {
             !$0.deleted && scope.includes(manualAssetKind: $0.kind)
@@ -206,14 +173,12 @@ struct InvestmentsView: View {
     }
 
     private var totalValue: Money {
-        ynabInvestments.map(\.balance).sum()
-            + unreplacedManualInvestments.map(\.currentValue).sum()
+        unreplacedManualInvestments.map(\.currentValue).sum()
             + scopedPlaidAccounts.compactMap(\.currentBalance).sum()
     }
 
     private var holdings: [InvestmentHolding] {
-        let values = ynabInvestments.map(InvestmentHolding.ynab)
-            + unreplacedManualInvestments.map(InvestmentHolding.manual)
+        let values = unreplacedManualInvestments.map(InvestmentHolding.manual)
             + scopedPlaidAccounts.map(InvestmentHolding.plaid)
         return values.sorted {
             if $0.value != $1.value { return $0.value > $1.value }
@@ -452,8 +417,6 @@ struct InvestmentsView: View {
     @ViewBuilder
     private func holdingDestination(_ holding: InvestmentHolding) -> some View {
         switch holding {
-        case .ynab(let account):
-            InvestmentAccountDetailView(account: account)
         case .manual(let asset):
             ManualAssetDetailView(asset: asset)
                 .environment(container)
@@ -507,11 +470,8 @@ struct InvestmentsView: View {
     }
 
     private var lastUpdatedText: String {
-        var dates = ynabInvestments.map(\.updatedAt) + manualInvestments.map(\.lastUpdatedAt)
+        var dates = manualInvestments.map(\.lastUpdatedAt)
         dates += plaidItems.compactMap(\.lastSyncedAt)
-        if let syncDate = userSettings.first?.lastSyncedAt {
-            dates.append(syncDate)
-        }
         return dates.max()?.formatted(.relative(presentation: .named)) ?? "never"
     }
 
@@ -529,197 +489,6 @@ struct InvestmentsView: View {
     private func plaidTreatment(for accountID: String) -> PlaidAccountTreatment {
         plaidTreatments.last(where: { $0.plaidAccountId == accountID })?.treatment
             ?? .pendingReview
-    }
-}
-
-private struct InvestmentAccountDetailView: View {
-    @Environment(AppContainerController.self) private var container
-    let account: CachedAccount
-    @State private var detailModel: InvestmentAccountDetailModel?
-    @State private var loadFailed = false
-
-    var body: some View {
-        let points = detailModel?.historyPoints ?? []
-        ScrollView {
-            VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                NwCard(style: .primary) {
-                    VStack(alignment: .leading, spacing: NwSpacing.md) {
-                        Text("BALANCE")
-                            .font(NwTypography.caption)
-                            .foregroundStyle(.secondary)
-                        NwAmountText(account.balance, variant: .large)
-                        if let change = thirtyDayChange(in: points) {
-                            HStack(spacing: NwSpacing.xs) {
-                                NwAmountText(
-                                    change,
-                                    variant: .signed,
-                                    showCents: false,
-                                    color: change.isNegative
-                                        ? NwAppColors.liability
-                                        : NwAppColors.positive
-                                )
-                                Text("balance change over 30 days")
-                                    .font(NwTypography.footnote)
-                            }
-                        }
-                        Divider()
-                        HStack(spacing: NwSpacing.xl) {
-                            balanceMetric(
-                                "Cleared",
-                                Money(milliunits: account.clearedMilliunits)
-                            )
-                            balanceMetric(
-                                "Pending",
-                                Money(milliunits: account.unclearedMilliunits)
-                            )
-                        }
-                        Text("Updated \(account.updatedAt.formatted(.relative(presentation: .named)))")
-                            .font(NwTypography.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                NwCard(style: .primary) {
-                    VStack(alignment: .leading, spacing: NwSpacing.md) {
-                        Text("Balance Trend")
-                            .font(NwTypography.headline)
-                        if detailModel == nil, !loadFailed {
-                            ProgressView()
-                                .frame(
-                                    maxWidth: .infinity,
-                                    minHeight: 160,
-                                    alignment: .center
-                                )
-                        } else if loadFailed {
-                            Text("Balance history is unavailable.")
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(.secondary)
-                                .frame(
-                                    maxWidth: .infinity,
-                                    minHeight: 160,
-                                    alignment: .center
-                                )
-                        } else if points.count < 2 {
-                            Text("More history needed.")
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, minHeight: 160, alignment: .center)
-                        } else {
-                            Chart(points) { point in
-                                LineMark(
-                                    x: .value("Date", point.date),
-                                    y: .value("Balance", point.value.doubleValue)
-                                )
-                                .foregroundStyle(NwAppColors.primary)
-                                .lineStyle(StrokeStyle(lineWidth: 2.5))
-                            }
-                            .frame(height: 190)
-                        }
-                    }
-                }
-
-                if let transactions = detailModel?.recentTransactions,
-                   !transactions.isEmpty {
-                    VStack(alignment: .leading, spacing: NwSpacing.md) {
-                        Text("Recent Activity")
-                            .font(NwTypography.titleSmall)
-                        NwCard(style: .primary, padding: 0) {
-                            VStack(spacing: 0) {
-                                ForEach(Array(transactions.enumerated()), id: \.element.id) { index, transaction in
-                                    transactionRow(transaction)
-                                    if index < transactions.count - 1 {
-                                        Divider().padding(.leading, NwSpacing.md)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, NwSpacing.screenPadding)
-            .padding(.vertical, NwSpacing.lg)
-        }
-        .background(NwAppColors.background.ignoresSafeArea())
-        .navigationTitle(account.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .task(id: account.id) {
-            await loadDetailModel()
-        }
-    }
-
-    private func balanceMetric(_ title: String, _ value: Money) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title.uppercased())
-                .font(NwTypography.caption)
-                .foregroundStyle(.secondary)
-            NwAmountText(value, variant: .body, showCents: false)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func transactionRow(
-        _ transaction: InvestmentAccountDetailModel.RecentTransaction
-    ) -> some View {
-        HStack(spacing: NwSpacing.md) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.title)
-                    .font(NwTypography.body)
-                Text(transactionSubtitle(transaction))
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            NwAmountText(
-                transaction.amount,
-                variant: .signed,
-                color: transaction.amount.isNegative
-                    ? NwAppColors.liability
-                    : NwAppColors.positive
-            )
-        }
-        .padding(NwSpacing.md)
-    }
-
-    private func transactionSubtitle(
-        _ transaction: InvestmentAccountDetailModel.RecentTransaction
-    ) -> String {
-        let date = DateDisplay.shortDate(transaction.date)
-        guard let category = transaction.categoryName, !category.isEmpty else { return date }
-        return "\(date), \(category)"
-    }
-
-    private func loadDetailModel() async {
-        loadFailed = false
-        let modelContainer = container.modelContainer
-        let accountID = account.id
-        let currentBalance = account.balance
-        do {
-            let model = try await Task.detached(priority: .userInitiated) {
-                let dataActor = InvestmentsDataActor(
-                    modelContainer: modelContainer
-                )
-                return try await dataActor.buildAccountDetail(
-                    accountID: accountID,
-                    currentBalance: currentBalance
-                )
-            }.value
-            guard !Task.isCancelled else { return }
-            detailModel = model
-        } catch {
-            guard !Task.isCancelled else { return }
-            loadFailed = true
-        }
-    }
-
-    private func thirtyDayChange(
-        in points: [InvestmentHistoryBuilder.Point]
-    ) -> Money? {
-        let calendar = Calendar(identifier: .gregorian)
-        guard let target = calendar.date(byAdding: .day, value: -30, to: .now),
-              let prior = points.last(where: { $0.date <= target }) else {
-            return nil
-        }
-        return account.balance - prior.value
     }
 }
 
@@ -879,56 +648,6 @@ struct PlaidInvestmentAccountDetailView: View {
 /// ModelContext; the view renders only finished results.
 @ModelActor
 private actor InvestmentsDataActor {
-    func buildAccountDetail(
-        accountID: String,
-        currentBalance: Money
-    ) throws -> InvestmentAccountDetailModel {
-        let calendar = Calendar(identifier: .gregorian)
-        guard let start = calendar.date(
-            byAdding: .year,
-            value: -1,
-            to: .now
-        ) else {
-            return InvestmentAccountDetailModel(
-                historyPoints: [],
-                recentTransactions: []
-            )
-        }
-        let transactions = try modelContext.fetch(
-            FetchDescriptor<CachedTransaction>(
-                predicate: #Predicate {
-                    $0.accountId == accountID
-                        && $0.deleted == false
-                        && $0.date >= start
-                },
-                sortBy: [SortDescriptor(\.date, order: .reverse)]
-            )
-        )
-        let points = InvestmentHistoryBuilder(calendar: calendar).build(
-            accounts: [InvestmentHistoryBuilder.Account(
-                id: accountID,
-                currentBalance: currentBalance,
-                transactions: transactions.map { $0.toSummary() }
-            )],
-            manualAssets: [],
-            from: start,
-            to: .now
-        )
-        let recentTransactions = transactions.prefix(20).map {
-            InvestmentAccountDetailModel.RecentTransaction(
-                id: $0.id,
-                title: $0.payeeName ?? $0.memo ?? "Transaction",
-                date: $0.date,
-                categoryName: $0.categoryName,
-                amount: Money(milliunits: $0.amountMilliunits)
-            )
-        }
-        return InvestmentAccountDetailModel(
-            historyPoints: points,
-            recentTransactions: recentTransactions
-        )
-    }
-
     func build(
         rangeMonths: Int,
         scope: InvestmentCategoryScope
@@ -938,17 +657,6 @@ private actor InvestmentsDataActor {
             byAdding: .month, value: -rangeMonths, to: .now
         ) else { return [] }
         let context = modelContext
-        let transactions = (try? context.fetch(
-            FetchDescriptor<CachedTransaction>(
-                predicate: #Predicate { $0.date >= start && !$0.deleted }
-            )
-        )) ?? []
-        let accounts = (try? context.fetch(
-            FetchDescriptor<CachedAccount>()
-        )) ?? []
-        let settings = try? context.fetch(
-            FetchDescriptor<DurableUserSettings>()
-        ).first
         let manualAssets = (try? context.fetch(
             FetchDescriptor<DurableManualAsset>()
         )) ?? []
@@ -960,11 +668,6 @@ private actor InvestmentsDataActor {
         let plaidAccounts = (try? context.fetch(
             FetchDescriptor<CachedPlaidAccount>()
         )) ?? []
-        let historicalInvestments = accounts.filter {
-            scope.includesLegacyInvestmentAccounts
-                && settings?.primaryFinancialDataSource != .plaid
-                && !$0.deleted && $0.kind == .investment
-        }
         let manualInvestments = manualAssets.filter {
             !$0.deleted && scope.includes(manualAssetKind: $0.kind)
         }
@@ -981,19 +684,8 @@ private actor InvestmentsDataActor {
                     ?? nil
             )
         }
-        let byAccount = Dictionary(
-            grouping: transactions
-        ) { $0.accountId }
-        let inputs = historicalInvestments.map { account in
-            InvestmentHistoryBuilder.Account(
-                id: account.id,
-                currentBalance: account.balance,
-                transactions: (byAccount[account.id] ?? [])
-                    .map { $0.toSummary() }
-            )
-        }
         return InvestmentHistoryBuilder(calendar: calendar).build(
-            accounts: inputs,
+            accounts: [],
             manualAssets: manualInvestments.map { $0.toSnapshot() },
             plaidSnapshots: scopedPlaidSnapshots.map { $0.toHistorySnapshot() },
             from: start,

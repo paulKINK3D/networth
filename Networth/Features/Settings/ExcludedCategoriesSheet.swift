@@ -6,7 +6,8 @@ import NetworthCore
 struct ExcludedCategoriesSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppContainerController.self) private var container
-    @Query(sort: \CachedCategory.groupName) private var categories: [CachedCategory]
+    @Query(sort: \DurableCanonicalCategory.groupName)
+    private var categories: [DurableCanonicalCategory]
     @Query private var exclusions: [DurableExcludedSpendCategory]
     @Query(sort: \DurableExcludedSpendTransaction.transactionDate, order: .reverse)
     private var transactionExclusions: [DurableExcludedSpendTransaction]
@@ -19,8 +20,8 @@ struct ExcludedCategoriesSheet: View {
         raw == "Internal Master Category" ? "Income" : raw
     }
 
-    private var grouped: [(group: String, items: [CachedCategory])] {
-        let visible = categories.filter { !$0.deleted && !$0.name.isEmpty }
+    private var grouped: [(group: String, items: [DurableCanonicalCategory])] {
+        let visible = categories.filter { !$0.deletedAtSource && !$0.name.isEmpty }
         return Dictionary(grouping: visible, by: { displayGroupName($0.groupName) })
             .map { (group: $0.key, items: $0.value.sorted { $0.name < $1.name }) }
             .sorted { lhs, rhs in
@@ -86,7 +87,7 @@ struct ExcludedCategoriesSheet: View {
                 if grouped.isEmpty {
                     NwEmptyState(
                         title: "No categories yet",
-                        message: "Sync YNAB to load categories.",
+                        message: "No category-level exclusions are available.",
                         icon: .empty
                     )
                 } else {
@@ -113,8 +114,8 @@ struct ExcludedCategoriesSheet: View {
         }
     }
 
-    private func row(_ category: CachedCategory) -> some View {
-        let isExcluded = excludedIds.contains(category.id)
+    private func row(_ category: DurableCanonicalCategory) -> some View {
+        let isExcluded = excludedIds.contains(category.canonicalId)
         return Button {
             toggle(category)
         } label: {
@@ -141,9 +142,9 @@ struct ExcludedCategoriesSheet: View {
         .buttonStyle(.plain)
     }
 
-    private func toggle(_ category: CachedCategory) {
+    private func toggle(_ category: DurableCanonicalCategory) {
         let ctx = container.modelContainer.mainContext
-        let cid = category.id
+        let cid = category.canonicalId
         let descriptor = FetchDescriptor<DurableExcludedSpendCategory>(
             predicate: #Predicate { $0.categoryId == cid }
         )
@@ -151,7 +152,7 @@ struct ExcludedCategoriesSheet: View {
             ctx.delete(existing)
         } else {
             ctx.insert(DurableExcludedSpendCategory(
-                categoryId: category.id,
+                categoryId: category.canonicalId,
                 categoryName: category.name,
                 groupName: category.groupName
             ))

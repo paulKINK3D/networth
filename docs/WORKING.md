@@ -1,5 +1,13 @@
 # WORKING
 
+## YNAB retirement (2026-08-20, physical validation complete)
+
+- The August 12 removal recommendation is now the active product decision. The completed backlog-reference workflow is being retired rather than retained in a submenu.
+- Before implementation, the physical-device Networth app container and shared financial App Group were copied to an offline folder outside the repository. The active SwiftData stores resolve inside `group.com.bluelava.me.financial`; similarly named stores in the ordinary app container are dormant July-era copies and are not authoritative. Keychain credentials are not part of either backup.
+- Release 1 removes every YNAB UI, token API, network, import, fallback, and classification path and purges only disposable local YNAB cache/reference rows. Durable Networth decisions, contacts, categories, splits, snapshots, settings, goals, Plaid data, and IBR data remain untouched. Compatibility-only CloudKit fields stay inert.
+- The clean Release build was installed and launched on the iOS 27 physical device. A before/after copy of the active App Group stores confirmed that 3,106 YNAB reference suggestions were removed; all other retired rows are zero; Plaid account/item/coverage/cursor rows remain; and settings, manual assets, snapshots, card data, goals, budget rules, account treatments, and other durable counts are preserved. Six new Plaid transactions and five corresponding canonical decisions arrived through normal sync.
+- The Plaid-only Accounts & Sync surface was confirmed on the physical device. Debug and Release generic-device builds, app-test compilation, and all 230 NetworthCore tests pass. The synchronized Keychain token remains inert and intentionally untouched because it is outside the restorable container backups; deleting it is a separate explicit follow-up. Older YNAB sections below are historical context and are superseded by this decision.
+
 ## Current handoff — scheduled card payments (2026-08-19)
 
 - Next Cash Activity rows now keep amounts aligned and reserve a small info

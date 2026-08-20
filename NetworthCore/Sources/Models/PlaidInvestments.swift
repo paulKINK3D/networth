@@ -4,11 +4,15 @@ import Money
 public enum PlaidAccountTreatment: String, Codable, Sendable, CaseIterable {
     case pendingReview
     case included
+    /// Retained only so existing CloudKit rows continue to decode. With YNAB
+    /// retired, this legacy value is treated as an included Plaid account.
     case duplicateYNAB
     case duplicateManualAsset
     case excluded
 
-    public var contributesToNetWorth: Bool { self == .included }
+    public var contributesToNetWorth: Bool {
+        self == .included || self == .duplicateYNAB
+    }
 }
 
 /// Splits retirement accounts out of the general Investments bucket using
@@ -221,7 +225,7 @@ public struct PlaidInvestmentSnapshot: Hashable, Sendable {
         treatments: [String: PlaidAccountTreatment]
     ) -> Money {
         accounts.compactMap { account in
-            guard treatments[account.id] == .included,
+            guard treatments[account.id]?.contributesToNetWorth == true,
                   account.usesSupportedCurrency else {
                 return nil
             }

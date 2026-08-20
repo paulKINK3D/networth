@@ -36,9 +36,9 @@ enum GoalReserveAccountEligibility {
                 subtype: account.subtype
             ) else { return false }
             return switch treatmentById[account.id] {
-            case .duplicateYNAB, .duplicateManualAsset, .excluded:
+            case .duplicateManualAsset, .excluded:
                 false
-            case .pendingReview, .included, nil:
+            case .duplicateYNAB, .pendingReview, .included, nil:
                 true
             }
         }

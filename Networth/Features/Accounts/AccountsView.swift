@@ -143,119 +143,7 @@ struct AccountsView: View {
 
     private var accountsList: some View {
             List {
-                if hasTransactionConnection && !usesPlaidTransactions {
-                    Section {
-                        Button {
-                            showingPlaidAccountMapping = true
-                        } label: {
-                            HStack {
-                                Text("Reconcile accounts with YNAB")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                                Spacer()
-                                if pendingBindingCount > 0 {
-                                    NwStatusBadge(
-                                        "\(pendingBindingCount)",
-                                        style: .caution,
-                                        icon: .warning
-                                    )
-                                } else {
-                                    NwStatusBadge("Done", style: .positive, icon: .success)
-                                }
-                                NwIcon.chevron.image.foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-
-                        HStack {
-                            Text("Historical import")
-                            Spacer()
-                            NwStatusBadge(
-                                historicalImportComplete ? "Done" : "In progress",
-                                style: historicalImportComplete ? .positive : .caution,
-                                icon: historicalImportComplete ? .success : .warning
-                            )
-                        }
-
-                        HStack {
-                            Text("YNAB contacts")
-                            Spacer()
-                            NwStatusBadge(
-                                canonicalPayees.isEmpty
-                                    ? "Importing"
-                                    : "\(canonicalPayees.count)",
-                                style: canonicalPayees.isEmpty
-                                    ? .caution
-                                    : .positive,
-                                icon: canonicalPayees.isEmpty
-                                    ? .warning
-                                    : .success
-                            )
-                        }
-
-                        HStack {
-                            Text("YNAB categories")
-                            Spacer()
-                            NwStatusBadge(
-                                canonicalCategories.isEmpty
-                                    ? "Importing"
-                                    : "\(canonicalCategories.count)",
-                                style: canonicalCategories.isEmpty
-                                    ? .caution
-                                    : .positive,
-                                icon: canonicalCategories.isEmpty
-                                    ? .warning
-                                    : .success
-                            )
-                        }
-
-                        Button {
-                            showingClassificationReview = true
-                        } label: {
-                            HStack {
-                                Text("Review transactions")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                                Spacer()
-                                if !canonicalReviewReady {
-                                    NwStatusBadge(
-                                        "Waiting",
-                                        style: .caution,
-                                        icon: .warning
-                                    )
-                                } else if pendingClassificationReviewCount > 0 {
-                                    NwStatusBadge(
-                                        "\(pendingClassificationReviewCount)",
-                                        style: .caution,
-                                        icon: .warning
-                                    )
-                                } else {
-                                    NwStatusBadge(
-                                        "Done",
-                                        style: .positive,
-                                        icon: .success
-                                    )
-                                }
-                                NwIcon.chevron.image.foregroundStyle(.secondary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .disabled(!canonicalReviewReady)
-
-                        Button("Make Plaid Primary") {
-                            showingPlaidCutoverConfirm = true
-                        }
-                        .disabled(!cutoverReady)
-
-                        if let plaidCutoverError {
-                            Text(plaidCutoverError)
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(NwAppColors.liability)
-                        }
-                    } header: {
-                        Text("Finish Plaid Setup")
-                    } footer: {
-                        Text("YNAB contacts, categories, and exact historical decisions are imported before Plaid activity is reviewed.")
-                    }
-                } else if pendingClassificationReviewCount > 0 {
+                if pendingClassificationReviewCount > 0 {
                     Section {
                         Button {
                             showingGroupedReview = true
@@ -279,57 +167,21 @@ struct AccountsView: View {
                     }
                 }
 
-                if usesPlaidTransactions {
-                    ForEach(financialAccountSections) { section in
-                        Section {
-                            ForEach(section.accounts) { account in
-                                NavigationLink {
-                                    FinancialAccountDetailView(account: account)
-                                } label: {
-                                    financialAccountRow(account)
-                                }
+                ForEach(financialAccountSections) { section in
+                    Section {
+                        ForEach(section.accounts) { account in
+                            NavigationLink {
+                                FinancialAccountDetailView(account: account)
+                            } label: {
+                                financialAccountRow(account)
                             }
-                        } header: {
-                            sectionHeader(
-                                section.kind.title,
-                                total: section.total,
-                                isLiability: section.kind.isLiability
-                            )
                         }
-                    }
-                }
-
-                if !accountSections.isEmpty {
-                    ForEach(accountSections) { section in
-                        Section {
-                            ForEach(section.accounts) { account in
-                                NavigationLink {
-                                    if let mappedAccount = mappedFinancialAccount(
-                                        for: account
-                                    ) {
-                                        FinancialAccountDetailView(
-                                            account: mappedAccount
-                                        )
-                                    } else {
-                                        AccountDetailView(account: account)
-                                    }
-                                } label: {
-                                    if let mappedAccount = mappedFinancialAccount(
-                                        for: account
-                                    ) {
-                                        financialAccountRow(mappedAccount)
-                                    } else {
-                                        accountRow(account)
-                                    }
-                                }
-                            }
-                        } header: {
-                            sectionHeader(
-                                section.kind.title,
-                                total: accountSectionTotal(section),
-                                isLiability: section.kind.isLiability
-                            )
-                        }
+                    } header: {
+                        sectionHeader(
+                            section.kind.title,
+                            total: section.total,
+                            isLiability: section.kind.isLiability
+                        )
                     }
                 }
 
@@ -378,14 +230,13 @@ struct AccountsView: View {
                     }
                 }
 
-                if accountSections.isEmpty &&
-                    financialAccountSections.isEmpty &&
+                if financialAccountSections.isEmpty &&
                     standalonePlaidInvestmentAccounts.isEmpty &&
                     assets.isEmpty &&
                     container.linkedIBRLoanDocument == nil {
                     NwEmptyState(
                         title: "No accounts yet",
-                        message: "Connect YNAB or add an asset manually.",
+                        message: "Connect Plaid or add an asset manually.",
                         icon: .accounts
                     )
                     .listRowBackground(Color.clear)
@@ -405,30 +256,8 @@ struct AccountsView: View {
             .sheet(isPresented: $showingNewAsset) {
                 ManualAssetForm(asset: nil).environment(container)
             }
-            .sheet(isPresented: $showingClassificationReview) {
-                PlaidClassificationReviewSheet().environment(container)
-            }
             .sheet(isPresented: $showingGroupedReview) {
                 GroupedHistoricalReviewSheet().environment(container)
-            }
-            .sheet(isPresented: $showingPlaidAccountMapping) {
-                PlaidAccountMappingSheet().environment(container)
-            }
-            .alert("Make Plaid Primary?", isPresented: $showingPlaidCutoverConfirm) {
-                Button("Cancel", role: .cancel) {}
-                Button("Switch") {
-                    Task { @MainActor in
-                        do {
-                            try await container.makePlaidPrimary()
-                            plaidCutoverError = nil
-                        } catch {
-                            plaidCutoverError = (error as? LocalizedError)?.errorDescription
-                                ?? "The switch could not be completed."
-                        }
-                    }
-                }
-            } message: {
-                Text("Networth will use Plaid for cash, credit-card balances, and new transaction history. Your local YNAB history and reconciliation matches remain available; the YNAB token will be removed.")
             }
     }
 
@@ -823,7 +652,7 @@ struct LinkedIBRLoanDetailView: View {
     @Environment(\.openURL) private var openURL
     @State private var historyStartDateDraft = Date.now
     @State private var activeHistoryStartDate = Date.now
-    @State private var ynabHistoryStartDate: Date?
+    @State private var defaultHistoryStartDateFromTransactions: Date?
     @State private var loadedHistoryDates = false
     let document: SharedIBRLoanDocument
 
@@ -881,13 +710,13 @@ struct LinkedIBRLoanDetailView: View {
                                 .padding(NwSpacing.md)
                             }
 
-                            if let ynabHistoryStartDate {
+                            if let defaultHistoryStartDateFromTransactions {
                                 Divider()
                                 if container.linkedIBRLoanHistoryStartDate == nil {
                                     HStack {
-                                        Label("Matched to YNAB Start", systemImage: "checkmark.circle.fill")
+                                        Label("Using Transaction History Start", systemImage: "checkmark.circle.fill")
                                         Spacer()
-                                        Text(ynabHistoryStartDate.formatted(date: .abbreviated, time: .omitted))
+                                        Text(defaultHistoryStartDateFromTransactions.formatted(date: .abbreviated, time: .omitted))
                                             .foregroundStyle(.secondary)
                                     }
                                     .foregroundStyle(NwAppColors.positive)
@@ -895,12 +724,12 @@ struct LinkedIBRLoanDetailView: View {
                                     .padding(NwSpacing.md)
                                 } else {
                                     Button {
-                                        matchYNABStartDate(ynabHistoryStartDate)
+                                        useDefaultHistoryStartDate(defaultHistoryStartDateFromTransactions)
                                     } label: {
                                         HStack {
-                                            Label("Match YNAB Start", systemImage: "arrow.counterclockwise")
+                                            Label("Use Transaction History Start", systemImage: "arrow.counterclockwise")
                                             Spacer()
-                                            Text(ynabHistoryStartDate.formatted(date: .abbreviated, time: .omitted))
+                                            Text(defaultHistoryStartDateFromTransactions.formatted(date: .abbreviated, time: .omitted))
                                                 .foregroundStyle(.secondary)
                                         }
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -989,11 +818,11 @@ struct LinkedIBRLoanDetailView: View {
 
     private func loadHistoryDatesIfNeeded() {
         guard !loadedHistoryDates else { return }
-        let ynabStart = container.defaultLinkedIBRLoanHistoryStartDate()
+        let transactionHistoryStart = container.defaultLinkedIBRLoanHistoryStartDate()
         let activeStart = container.linkedIBRLoanHistoryStartDate
-            ?? ynabStart
+            ?? transactionHistoryStart
             ?? defaultHistoryStartDate
-        ynabHistoryStartDate = ynabStart
+        defaultHistoryStartDateFromTransactions = transactionHistoryStart
         activeHistoryStartDate = activeStart
         historyStartDateDraft = activeStart
         loadedHistoryDates = true
@@ -1006,7 +835,7 @@ struct LinkedIBRLoanDetailView: View {
         historyStartDateDraft = normalized
     }
 
-    private func matchYNABStartDate(_ date: Date) {
+    private func useDefaultHistoryStartDate(_ date: Date) {
         let normalized = Calendar.current.startOfDay(for: date)
         container.setLinkedIBRLoanHistoryStartDate(nil)
         activeHistoryStartDate = normalized
@@ -2233,12 +2062,8 @@ struct CanonicalPayeeListView: View {
                             Text("Archived")
                                 .font(NwTypography.caption)
                                 .foregroundStyle(.secondary)
-                        } else if payee.ynabPayeeId != nil {
-                            Text("Imported from YNAB")
-                                .font(NwTypography.caption)
-                                .foregroundStyle(.secondary)
                         } else {
-                            Text("Created in Networth")
+                            Text("Networth contact")
                                 .font(NwTypography.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -2310,7 +2135,7 @@ private struct CanonicalPayeeEditor: View {
             if let payee, payee.userEdited,
                !payee.sourceName.isEmpty,
                payee.sourceName != payee.name {
-                Section("Original YNAB Value") {
+                Section("Imported Name") {
                     Text(payee.sourceName)
                 }
             }
@@ -2587,7 +2412,7 @@ private struct CanonicalCategoryEditor: View {
             if let category, category.userEdited,
                category.sourceName != category.name
                     || category.sourceGroupName != category.groupName {
-                Section("Original YNAB Value") {
+                Section("Imported Name") {
                     LabeledContent("Name", value: category.sourceName)
                     LabeledContent(
                         "Group",

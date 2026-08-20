@@ -3,6 +3,7 @@ import FoundationModels
 import os
 import NetworthCore
 
+#if false // Retired provider client kept temporarily as noncompiled migration history.
 public enum YNABClientError: Error, Sendable {
     case missingToken
     case invalidResponse(statusCode: Int, body: String)
@@ -238,6 +239,7 @@ public actor RecordedYNABClient: YNABClient {
         YNABMonthDetailDTO(month: month, categories: [])
     }
 }
+#endif
 
 // MARK: - Plaid backend client
 

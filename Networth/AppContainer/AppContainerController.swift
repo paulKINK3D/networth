@@ -11,22 +11,18 @@ import NetworthCore
 public final class AppContainerController {
     public let secretStore: any SecretStore
     public let biometricGate: any BiometricGate
-    public let ynabClient: any YNABClient
     public let plaidClient: any PlaidClient
     public let modelContainer: ModelContainer
     public let connectivity: ConnectivityMonitor
     public let snapshotScheduler: SnapshotScheduler
-    public let syncCoordinator: SyncCoordinator
     public let plaidSyncCoordinator: PlaidSyncCoordinator
     public let plaidTransactionSyncCoordinator: PlaidTransactionSyncCoordinator
-    public let ynabReferenceImportCoordinator: YNABReferenceImportCoordinator
     public let claudeDataSyncCoordinator: ClaudeDataSyncCoordinator
     public let ibrLoanStore: any IBRLoanStore
     public let ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore
 
     public var unlocked: Bool = false
     public var bootstrapped: Bool = false
-    public var hasYNABToken: Bool = false
     public var hasPlaidBackendToken: Bool = false
     public private(set) var plaidBackendBaseURL: URL?
     public var selectedBudgetId: String?
@@ -39,7 +35,6 @@ public final class AppContainerController {
     public init(
         secretStore: any SecretStore,
         biometricGate: any BiometricGate,
-        ynabClient: any YNABClient,
         plaidClient: any PlaidClient = RecordedPlaidClient(),
         transactionInferenceProvider: any OnDeviceTransactionInferring = RecordedTransactionInferenceProvider(),
         modelContainer: ModelContainer,
@@ -48,7 +43,6 @@ public final class AppContainerController {
     ) {
         self.secretStore = secretStore
         self.biometricGate = biometricGate
-        self.ynabClient = ynabClient
         self.plaidClient = plaidClient
         self.modelContainer = modelContainer
         self.ibrLoanStore = ibrLoanStore
@@ -57,19 +51,12 @@ public final class AppContainerController {
         self.connectivity = ConnectivityMonitor()
         let ctx = modelContainer.mainContext
         self.snapshotScheduler = SnapshotScheduler(mainContext: ctx)
-        self.syncCoordinator = SyncCoordinator(client: ynabClient, mainContext: ctx)
         self.plaidSyncCoordinator = PlaidSyncCoordinator(client: plaidClient, mainContext: ctx)
         self.plaidTransactionSyncCoordinator = PlaidTransactionSyncCoordinator(
             client: plaidClient,
             inferenceProvider: transactionInferenceProvider,
             mainContext: ctx
         )
-        self.ynabReferenceImportCoordinator = YNABReferenceImportCoordinator(
-            client: ynabClient,
-            mainContext: ctx
-        )
-        self.ynabReferenceImportCoordinator.plaidCoordinator =
-            plaidTransactionSyncCoordinator
         self.claudeDataSyncCoordinator = ClaudeDataSyncCoordinator(
             client: plaidClient,
             mainContext: ctx
@@ -78,20 +65,10 @@ public final class AppContainerController {
         observePersistenceFailures()
     }
 
-    /// Bootstrap reads the token from Keychain and prefills the YNAB client.
-    /// Determines initial unlock state based on the user's Face ID setting and
-    /// flips `bootstrapped = true` so ContentView can render the right state.
+    /// Bootstrap configures the Plaid backend, prepares local state, and
+    /// determines the initial biometric lock state.
     public func bootstrap() async {
         refreshLinkedIBRLoan()
-        let ynabToken: String?
-        do { ynabToken = try secretStore.load(.ynabPersonalAccessToken) }
-        catch {
-            logger.error("YNAB secret load failed: \(error.localizedDescription, privacy: .public)")
-            ynabToken = nil
-        }
-        await ynabClient.setToken(ynabToken)
-        hasYNABToken = (ynabToken?.isEmpty == false)
-
         let plaidToken: String?
         do { plaidToken = try secretStore.load(.plaidBackendBearerToken) }
         catch {
@@ -121,7 +98,12 @@ public final class AppContainerController {
         } else {
             settings = Self.dedupeSettingsRows(allSettingsRows, context: ctx)
         }
+        if settings.primaryFinancialDataSource != .plaid {
+            settings.primaryFinancialDataSource = .plaid
+            ctx.safeSave(source: "bootstrap.plaidOnly")
+        }
         selectedBudgetId = settings.selectedBudgetId
+        _ = retireYNABLocalDataIfNeeded()
         plaidTransactionSyncCoordinator.runLocalMigrationsIfNeeded()
 
         // One-time migration: pre-default-flip installs had faceIDEnabled=false.
@@ -165,6 +147,80 @@ public final class AppContainerController {
     }
 
     public static let lastBackgroundedAtKey = "networth.lastBackgroundedAt"
+    static let ynabRetirementLocalPurgeVersionKey =
+        "networth.ynabRetirementLocalPurgeVersion"
+    static let currentYNABRetirementLocalPurgeVersion = 1
+
+    /// Deletes only re-fetchable local rows from the retired provider. The
+    /// durable CloudKit store, Plaid caches, user decisions, and IBR App Group
+    /// are deliberately outside this migration.
+    @discardableResult
+    func retireYNABLocalDataIfNeeded(
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        let context = modelContainer.mainContext
+        do {
+            for row in try context.fetch(FetchDescriptor<CachedBudget>()) {
+                context.delete(row)
+            }
+            for row in try context.fetch(FetchDescriptor<CachedAccount>()) {
+                context.delete(row)
+            }
+            for row in try context.fetch(FetchDescriptor<CachedTransaction>()) {
+                context.delete(row)
+            }
+            for row in try context.fetch(
+                FetchDescriptor<CachedScheduledTransaction>()
+            ) {
+                context.delete(row)
+            }
+            for row in try context.fetch(FetchDescriptor<CachedCategory>()) {
+                context.delete(row)
+            }
+            for row in try context.fetch(
+                FetchDescriptor<CachedCategoryMonth>()
+            ) {
+                context.delete(row)
+            }
+            let retiredCursorPrefixes = [
+                "accounts:", "payees:", "categories:", "scheduled:",
+                "transactions:", "categoryMonthsBackfill:",
+                "transactionsGhostPurge:"
+            ]
+            for row in try context.fetch(FetchDescriptor<SyncCursor>())
+            where retiredCursorPrefixes.contains(where: row.key.hasPrefix) {
+                context.delete(row)
+            }
+            for row in try context.fetch(
+                FetchDescriptor<YNABReferenceSuggestion>()
+            ) {
+                context.delete(row)
+            }
+            for row in try context.fetch(
+                FetchDescriptor<LegacyTransactionMatchRow>()
+            ) {
+                context.delete(row)
+            }
+            guard context.safeSave(
+                source: "bootstrap.retireYNABLocalData",
+                notifyDataSync: false
+            ) else {
+                context.rollback()
+                return false
+            }
+            defaults.set(
+                Self.currentYNABRetirementLocalPurgeVersion,
+                forKey: Self.ynabRetirementLocalPurgeVersionKey
+            )
+            return true
+        } catch {
+            context.rollback()
+            logger.error(
+                "Retired-provider local cleanup failed: \(error.localizedDescription, privacy: .public)"
+            )
+            return false
+        }
+    }
 
     /// Stamp the last-active wall-clock time so the next cold launch knows
     /// whether the biometric grace window applies. Called when the scene
@@ -179,22 +235,6 @@ public final class AppContainerController {
         } catch {
             unlocked = false
         }
-    }
-
-    public func saveYNABToken(_ token: String) async throws {
-        // Trim whitespace and newlines before storing. Pasted tokens from web
-        // sources frequently include trailing newlines which corrupt the
-        // Authorization header and produce 401s with no obvious cause.
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        try secretStore.save(trimmed, for: .ynabPersonalAccessToken)
-        await ynabClient.setToken(trimmed)
-        hasYNABToken = !trimmed.isEmpty
-    }
-
-    public func clearYNABToken() async throws {
-        try secretStore.delete(.ynabPersonalAccessToken)
-        await ynabClient.setToken(nil)
-        hasYNABToken = false
     }
 
     public func savePlaidBackendToken(_ token: String) async throws {
@@ -284,13 +324,6 @@ public final class AppContainerController {
             markPlaidSyncSuccess()
             recordDailySnapshot()
         }
-    }
-
-    public func mapPlaidAccount(_ plaidAccountId: String, toYNABAccount ynabAccountId: String?) {
-        plaidTransactionSyncCoordinator.mapAccount(
-            plaidAccountId: plaidAccountId,
-            toYNABAccountId: ynabAccountId
-        )
     }
 
     public func reviewPlaidMerchantNames(
@@ -485,87 +518,6 @@ public final class AppContainerController {
         try await claudeDataSyncCoordinator.generateConnectCode()
     }
 
-    public func makePlaidPrimary() async throws {
-        let context = modelContainer.mainContext
-        let bindings = (try? context.fetch(
-            FetchDescriptor<DurableCanonicalAccountBinding>()
-        )) ?? []
-        let accounts = (try? context.fetch(
-            FetchDescriptor<CachedFinancialAccount>(
-                predicate: #Predicate { !$0.deleted }
-            )
-        )) ?? []
-        let activePlaidAccountIDs = Set(accounts.map(\.externalId))
-        let activeBindings = bindings.filter {
-            activePlaidAccountIDs.contains($0.plaidAccountId)
-        }
-        var pendingDescriptor = FetchDescriptor<CachedFinancialTransaction>(
-            predicate: #Predicate {
-                $0.requiresReview && !$0.deleted
-            }
-        )
-        pendingDescriptor.fetchLimit = 1
-        var pendingNameDescriptor = FetchDescriptor<CachedFinancialTransaction>(
-            predicate: #Predicate {
-                $0.requiresNameReview && !$0.deleted
-            }
-        )
-        pendingNameDescriptor.fetchLimit = 1
-        guard let pendingTransactions = try? context.fetch(pendingDescriptor) else {
-            throw PlaidCutoverError.reconciliationIncomplete
-        }
-        guard let pendingNames = try? context.fetch(pendingNameDescriptor) else {
-            throw PlaidCutoverError.reconciliationIncomplete
-        }
-        let hasPendingTransactions = !pendingTransactions.isEmpty
-        let hasPendingNames = !pendingNames.isEmpty
-        var payeeDescriptor =
-            FetchDescriptor<DurableCanonicalPayee>(
-                predicate: #Predicate { !$0.deletedAtSource }
-            )
-        payeeDescriptor.fetchLimit = 1
-        var categoryDescriptor =
-            FetchDescriptor<DurableCanonicalCategory>(
-                predicate: #Predicate { !$0.deletedAtSource }
-            )
-        categoryDescriptor.fetchLimit = 1
-        let hasCanonicalPayees =
-            ((try? context.fetch(payeeDescriptor).isEmpty) == false)
-        let hasCanonicalCategories =
-            ((try? context.fetch(categoryDescriptor).isEmpty) == false)
-        let cursors = (try? context.fetch(FetchDescriptor<PlaidTransactionCursor>())) ?? []
-        guard !accounts.isEmpty,
-              hasCanonicalPayees,
-              hasCanonicalCategories,
-              !hasPendingTransactions,
-              !hasPendingNames,
-              !cursors.isEmpty,
-              cursors.allSatisfy(\.historicalImportComplete),
-              activeBindings.allSatisfy(\.reviewed) else {
-            throw PlaidCutoverError.reconciliationIncomplete
-        }
-        guard let settings = try? context.fetch(
-            FetchDescriptor<DurableUserSettings>()
-        ).first else {
-            throw PlaidCutoverError.settingsUnavailable
-        }
-        settings.primaryFinancialDataSource = .plaid
-        settings.plaidPrimaryCutoverAt = .now
-        guard context.safeSave(source: "settings.plaidCutover") else {
-            context.rollback()
-            throw PlaidCutoverError.saveFailed
-        }
-        do {
-            try await clearYNABToken()
-        } catch {
-            settings.primaryFinancialDataSource = .ynab
-            settings.plaidPrimaryCutoverAt = nil
-            _ = context.safeSave(source: "settings.plaidCutoverRollback")
-            throw PlaidCutoverError.tokenRemovalFailed
-        }
-        recordDailySnapshot()
-    }
-
     public func removePlaidItem(id: String) async throws {
         let context = modelContainer.mainContext
         let settings = try? context.fetch(FetchDescriptor<DurableUserSettings>()).first
@@ -647,17 +599,22 @@ public final class AppContainerController {
     public func defaultLinkedIBRLoanHistoryStartDate(
         calendar: Calendar = .current
     ) -> Date? {
-        if let budgetId = selectedBudgetId {
-            var transactionDescriptor = FetchDescriptor<CachedTransaction>(
-                predicate: #Predicate {
-                    $0.budgetId == budgetId && $0.deleted == false
-                },
-                sortBy: [SortDescriptor(\CachedTransaction.date, order: .forward)]
-            )
-            transactionDescriptor.fetchLimit = 1
-            if let firstTransaction = (try? modelContainer.mainContext.fetch(transactionDescriptor))?.first {
-                return calendar.startOfDay(for: firstTransaction.date)
-            }
+        var transactionDescriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.deleted == false && $0.pending == false
+            },
+            sortBy: [
+                SortDescriptor(
+                    \CachedFinancialTransaction.postedDate,
+                    order: .forward
+                )
+            ]
+        )
+        transactionDescriptor.fetchLimit = 1
+        if let firstTransaction = (try? modelContainer.mainContext.fetch(
+            transactionDescriptor
+        ))?.first {
+            return calendar.startOfDay(for: firstTransaction.postedDate)
         }
 
         var snapshotDescriptor = FetchDescriptor<DurableNetWorthSnapshot>(
@@ -793,14 +750,8 @@ public final class AppContainerController {
         return survivor
     }
 
-    /// Normal launch and sync never contact YNAB. Plaid is the authoritative
-    /// external source; the retained YNAB token exists solely for explicit
-    /// user-initiated reference imports.
+    /// Plaid is the sole external source for normal launch and sync.
     public func syncNow() async {
-        // Never overlap a running YNAB reference import: both mutate the
-        // shared main context and each other's saves/rollbacks would
-        // interleave.
-        if case .running = ynabReferenceImportCoordinator.phase { return }
         if hasPlaidBackendToken, plaidBackendBaseURL != nil {
             var allSucceeded = true
             if await plaidSyncCoordinator.syncAll() {
@@ -850,14 +801,6 @@ public final class AppContainerController {
         )
     }
 
-    /// Explicit, user-initiated YNAB reference import — the only path that
-    /// may use the retained YNAB token after the clean start.
-    @discardableResult
-    public func buildYNABReference() async -> Bool {
-        guard hasYNABToken else { return false }
-        return await ynabReferenceImportCoordinator.buildReference()
-    }
-
     /// Stamps the sync markers a successful Plaid sync maintains: the
     /// staleness throttle, and the one-time `firstPlaidSyncCompletedAt` that
     /// gates the first Net Worth snapshot after the clean start.
@@ -885,21 +828,15 @@ public final class AppContainerController {
     }
 
     /// Full reset of the re-fetchable Plaid state: wipe the transaction
-    /// cursors (and any legacy YNAB delta cursors) so the next sync re-imports
+    /// cursors so the next sync re-imports
     /// every item's full history from the Worker. Never touches
     /// `DurableNetWorthSnapshot` rows — after the clean start, Net Worth
     /// history is never reconstructed, so snapshots are irreplaceable.
     public func forceFullResync() async {
-        // Block the wipe while a sync or reference import is running — we
-        // don't want to delete cursors out from under one, or commit the
-        // other's partial writes with our save.
+        // Block the wipe while transaction sync is running.
         if case .syncing = plaidTransactionSyncCoordinator.phase { return }
-        if case .running = ynabReferenceImportCoordinator.phase { return }
         let ctx = modelContainer.mainContext
         if let cursors = try? ctx.fetch(FetchDescriptor<PlaidTransactionCursor>()) {
-            for cursor in cursors { ctx.delete(cursor) }
-        }
-        if let cursors = try? ctx.fetch(FetchDescriptor<SyncCursor>()) {
             for cursor in cursors { ctx.delete(cursor) }
         }
         // Coverage must rebuild from the full re-import: widen-only updates
@@ -933,13 +870,11 @@ public final class AppContainerController {
     public static func makeProduction() throws -> AppContainerController {
         let secretStore = KeychainSecretStore()
         let biometric = LocalAuthBiometricGate()
-        let client = LiveYNABClient()
         let plaidClient = LivePlaidClient()
         let container = try ModelContainerFactory.makeContainer()
         return AppContainerController(
             secretStore: secretStore,
             biometricGate: biometric,
-            ynabClient: client,
             plaidClient: plaidClient,
             transactionInferenceProvider: AppleTransactionInferenceProvider(),
             modelContainer: container,
@@ -954,7 +889,6 @@ public final class AppContainerController {
         return AppContainerController(
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(),
-            ynabClient: RecordedYNABClient(),
             plaidClient: RecordedPlaidClient(),
             transactionInferenceProvider: RecordedTransactionInferenceProvider(),
             modelContainer: container,
@@ -1014,8 +948,7 @@ public final class AppContainerController {
         ((try? context.fetch(FetchDescriptor<PlaidTransactionCursor>())) ?? [])
             .filter { $0.itemId == id }
             .forEach(context.delete)
-        // Coverage for a disconnected Item must not linger: orphan rows could
-        // later scope a YNAB reference import to a dead account.
+        // Coverage for a disconnected Item must not linger.
         ((try? context.fetch(FetchDescriptor<PlaidAccountCoverage>())) ?? [])
             .filter { $0.itemId == id }
             .forEach(context.delete)
@@ -1039,26 +972,6 @@ public final class AppContainerController {
         if !context.safeSave(source: "plaid.removeLocalItem") {
             context.rollback()
             throw PlaidRemovalError.localCleanupFailed
-        }
-    }
-}
-
-public enum PlaidCutoverError: LocalizedError {
-    case reconciliationIncomplete
-    case settingsUnavailable
-    case saveFailed
-    case tokenRemovalFailed
-
-    public var errorDescription: String? {
-        switch self {
-        case .reconciliationIncomplete:
-            "Complete the historical import, account mapping, and transaction review first."
-        case .settingsUnavailable:
-            "Networth settings are unavailable."
-        case .saveFailed:
-            "The Plaid cutover could not be saved."
-        case .tokenRemovalFailed:
-            "The YNAB token could not be removed, so YNAB remains primary."
         }
     }
 }

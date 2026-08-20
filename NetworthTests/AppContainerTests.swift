@@ -8,6 +8,79 @@ import NetworthCore
 @Suite("AppContainer wiring")
 struct AppContainerTests {
 
+    @Test func ynabRetirementPurgesOnlyDisposableLocalRows() throws {
+        let container = AppContainerController.makePreview()
+        let context = container.modelContainer.mainContext
+        context.insert(CachedAccount(
+            id: "legacy-account",
+            budgetId: "legacy-budget",
+            name: "Legacy Checking",
+            typeRaw: "checking",
+            balanceMilliunits: 0,
+            clearedMilliunits: 0,
+            unclearedMilliunits: 0,
+            onBudget: true,
+            closed: false,
+            deleted: false
+        ))
+        context.insert(YNABReferenceSuggestion(
+            plaidTransactionId: "plaid-transaction",
+            ynabTransactionId: "legacy-transaction",
+            payeeNameSnapshot: "Coffee"
+        ))
+        context.insert(DurableCanonicalPayee(
+            canonicalId: "stable-contact",
+            name: "Coffee",
+            sourceName: "Coffee"
+        ))
+        context.insert(DurableCanonicalTransactionDecision(
+            transactionExternalId: "plaid-transaction",
+            payeeCanonicalId: "stable-contact",
+            payeeNameSnapshot: "Coffee",
+            amountSign: -1,
+            forecastTreatment: .ordinarySpending,
+            reviewed: true,
+            provenance: .user
+        ))
+        context.insert(CachedFinancialAccount(
+            canonicalAccountId: "stable-account",
+            externalId: "plaid-account",
+            itemId: "plaid-item",
+            source: .plaid,
+            institutionName: "Bank",
+            name: "Checking",
+            officialName: nil,
+            mask: nil,
+            type: .checking,
+            subtype: "checking",
+            currentBalanceMilliunits: 0,
+            availableBalanceMilliunits: 0,
+            creditLimitMilliunits: nil,
+            isoCurrencyCode: "USD"
+        ))
+        try context.save()
+
+        let suiteName = "AppContainerTests.ynabRetirement.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(container.retireYNABLocalDataIfNeeded(defaults: defaults))
+        #expect(container.retireYNABLocalDataIfNeeded(defaults: defaults))
+        #expect(try context.fetch(FetchDescriptor<CachedAccount>()).isEmpty)
+        #expect(try context.fetch(
+            FetchDescriptor<YNABReferenceSuggestion>()
+        ).isEmpty)
+        #expect(try context.fetch(
+            FetchDescriptor<DurableCanonicalPayee>()
+        ).count == 1)
+        #expect(try context.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        ).count == 1)
+        #expect(try context.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        ).count == 1)
+    }
+
     @Test func bootstrapWithBiometricAvailableLocksUntilUnlock() async {
         // With biometrics available (the ScriptableBiometricGate default) and
         // the shipped Face-ID-on-by-default behavior, bootstrap should leave
@@ -15,7 +88,6 @@ struct AppContainerTests {
         let container = AppContainerController.makePreview()
         await container.bootstrap()
         #expect(container.unlocked == false)
-        #expect(container.hasYNABToken == false)
     }
 
     @Test func bootstrapWithBiometricUnavailableLeavesUnlocked() async {
@@ -24,21 +96,10 @@ struct AppContainerTests {
         let container = AppContainerController(
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
             modelContainer: try! ModelContainerFactory.makeContainer(inMemory: true)
         )
         await container.bootstrap()
         #expect(container.unlocked == true)
-        #expect(container.hasYNABToken == false)
-    }
-
-    @Test func saveAndClearYNABTokenUpdatesFlag() async throws {
-        let container = AppContainerController.makePreview()
-        await container.bootstrap()
-        try await container.saveYNABToken("test-token")
-        #expect(container.hasYNABToken == true)
-        try await container.clearYNABToken()
-        #expect(container.hasYNABToken == false)
     }
 
     @Test func bootstrapConfiguresPlaidBackendTokenWithoutExposingPlaidSecrets() async {
@@ -46,7 +107,6 @@ struct AppContainerTests {
         let container = AppContainerController(
             secretStore: InMemorySecretStore(seed: [.plaidBackendBearerToken: "backend-token"]),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
             plaidClient: plaidClient,
             modelContainer: try! ModelContainerFactory.makeContainer(inMemory: true)
         )
@@ -168,7 +228,6 @@ struct AppContainerTests {
             biometricGate: ScriptableBiometricGate(
                 isAvailable: false
             ),
-            ynabClient: RecordedYNABClient(),
             plaidClient: plaidClient,
             modelContainer: modelContainer
         )
@@ -269,7 +328,6 @@ struct AppContainerTests {
         let container = AppContainerController(
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
             plaidClient: RecordedPlaidClient(),
             modelContainer: modelContainer
         )
@@ -409,7 +467,6 @@ struct AppContainerTests {
         let container = AppContainerController(
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
             plaidClient: client,
             modelContainer: try ModelContainerFactory.makeContainer(inMemory: true)
         )
@@ -451,12 +508,12 @@ struct AppContainerTests {
 
         treatment.treatment = .duplicateYNAB
         try context.save()
-        #expect(scheduler.computeBreakdown().investments == .zero)
+        #expect(scheduler.computeBreakdown().investments == Money.dollars(25_000))
         #expect(PlaidContributionResolver(
             plaidAccounts: [account],
             treatments: [treatment],
             manualAssets: []
-        ).standalonePlaidAccounts.isEmpty)
+        ).standalonePlaidAccounts.map(\.id) == [account.id])
 
         treatment.treatment = .included
         try context.save()
@@ -685,7 +742,7 @@ struct AppContainerTests {
         #expect(manual.currentValue == Money.dollars(8_000))
     }
 
-    @Test func bootstrapPreservesExistingDurableAndCachedData() async throws {
+    @Test func bootstrapPurgesRetiredCacheAndPreservesDurableDataAndSecret() async throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let ctx = modelContainer.mainContext
         let settings = DurableUserSettings()
@@ -714,12 +771,11 @@ struct AppContainerTests {
         let container = AppContainerController(
             secretStore: secrets,
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
             modelContainer: modelContainer
         )
         await container.bootstrap()
 
-        #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).count == 1)
+        #expect(try ctx.fetch(FetchDescriptor<CachedAccount>()).isEmpty)
         #expect(try ctx.fetch(FetchDescriptor<DurableManualAsset>()).count == 1)
         #expect(try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>()).count == 1)
         #expect(try ctx.fetch(FetchDescriptor<DurableSinkingFund>()).count == 1)
@@ -729,7 +785,6 @@ struct AppContainerTests {
         #expect(preserved.freshStartVersion == 0)
         #expect(preserved.spendingLookbackDays == 60)
         #expect(try secrets.load(.ynabPersonalAccessToken) == "ynab-token")
-        #expect(container.hasYNABToken == true)
     }
 
     @Test func forceFullResyncClearsCursorsAndCoverageButNeverSnapshots() async throws {
@@ -777,33 +832,6 @@ struct AppContainerTests {
         #expect(overrides.first?.included == false)
         #expect(transactionExclusions.first?.transactionId == "one-time")
         #expect(cards.first?.paymentAccountId == "checking")
-    }
-
-    @Test func normalSyncNeverContactsYNABEvenWithStoredToken() async throws {
-        let client = RecordedYNABClient()
-        let container = AppContainerController(
-            secretStore: InMemorySecretStore(seed: [
-                .ynabPersonalAccessToken: "token",
-                .plaidBackendBearerToken: "plaid-token"
-            ]),
-            biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: client,
-            plaidClient: RecordedPlaidClient(),
-            modelContainer: try ModelContainerFactory.makeContainer(inMemory: true)
-        )
-        await container.bootstrap()
-        #expect(container.hasYNABToken == true)
-        let settings = try #require(try container.modelContainer.mainContext
-            .fetch(FetchDescriptor<DurableUserSettings>()).first)
-        settings.lastSyncedAt = Date.now.addingTimeInterval(-60 * 60)
-        try container.modelContainer.mainContext.save()
-
-        // A stale refresh and a direct sync must both leave YNAB untouched:
-        // the retained token exists only for explicit reference imports.
-        await container.refreshIfStale(now: .now)
-        await container.syncNow()
-        let callCount = await client.budgetsCallCount
-        #expect(callCount == 0)
     }
 
     @Test func snapshotWaitsForFirstPlaidSyncThenIsIdempotentForSameDay() async throws {
@@ -860,7 +888,6 @@ struct AppContainerTests {
         let container = AppContainerController(
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
             modelContainer: try ModelContainerFactory.makeContainer(inMemory: true),
             ibrLoanStore: InMemoryIBRLoanStore(document: document)
         )
@@ -982,7 +1009,6 @@ struct AppContainerTests {
         let container = AppContainerController(
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
             modelContainer: try ModelContainerFactory.makeContainer(inMemory: true),
             ibrLoanStore: InMemoryIBRLoanStore(
                 document: SharedIBRLoanDocument(current: snapshot, history: [snapshot])
@@ -1010,10 +1036,10 @@ struct AppContainerTests {
         )
     }
 
-    @Test func linkedIBRLoanDefaultsToEarliestYNABTransaction() async throws {
+    @Test func linkedIBRLoanDefaultsToEarliestPlaidTransaction() async throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
-        let ynabStart = calendar.date(
+        let plaidStart = calendar.date(
             from: DateComponents(year: 2021, month: 7, day: 1)
         )!
         let ibrStart = calendar.date(
@@ -1029,7 +1055,6 @@ struct AppContainerTests {
         let container = AppContainerController(
             secretStore: InMemorySecretStore(),
             biometricGate: ScriptableBiometricGate(isAvailable: false),
-            ynabClient: RecordedYNABClient(),
             modelContainer: modelContainer,
             ibrLoanStore: InMemoryIBRLoanStore(
                 document: SharedIBRLoanDocument(current: snapshot, history: [snapshot])
@@ -1037,28 +1062,31 @@ struct AppContainerTests {
             ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore()
         )
         await container.bootstrap()
-        // Seed after bootstrap: the clean start wipes any pre-existing rows.
-        modelContainer.mainContext.insert(CachedTransaction(
+        let summary = try #require(PlaidTransactionDTO(
             id: "starting-balance",
-            budgetId: "budget",
             accountId: "checking",
-            date: ynabStart,
-            amountMilliunits: Money.dollars(1_000).milliunits,
-            cleared: true,
-            approved: true,
-            payeeName: "Starting Balance",
-            categoryName: nil,
-            memo: nil,
-            deleted: false
+            date: "2021-07-01",
+            amount: -1_000,
+            name: "Starting Balance"
+        ).financialSummary(canonicalAccountId: "checking"))
+        modelContainer.mainContext.insert(CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassification(
+                displayName: "Starting Balance",
+                categoryName: nil,
+                treatment: .income,
+                confidence: .high,
+                provenance: .user,
+                requiresReview: false
+            )
         ))
         try modelContainer.mainContext.save()
-        container.selectedBudgetId = "budget"
 
         #expect(
-            container.defaultLinkedIBRLoanHistoryStartDate(calendar: calendar) == ynabStart
+            container.defaultLinkedIBRLoanHistoryStartDate(calendar: calendar) == plaidStart
         )
         #expect(
-            container.linkedIBRLoanBalance(on: ynabStart, calendar: calendar)
+            container.linkedIBRLoanBalance(on: plaidStart, calendar: calendar)
                 == Money.dollars(90_000)
         )
     }
@@ -2651,38 +2679,6 @@ struct AppContainerTests {
             confirmed: true
         )
         legacyRule.categoryRaw = "reimbursements"
-        let legacySuggestion = YNABReferenceSuggestion(
-            plaidTransactionId: "legacy-suggestion",
-            ynabTransactionId: "ynab-legacy-suggestion",
-            categoryCanonicalId: LegacyReimbursementRepresentation
-                .retiredCanonicalCategoryID,
-            categoryNameSnapshot: "Reimbursement - $5K",
-            forecastTreatment: .ordinarySpending,
-            confidence: .high,
-            strong: true
-        )
-        let legacySplitSuggestion = YNABReferenceSuggestion(
-            plaidTransactionId: "legacy-split-suggestion",
-            ynabTransactionId: "ynab-legacy-split-suggestion",
-            forecastTreatment: .ordinarySpending,
-            subtransactionsData: try JSONEncoder().encode([
-                SubTransactionSummary(
-                    id: "legacy-reimbursement-leg",
-                    amount: Money(milliunits: -25_000),
-                    categoryId: LegacyReimbursementRepresentation
-                        .retiredYNABCategoryID,
-                    categoryName: "Reimbursement - $5K",
-                    categoryCanonicalId: LegacyReimbursementRepresentation
-                        .retiredCanonicalCategoryID,
-                    forecastTreatment: .ordinarySpending,
-                    payeeName: "Work Expense",
-                    memo: nil,
-                    deleted: false
-                )
-            ]),
-            confidence: .high,
-            strong: true
-        )
         let legacyCategory = DurableCanonicalCategory(
             canonicalId: LegacyReimbursementRepresentation
                 .retiredCanonicalCategoryID,
@@ -2702,8 +2698,6 @@ struct AppContainerTests {
         context.insert(legacyExpense)
         context.insert(legacyOverride)
         context.insert(legacyRule)
-        context.insert(legacySuggestion)
-        context.insert(legacySplitSuggestion)
         context.insert(legacyCategory)
         try context.save()
 
@@ -2716,7 +2710,6 @@ struct AppContainerTests {
         #expect(result.durableDecisions == 1)
         #expect(result.durableOverrides == 1)
         #expect(result.merchantRules == 1)
-        #expect(result.referenceSuggestions == 2)
         #expect(result.canonicalCategories == 1)
         #expect(synthetic.forecastTreatment == .reimbursement)
         #expect(synthetic.categoryName == nil)
@@ -2735,17 +2728,6 @@ struct AppContainerTests {
         #expect(legacyRule.categoryRaw == "other")
         #expect(legacyRule.categoryName == nil)
         #expect(!legacyRule.categoryReusable)
-        #expect(legacySuggestion.forecastTreatment
-            == TransactionType.reimbursement)
-        #expect(legacySuggestion.categoryCanonicalId == nil)
-        #expect(legacySuggestion.categoryNameSnapshot == nil)
-        #expect(legacySplitSuggestion.subtransactions.count == 1)
-        #expect(legacySplitSuggestion.subtransactions[0].forecastTreatment
-            == .reimbursement)
-        #expect(legacySplitSuggestion.subtransactions[0].categoryId == nil)
-        #expect(legacySplitSuggestion.subtransactions[0].categoryCanonicalId
-            == nil)
-        #expect(legacySplitSuggestion.subtransactions[0].categoryName == nil)
         #expect(legacyCategory.hidden)
         #expect(legacyCategory.categoryGroupIdentity == nil)
         #expect(realRefund.forecastTreatment == .refund)
@@ -2935,7 +2917,8 @@ struct AppContainerTests {
         #expect(!rule.categoryReusable)
     }
 
-    // MARK: - YNAB reference import (step 2)
+    #if false // Retired provider reference-import coverage retained for history only.
+    // MARK: - Retired provider reference import
 
     @Test func ynabReferenceImportKeepsCategoriesAsEvidenceOnly() async throws {
         func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
@@ -3129,6 +3112,8 @@ struct AppContainerTests {
         )
         #expect(Set(cachedCategories.map(\.id)) == ["cat-existing", "cat-new"])
     }
+
+    #endif
 
     @Test func approveClusterWritesAuthoritativeDecisionsInOneSave() throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
@@ -3355,25 +3340,6 @@ struct AppContainerTests {
             treatment: .income,
             categoryCanonicalId: "ynab:cat-pay"
         ))
-    }
-
-    // MARK: - Historical backfill (retired)
-
-    @Test func historyBackfillNeverRunsAfterCleanStart() async throws {
-        let container = AppContainerController.makePreview()
-        await container.bootstrap()
-        let ctx = container.modelContainer.mainContext
-
-        seedAccountWithRecentTransactions(into: ctx, budgetId: "b1")
-        try ctx.save()
-
-        // Fresh settings are stamped with the current backfill version, so
-        // the YNAB historical reconstruction is permanently disabled: Net
-        // Worth history is never rebuilt from YNAB after the clean start.
-        container.syncCoordinator.runHistoryBackfillIfNeeded(budgetId: "b1")
-
-        let snaps = try ctx.fetch(FetchDescriptor<DurableNetWorthSnapshot>())
-        #expect(snaps.isEmpty)
     }
 
     // MARK: - Helpers

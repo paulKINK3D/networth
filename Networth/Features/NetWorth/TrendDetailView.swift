@@ -335,8 +335,8 @@ struct TrendDetailView: View {
 
     /// Heuristic: flag every manual-asset / included-closed-account pair
     /// whose names share at least the first 3 characters (case-insensitive).
-    /// Catches the common "Vanguard" manual ↔ "Vanguard Brokerage" closed
-    /// YNAB overlap without doing balance reconciliation.
+    /// Catches a possible manual-asset / legacy-account overlap without doing
+    /// balance reconciliation.
     private var overlapHints: [OverlapHint] {
         let manuals = manualAssetContributions
         let closed = includedClosedContributions
@@ -351,7 +351,7 @@ struct TrendDetailView: View {
                     hints.append(OverlapHint(
                         id: "\(m.id.uuidString)-\(c.id)",
                         label: "\(m.name) ↔ \(c.name)",
-                        detail: "Manual asset entries from \(m.firstEntryLabel) may double-count the closed YNAB account's reconstructed history."
+                        detail: "Manual asset entries from \(m.firstEntryLabel) may double-count this closed account's reconstructed history."
                     ))
                 }
             }

@@ -3,6 +3,7 @@ import SwiftData
 import os
 import NetworthCore
 
+#if false // Retired provider sync kept temporarily as noncompiled migration history.
 /// Pulls data from YNAB and writes it into the local SwiftData cache.
 /// Honors delta sync via `last_knowledge_of_server` to stay well under the 200 req/hr limit.
 @MainActor
@@ -825,6 +826,7 @@ public final class SyncCoordinator {
         return try? mainContext.fetch(descriptor).first
     }
 }
+#endif
 
 // MARK: - Plaid investments
 
@@ -1142,14 +1144,12 @@ struct LegacyReimbursementRepairService {
         var durableDecisions = 0
         var durableOverrides = 0
         var merchantRules = 0
-        var referenceSuggestions = 0
         var canonicalCategories = 0
         var undecodablePayloads = 0
 
         var repairedRecords: Int {
             cachedTransactions + durableDecisions + durableOverrides
-                + merchantRules + referenceSuggestions
-                + canonicalCategories
+                + merchantRules + canonicalCategories
         }
     }
 
@@ -1274,36 +1274,6 @@ struct LegacyReimbursementRepairService {
             rule.categoryReusable = false
             rule.updatedAt = .now
             result.merchantRules += 1
-        }
-
-        for suggestion in try context.fetch(
-            FetchDescriptor<YNABReferenceSuggestion>()
-        ) {
-            if let data = suggestion.subtransactionsData, !data.isEmpty {
-                switch try repairSplitData(data) {
-                case .unchanged:
-                    break
-                case .undecodable:
-                    result.undecodablePayloads += 1
-                case .repaired(let repairedData, let parentTreatment):
-                    suggestion.subtransactionsData = repairedData
-                    suggestion.forecastTreatmentRaw = parentTreatment.rawValue
-                    result.referenceSuggestions += 1
-                }
-            } else if LegacyReimbursementRepresentation
-                .matchesWholeTransaction(
-                    treatmentRaw: suggestion.forecastTreatmentRaw,
-                    categoryCanonicalId: suggestion.categoryCanonicalId,
-                    categoryRaw: nil,
-                    categoryName: suggestion.categoryNameSnapshot,
-                    goalId: nil
-                ) {
-                suggestion.forecastTreatmentRaw =
-                    TransactionType.reimbursement.rawValue
-                suggestion.categoryCanonicalId = nil
-                suggestion.categoryNameSnapshot = nil
-                result.referenceSuggestions += 1
-            }
         }
 
         for category in try context.fetch(
@@ -1455,7 +1425,6 @@ public final class PlaidTransactionSyncCoordinator {
             mainContext.rollback()
             return
         }
-        resetDerivedTransactionDataIfNeeded()
         guard repairLegacyReimbursements() else { return }
         if markOrphanedTransactionsDeleted(),
            !mainContext.safeSave(
@@ -1464,14 +1433,6 @@ public final class PlaidTransactionSyncCoordinator {
             mainContext.rollback()
             return
         }
-        if prepareMissingCanonicalDirectoryReplay(),
-           !mainContext.safeSave(
-               source: "plaidTransactions.canonicalDirectoryReplay"
-           ) {
-            mainContext.rollback()
-            return
-        }
-        reconcileHistoryIfNeeded()
         refreshCanonicalReviewCounts()
     }
 
@@ -1768,7 +1729,6 @@ public final class PlaidTransactionSyncCoordinator {
         do {
             let itemsResponse = try await client.items()
             upsertItems(itemsResponse.items)
-            resetDerivedTransactionDataIfNeeded()
             let transactionItems = itemsResponse.items.filter {
                 ($0.products ?? []).contains("transactions")
             }
@@ -1788,7 +1748,6 @@ public final class PlaidTransactionSyncCoordinator {
                 }
             }
             markOrphanedTransactionsDeleted()
-            reconcileHistoryIfNeeded()
             applyCurrentCanonicalState()
             guard mainContext.safeSave(
                 source: "plaidTransactions.applyCanonicalState"
@@ -2308,16 +2267,6 @@ public final class PlaidTransactionSyncCoordinator {
         aliasesByKey: [String: [DurablePayeeAlias]],
         decisions: [DurableCanonicalTransactionDecision]
     ) {
-        // YNAB reference suggestions are the lowest prefill layer: they fill
-        // rows the alias/decision evidence cannot resolve and are re-applied
-        // on every pass, so they survive syncs without ever marking a row
-        // reviewed. User decisions and alias evidence always win.
-        let suggestionRows = (try? mainContext.fetch(
-            FetchDescriptor<YNABReferenceSuggestion>()
-        )) ?? []
-        let suggestionsByPlaidID = Dictionary(
-            uniqueKeysWithValues: suggestionRows.map { ($0.plaidTransactionId, $0) }
-        )
         var payeeByID: [String: DurableCanonicalPayee] = [:]
         for payee in payees.sorted(by: { $0.updatedAt < $1.updatedAt }) {
             payeeByID[payee.canonicalId] = payee
@@ -2380,16 +2329,6 @@ public final class PlaidTransactionSyncCoordinator {
         for row in rows where !row.deleted && !row.pending {
             if let decision = decisionByID[row.externalId] {
                 applyCanonicalDecision(decision, to: row)
-                continue
-            }
-            // A historical row's OWN matched YNAB identity is ground truth
-            // and outranks propagated aliases and name inference — generic
-            // bank descriptors ("Online Transfer") otherwise let one
-            // confirmed transfer claim every transfer.
-            if let suggestion = suggestionsByPlaidID[row.id] {
-                applyReferenceSuggestion(
-                    suggestion, to: row, payeeByID: payeeByID
-                )
                 continue
             }
             let summary = row.toSummary()
@@ -2470,81 +2409,33 @@ public final class PlaidTransactionSyncCoordinator {
             row.payeeCanonicalId = payeeID
             row.displayName = payee.name
             row.requiresNameReview = false
-            // Layering: the row's OWN matched YNAB decision outranks a
-            // payee-level generalization — approving some United flights as
-            // Travel must not repaint the reimbursed ones whose history says
-            // otherwise. Patterns fill only evidence-free rows.
-            if let suggestion = suggestionsByPlaidID[row.id] {
-                row.categoryCanonicalId = suggestion.categoryCanonicalId
-                row.categoryName = suggestion.categoryNameSnapshot
-                row.forecastTreatmentRaw = suggestion.forecastTreatmentRaw
-                row.subtransactionsData = suggestion.subtransactionsData
-                row.classificationConfidenceRaw = suggestion.confidenceRaw
+            let patterns = patternsByPayee[payeeID] ?? []
+            let directionPatterns = patterns.filter {
+                $0.amountSign == Int(row.amountMilliunits.signum())
+            }
+            let patternKeys = Set(directionPatterns.map {
+                "\($0.categoryCanonicalId ?? "")|\($0.forecastTreatmentRaw)"
+            })
+            if patternKeys.count == 1,
+               let pattern = directionPatterns.first {
+                row.categoryCanonicalId = pattern.categoryCanonicalId
+                row.categoryName = pattern.categoryNameSnapshot
+                row.forecastTreatmentRaw = pattern.forecastTreatmentRaw
+                row.classificationConfidenceRaw =
+                    ClassificationConfidence.high.rawValue
                 row.classificationProvenanceRaw =
                     ClassificationProvenance.historicalMatch.rawValue
+                // A decision pattern outranks any stale split data.
+                row.subtransactionsData = nil
             } else {
-                let patterns = patternsByPayee[payeeID] ?? []
-                let directionPatterns = patterns.filter {
-                    $0.amountSign == Int(row.amountMilliunits.signum())
-                }
-                let patternKeys = Set(directionPatterns.map {
-                    "\($0.categoryCanonicalId ?? "")|\($0.forecastTreatmentRaw)"
-                })
-                if patternKeys.count == 1,
-                   let pattern = directionPatterns.first {
-                    row.categoryCanonicalId = pattern.categoryCanonicalId
-                    row.categoryName = pattern.categoryNameSnapshot
-                    row.forecastTreatmentRaw = pattern.forecastTreatmentRaw
-                    row.classificationConfidenceRaw =
-                        ClassificationConfidence.high.rawValue
-                    row.classificationProvenanceRaw =
-                        ClassificationProvenance.historicalMatch.rawValue
-                    // A decision pattern outranks any stale split data.
-                    row.subtransactionsData = nil
-                } else {
-                    row.categoryCanonicalId = nil
-                    row.categoryName = nil
-                    row.subtransactionsData = nil
-                }
+                row.categoryCanonicalId = nil
+                row.categoryName = nil
+                row.subtransactionsData = nil
             }
             // Product rule: every newly posted transaction is confirmed by
             // the user even when history provides a strong prefill.
             row.requiresReview = true
         }
-    }
-
-    /// Prefills one row from its YNAB reference suggestion. Never marks the
-    /// row reviewed: suggestions are not decisions. The CURRENT canonical
-    /// payee name wins over the import-time snapshot so user renames
-    /// propagate.
-    private func applyReferenceSuggestion(
-        _ suggestion: YNABReferenceSuggestion,
-        to row: CachedFinancialTransaction,
-        payeeByID: [String: DurableCanonicalPayee] = [:]
-    ) {
-        row.payeeCanonicalId = suggestion.payeeCanonicalId
-        if let payeeID = suggestion.payeeCanonicalId,
-           let payee = payeeByID[payeeID] {
-            row.displayName = payee.name
-        } else if !suggestion.payeeNameSnapshot.isEmpty {
-            row.displayName = suggestion.payeeNameSnapshot
-        } else if row.displayName.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        ).isEmpty {
-            row.displayName = row.toSummary().fallbackDisplayName
-        }
-        row.categoryCanonicalId = suggestion.categoryCanonicalId
-        row.categoryName = suggestion.categoryNameSnapshot
-        row.goalId = nil
-        row.forecastTreatmentRaw = suggestion.forecastTreatmentRaw
-        row.subtransactionsData = suggestion.subtransactionsData
-        row.classificationConfidenceRaw = suggestion.confidenceRaw
-        row.classificationProvenanceRaw =
-            ClassificationProvenance.historicalMatch.rawValue
-        row.requiresNameReview = suggestion.payeeCanonicalId == nil
-        row.requiresReview = true
-        normalizeLegacyReimbursement(in: row)
-        row.updatedAt = .now
     }
 
     private func applyCanonicalDecision(
@@ -4475,7 +4366,7 @@ enum ClaudeFinancialSnapshotBuilder {
         let settings = try mainContext.fetch(
             FetchDescriptor<DurableUserSettings>()
         ).first
-        let primarySource = settings?.primaryFinancialDataSource ?? .ynab
+        let primarySource = settings?.primaryFinancialDataSource ?? .plaid
         let manualAssets = try mainContext.fetch(
             FetchDescriptor<DurableManualAsset>()
         ).filter { !$0.deleted }

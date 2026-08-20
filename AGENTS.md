@@ -10,7 +10,7 @@
 - Core domain package: `NetworthCore/` (local SPM package — pure Swift, no UI)
 
 ## Purpose
-Personal financial radar that helps the user understand their real financial position today and see cash problems before they happen. Its primary daily job is near-term cash-flow confidence: explain what money is leaving, when it leaves, and whether upcoming obligations are safely covered. Credit-card statement and autopay forecasting is the core differentiator. Net worth is the supporting long-term scorecard, not a proxy for spendable cash. Keep forecasts conservative, understandable, and explainable. Read-only against YNAB, the optional local BL IBR bridge, and the server-mediated Plaid Investments and Transactions connections. See `docs/PLAN.md` for the product north star, full scope, locked decisions, and phase plan.
+Personal financial radar that helps the user understand their real financial position today and see cash problems before they happen. Its primary daily job is near-term cash-flow confidence: explain what money is leaving, when it leaves, and whether upcoming obligations are safely covered. Credit-card statement and autopay forecasting is the core differentiator. Net worth is the supporting long-term scorecard, not a proxy for spendable cash. Keep forecasts conservative, understandable, and explainable. Plaid is the sole external financial-data source; the optional BL IBR bridge remains local-only and read-only. YNAB is retired and must not appear in UI, make network requests, or influence classifications or reports. See `docs/PLAN.md` for the product north star, full scope, locked decisions, and phase plan.
 
 ## Repo Layout
 - `Networth/`: app source — models, views, services, design system, app entrypoint
@@ -23,10 +23,9 @@ Personal financial radar that helps the user understand their real financial pos
 
 ## Key App Behavior
 - Single-user app gated by a Face ID toggle that defaults ON when the device supports biometrics. A versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows forward so iCloud-restored or cross-device settings never silently leave the user unlocked.
-- YNAB Personal Access Token entered once in Settings, stored in iCloud-synced Keychain so a future device swap is zero-friction.
-- On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, `YNABClient` and `PlaidClient` actors, `ModelContainer`, `ConnectivityMonitor`, the read-only `IBRLoanStore`, and local `IBRLoanHistorySettingsStore`.
+- On launch, `AppContainerController` (`@Observable`, `@Environment`-injected) provisions `SecretStore`, `BiometricGate`, the `PlaidClient` actor, `ModelContainer`, `ConnectivityMonitor`, the read-only `IBRLoanStore`, and local `IBRLoanHistorySettingsStore`.
 - 4-tab structure: Spending · Projections · Goals · Net Worth. Investment reporting is reached through the separately scoped Investments and Retirement categories on Net Worth; account details are reached through Balance Sheet categories. Settings is opened from the shared top-right menu (not a tab).
-- Sync strategy: SwiftData local cache for re-fetchable YNAB and Plaid data; CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings, account identity decisions, merchant rules, and transaction corrections).
+- Sync strategy: SwiftData local cache for re-fetchable Plaid data; CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings, account identity decisions, merchant rules, and transaction corrections).
 - Optional IBR loan sharing uses `group.com.bluelava.me.financial`. The decoded summary stays in memory; its dated balances overlay the chart locally and must never be copied into SwiftData or CloudKit.
 - User-entered credit-card payments are one-cycle private-CloudKit overrides
   keyed by card and statement close date. They replace both projected amount
@@ -76,11 +75,10 @@ cd PlaidWorker && npm test && npm run check
 - Treat code as source of truth if legacy docs conflict.
 - **Design system first.** If a visual pattern appears in 2+ places, promote it into `Networth/DesignSystem/` before the second use. All `Nw*` tokens and components live there.
 - **No view models.** Follow the inventory-app pattern: views read `@Query` directly; logic lives in services and pure helpers (in `NetworthCore` when domain logic, in `Networth/Services/` when SwiftData-coupled).
-- **Protocol-based DI** for any IO boundary: `SecretStore`, `BiometricGate`, `YNABClient`, `PlaidClient`, `SnapshotScheduler`, `IBRLoanStore`, `IBRLoanHistorySettingsStore`. Always ship an in-memory / recorded fake alongside the production implementation.
-- **Actor-isolate the YNAB client** for thread-safe token access and rate-limit bookkeeping.
-- **Milliunit math lives in `NetworthCore.Money`.** Never do `÷1000` in views. Prefer `..._formatted` / `..._currency` fields from YNAB when present.
-- **Delta sync (`last_knowledge_of_server`) on supported endpoints** to stay well under YNAB's 200 req/hour limit.
-- **Read-only against YNAB in v1.** Do not add any POST/PATCH/DELETE call sites; the client should expose only read methods publicly.
+- **Protocol-based DI** for any IO boundary: `SecretStore`, `BiometricGate`, `PlaidClient`, `SnapshotScheduler`, `IBRLoanStore`, `IBRLoanHistorySettingsStore`. Always ship an in-memory / recorded fake alongside the production implementation.
+- **Milliunit math lives in `NetworthCore.Money`.** Never do `÷1000` in views.
+- **YNAB is retired.** Do not add YNAB credentials, clients, endpoints, imports, caches, fallbacks, classification evidence, or user-facing copy. Compatibility-only persisted fields may remain inert when removal would risk SwiftData or CloudKit migration safety.
+- **Retire completed migration tooling.** A one-time import or reconciliation flow must be removed from production UI and runtime after its task is complete; do not leave legacy providers hidden in submenus or active classifiers.
 
 ## Data Safety And Persistence Requirements
 - Treat user data as durable product data, not temporary UI state.
@@ -98,22 +96,21 @@ cd PlaidWorker && npm test && npm run check
 - For persisted-model field renames/deletions, document expected CloudKit behavior and
   handle legacy-field cleanup/read paths intentionally.
 - **Two persistence tiers — keep them separate:**
-  - **Local SwiftData store** caches YNAB data (accounts, transactions, scheduled transactions, categories). Disposable; can be re-fetched.
+  - **Local SwiftData store** caches Plaid data. Disposable; can be re-fetched.
   - **CloudKit private DB store** holds irreplaceable user data: manual assets, daily net worth snapshots, user settings, projection configuration.
-  - Do not mix the two stores. Do not put cached YNAB data in CloudKit.
-- **YNAB PAT is high-sensitivity.** Store via the `SecretStore` protocol backed by iCloud-synced Keychain (`kSecAttrAccessibleWhenUnlocked` + `kSecAttrSynchronizable: true`). Never log token values, never write them to SwiftData, never include them in diagnostic exports.
-- **YNAB API is read-only in v1.** This is a security posture: even if the token had write scope, the client must not expose write endpoints. Future write support requires explicit user approval and a separate review.
-- **BL IBR bridge is local-only and read-only.** Networth may decode the opt-in versioned App Group document but must not write to it, upload its fields, or generate a second projected loan payment. YNAB checking activity remains the cash-flow source for payments.
-- **Plaid is server-mediated and read-only.** The app may receive Link tokens plus normalized investment and banking data from the private backend, but Plaid `client_id`, `secret`, and Item `access_token` values must never enter the app, Keychain, logs, fixtures, or repository. Investments remain on their dedicated reconciliation path. Transactions may replace YNAB cash/card data only after historical import and explicit account reconciliation complete.
+  - Do not mix the two stores. Retired-provider compatibility rows must never enter CloudKit.
+- **Back up the resolved store location, not an assumed app-container path.** On the physical device, both active SwiftData stores currently resolve under `group.com.bluelava.me.financial`; similarly named files in the ordinary app container may be dormant legacy copies. Before any destructive migration, verify the live configuration URLs and copy the shared App Group as well as the app container.
+- **BL IBR bridge is local-only and read-only.** Networth may decode the opt-in versioned App Group document but must not write to it, upload its fields, or generate a second projected loan payment. Plaid checking activity remains the cash-flow source for payments.
+- **Plaid is server-mediated and read-only.** The app may receive Link tokens plus normalized investment and banking data from the private backend, but Plaid `client_id`, `secret`, and Item `access_token` values must never enter the app, Keychain, logs, fixtures, or repository. Investments remain on their dedicated reconciliation path; Transactions is the sole banking and card transaction source.
 - **Plaid Transactions does not use Plaid recurring predictions.** Sync only through `/transactions/sync`; do not add `/transactions/refresh` or `/transactions/recurring/get` without a new product/cost decision.
-- **Transaction inference is layered and privacy-bounded.** Apply confirmed local merchant rules first, then Apple on-device inference. Claude fallback is opt-in and may receive only transaction description, merchant/counterparty, Plaid category, payment channel, and direction—never amount, date, balance, account identifiers, or YNAB history.
+- **Transaction inference is layered and privacy-bounded.** Apply confirmed local merchant rules first, then Apple on-device inference. Claude fallback is opt-in and may receive only transaction description, merchant/counterparty, Plaid category, payment channel, and direction—never amount, date, balance, account identifiers, or transaction history.
 - **Plaid Worker secrets never enter git.** Use `.dev.vars` locally and `wrangler secret put` when deployed. Item access tokens must be AES-GCM encrypted before Workers KV persistence; the encryption key is a separate Worker secret.
-- **Plaid balances require reconciliation before inclusion.** A newly linked Plaid account remains excluded from Net Worth until the user confirms that it is not already represented by a YNAB account or manual asset. Account balances reconcile totals; holdings explain their composition and must not be added again.
+- **Plaid balances require review before inclusion.** A newly linked investment account remains excluded from Net Worth until the user confirms whether it is separate, already represented by a manual asset, or intentionally excluded. Account balances reconcile totals; holdings explain their composition and must not be added again.
 - **Account nicknames are durable display overrides.** Key them by Plaid
   account ID in the private CloudKit store; never overwrite the disposable
   provider cache name. User-facing account labels resolve the nickname first,
   while detail and reset flows preserve the imported name.
-- **IBR history overrides are presentation-only.** With no override, linked-loan history begins on the earliest cached YNAB transaction date. A user-selected replacement date stays in local preferences. Before IBR's first dated balance, estimate backward from the earliest snapshot using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Never persist the estimated balances or infer capitalization events.
+- **IBR history overrides are presentation-only.** With no override, linked-loan history begins on the earliest cached Plaid transaction date. A user-selected replacement date stays in local preferences. Before IBR's first dated balance, estimate backward from the earliest snapshot using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Never persist the estimated balances or infer capitalization events.
 
 ## UX And Design Consistency Requirements
 - Match the visual and interaction style already established across views.
@@ -151,7 +148,7 @@ cd PlaidWorker && npm test && npm run check
 - **Currency display:** never show raw milliunits. Always route through `NetworthCore.Money` formatters. Hide cents where the design calls for compact metrics; show full precision in detail rows.
 - **Information architecture is fixed at 4 tabs:** Spending · Projections · Goals · Net Worth. Spending is the initial tab. Investments moved beneath Net Worth by scope decision 2026-08-14; its reporting remains available by opening the Investments Balance Sheet category. Accounts remain Balance Sheet drill-downs rather than a tab. Settings opens from the shared top-right menu (not a tab). Do not add or restore tabs without a scope decision logged in `docs/PLAN.md`.
 - **No privacy/blur mode** in v1 (explicitly scoped out).
-- **No transactions tab** in v1 (explicitly scoped out — users open YNAB to browse transactions).
+- **No transactions tab** in v1 (explicitly scoped out — transaction browsing stays in account and Spending drill-downs).
 - **Spending budgets are group-level guidance only.** A user may opt any
   existing Spending group into a repeating monthly target and explicitly
   feature one group. Months never carry over, category-level budgets and
@@ -182,4 +179,3 @@ cd PlaidWorker && npm test && npm run check
 
 ## Notes
 - Reference apps in sibling directories — `~/projects/inventory-app` (architecture model) and `~/projects/WorkoutApp` (design-system model). Their `Lift*` token/component naming is the direct template for our `Nw*` system.
-- YNAB API quirks worth re-reading before any networking change: 200 req/hr rolling rate limit, milliunit amounts, `since_date` defaults to one year ago (pass explicit dates for history reconstruction), delta sync via `last_knowledge_of_server` on 9 endpoints.

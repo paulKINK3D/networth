@@ -2,7 +2,8 @@ import Foundation
 import SwiftData
 import NetworthCore
 
-/// Local-only SwiftData cache of YNAB data. Disposable; can be re-fetched.
+/// Local-only SwiftData models. Retired-provider rows remain only so existing
+/// stores can open long enough for the idempotent cleanup to delete them.
 /// Lives in its own ModelContainer so CloudKit sync only touches durable user data.
 
 @Model
@@ -787,6 +788,21 @@ public final class CachedFinancialTransaction {
               forecastTreatment != .cardPayment else {
             return nil
         }
+        let projectionLegs = activeSplitLegs.map { leg in
+            SubTransactionSummary(
+                id: leg.id,
+                amount: leg.amount,
+                categoryId: leg.categoryCanonicalId ?? leg.categoryId,
+                categoryName: leg.categoryName,
+                categoryCanonicalId: leg.categoryCanonicalId,
+                goalId: leg.goalId,
+                forecastTreatment: leg.forecastTreatment,
+                transferAccountId: leg.transferAccountId,
+                payeeName: leg.payeeName,
+                memo: leg.memo,
+                deleted: leg.deleted
+            )
+        }
         return TransactionSummary(
             id: id,
             accountId: canonicalAccountId,
@@ -797,7 +813,8 @@ public final class CachedFinancialTransaction {
             payeeName: displayName,
             categoryId: isSplit
                 ? nil
-                : "local:\(Self.categoryKey(categoryDisplayName))",
+                : categoryCanonicalId
+                    ?? "local:\(Self.categoryKey(categoryDisplayName))",
             categoryName: isSplit ? nil : categoryDisplayName,
             payeeCanonicalId: payeeCanonicalId,
             categoryCanonicalId: isSplit ? nil : categoryCanonicalId,
@@ -806,7 +823,7 @@ public final class CachedFinancialTransaction {
             transferAccountId: nil,
             memo: nil,
             deleted: deleted,
-            subtransactions: subtransactions
+            subtransactions: projectionLegs
         )
     }
 

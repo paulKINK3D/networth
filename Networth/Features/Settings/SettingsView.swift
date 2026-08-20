@@ -35,11 +35,9 @@ struct SettingsView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query private var settingsList: [DurableUserSettings]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
-    @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \DurableCardSettings.accountId) private var cardSettings: [DurableCardSettings]
     @Query private var exclusions: [DurableExcludedSpendCategory]
     @Query private var transactionExclusions: [DurableExcludedSpendTransaction]
-    @Query private var includedClosed: [DurableIncludedClosedAccount]
     @Query private var cashAccountOverrides: [DurableProjectionCashAccountOverride]
     @Query(sort: \CachedPlaidItem.institutionName) private var plaidItems: [CachedPlaidItem]
     @Query(sort: \CachedPlaidAccount.name) private var plaidAccounts: [CachedPlaidAccount]
@@ -60,7 +58,6 @@ struct SettingsView: View {
     @State private var showingCardSheet: CardSettingsTarget? = nil
     @State private var showingExclusionsSheet = false
     @State private var showingForceResyncConfirm = false
-    @State private var showingIncludedClosed = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
     @State private var showingPlaidConnection = false
@@ -93,7 +90,7 @@ struct SettingsView: View {
                             "Accounts & Sync",
                             subtitle: "Banking, investments, and data refresh",
                             icon: .accounts,
-                            value: usesPlaidTransactions ? "Plaid" : "YNAB"
+                            value: "Plaid"
                         )
                     }
 
@@ -186,38 +183,6 @@ struct SettingsView: View {
 
             if page == .connections {
                 Section {
-                    NavigationLink {
-                        YNABReferenceSettingsView()
-                    } label: {
-                        HStack {
-                            Label {
-                                Text("YNAB Reference")
-                            } icon: {
-                                NwIcon.keychain.image
-                                    .foregroundStyle(NwAppColors.primary)
-                            }
-                            Spacer()
-                            if container.hasYNABToken {
-                                NwStatusBadge(
-                                    "Stored",
-                                    style: .positive,
-                                    icon: .success
-                                )
-                            } else {
-                                Text("Not set")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Reference Data")
-                } footer: {
-                    Text("Optional legacy history tools.")
-                }
-            }
-
-            if page == .connections {
-                Section {
                     HStack {
                         Label {
                             Text("Last synced")
@@ -244,23 +209,6 @@ struct SettingsView: View {
                     }
                     .disabled(!container.hasPlaidBackendToken || isSyncing)
                     .foregroundStyle(NwAppColors.liability)
-                    Button {
-                        showingIncludedClosed = true
-                    } label: {
-                        HStack {
-                            Label {
-                                Text("Include Closed Accounts…")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                            } icon: {
-                                NwIcon.netWorth.image.foregroundStyle(NwAppColors.primary)
-                            }
-                            Spacer()
-                            Text("\(includedClosed.count)")
-                                .foregroundStyle(.secondary)
-                            NwIcon.chevron.image.foregroundStyle(.secondary)
-                        }
-                    }
-                    .disabled(isSyncing)
                 } header: {
                     Text("Sync")
                 }
@@ -299,7 +247,7 @@ struct SettingsView: View {
                             NwIcon.accounts.image.foregroundStyle(NwAppColors.primary)
                         }
                         Spacer()
-                        Text(usesPlaidTransactions ? "Plaid" : "YNAB")
+                        Text("Plaid")
                             .foregroundStyle(.secondary)
                     }
 
@@ -716,9 +664,6 @@ struct SettingsView: View {
             .sheet(isPresented: $showingExclusionsSheet) {
                 ExcludedCategoriesSheet().environment(container)
             }
-            .sheet(isPresented: $showingIncludedClosed) {
-                IncludedClosedAccountsSheet().environment(container)
-            }
             .sheet(isPresented: $showingCashAccounts) {
                 ProjectionCashAccountsSheet().environment(container)
             }
@@ -743,7 +688,7 @@ struct SettingsView: View {
                     container.setClaudeFallbackEnabled(true)
                 }
             } message: {
-                Text("For low-confidence items only, Networth sends the transaction description, merchant/counterparty, Plaid category, payment channel, and direction through your private backend to Anthropic Claude. It never sends account numbers, balances, amounts, dates, or your YNAB history.")
+                Text("For low-confidence items only, Networth sends the transaction description, merchant/counterparty, Plaid category, payment channel, and direction through your private backend to Anthropic Claude. It never sends account numbers, balances, amounts, dates, or transaction history.")
             }
             .alert("Force Full Resync?", isPresented: $showingForceResyncConfirm) {
                 Button("Cancel", role: .cancel) {}
@@ -820,26 +765,14 @@ struct SettingsView: View {
         return false
     }
 
-    private var isReferenceImportRunning: Bool {
-        if case .running = container.ynabReferenceImportCoordinator.phase {
-            return true
-        }
-        return false
-    }
-
     private var isAnySyncing: Bool {
         if isSyncing { return true }
         if case .syncing = container.plaidSyncCoordinator.phase { return true }
-        if isReferenceImportRunning { return true }
         return false
     }
 
     private var canSync: Bool {
         container.hasPlaidBackendToken
-    }
-
-    private var usesPlaidTransactions: Bool {
-        settings?.primaryFinancialDataSource == .plaid
     }
 
     private var investmentItems: [CachedPlaidItem] {
@@ -950,23 +883,15 @@ struct SettingsView: View {
     }
 
     private var selectedCashAccountCount: Int {
-        if usesPlaidTransactions {
-            var overridesByCanonicalID: [String: Bool] = [:]
-            cashAccountOverrides.forEach {
-                if let id = $0.canonicalAccountId {
-                    overridesByCanonicalID[id] = $0.included
-                }
+        var overridesByCanonicalID: [String: Bool] = [:]
+        cashAccountOverrides.forEach {
+            if let id = $0.canonicalAccountId {
+                overridesByCanonicalID[id] = $0.included
             }
-            return financialAccounts.filter {
-                !$0.deleted && $0.type.isCashLike
-                    && (overridesByCanonicalID[$0.canonicalAccountId] ?? true)
-            }.count
         }
-        var overrides: [String: Bool] = [:]
-        cashAccountOverrides.forEach { overrides[$0.accountId] = $0.included }
-        return accounts.filter { account in
-            guard !account.deleted, !account.closed, account.kind.isCashLike else { return false }
-            return overrides[account.id] ?? account.onBudget
+        return financialAccounts.filter {
+            !$0.deleted && $0.type.isCashLike
+                && (overridesByCanonicalID[$0.canonicalAccountId] ?? true)
         }.count
     }
 
@@ -1018,27 +943,15 @@ struct SettingsView: View {
         )
     }
 
-    private var creditCardAccounts: [CachedAccount] {
-        accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCreditCardLike }
-    }
-
-    /// Post-clean-start, configurable cards are Plaid financial accounts;
-    /// the legacy YNAB list only applies before the cutover.
     private var cardSettingsTargets: [CardSettingsTarget] {
-        if usesPlaidTransactions {
-            return financialAccounts
-                .filter { !$0.deleted && $0.type == .creditCard }
-                .map {
-                    CardSettingsTarget(
-                        id: $0.canonicalAccountId,
-                        name: accountNameResolver.name(for: $0),
-                        isCanonical: true
-                    )
-                }
-        }
-        return creditCardAccounts.map {
-            CardSettingsTarget(id: $0.id, name: $0.name, isCanonical: false)
-        }
+        financialAccounts
+            .filter { !$0.deleted && $0.type == .creditCard }
+            .map {
+                CardSettingsTarget(
+                    id: $0.canonicalAccountId,
+                    name: accountNameResolver.name(for: $0)
+                )
+            }
     }
 
     private func cardSettingsSummary(_ setting: DurableCardSettings?) -> String {
@@ -1055,7 +968,7 @@ struct SettingsView: View {
             }) {
                 return accountNameResolver.name(for: financialAccount)
             }
-            return accounts.first { $0.id == id }?.name
+            return nil
         }
         .first
         guard let paymentName else { return "Finish setup" }
@@ -1079,193 +992,13 @@ struct SettingsView: View {
     }
 }
 
-private struct YNABReferenceSettingsView: View {
-    @SwiftUI.Environment(AppContainerController.self) private var container
-    @Query private var plaidItems: [CachedPlaidItem]
-
-    @State private var showingTokenSheet = false
-    @State private var showingAccountMapping = false
-    @State private var showingGroupedReview = false
-    @State private var showingTransactionSearch = false
-
-    var body: some View {
-        List {
-            Section {
-                Button {
-                    showingTokenSheet = true
-                } label: {
-                    HStack {
-                        Label {
-                            Text(container.hasYNABToken
-                                 ? "Replace YNAB Token"
-                                 : "Add YNAB Token")
-                                .foregroundStyle(NwAppColors.textPrimary)
-                        } icon: {
-                            NwIcon.keychain.image
-                                .foregroundStyle(NwAppColors.primary)
-                        }
-                        Spacer()
-                        if container.hasYNABToken {
-                            NwStatusBadge(
-                                "Stored",
-                                style: .positive,
-                                icon: .success
-                            )
-                        }
-                    }
-                }
-            } header: {
-                Text("Access")
-            } footer: {
-                Text("Used only when you explicitly import YNAB history as reference data. Networth never syncs YNAB on its own.")
-            }
-
-            if container.hasYNABToken {
-                Section {
-                    if hasTransactionConnection {
-                        Button {
-                            showingAccountMapping = true
-                        } label: {
-                            HStack {
-                                Label {
-                                    Text("Map YNAB Accounts")
-                                        .foregroundStyle(NwAppColors.textPrimary)
-                                } icon: {
-                                    NwIcon.accounts.image
-                                        .foregroundStyle(NwAppColors.primary)
-                                }
-                                Spacer()
-                                NwIcon.chevron.image
-                                    .foregroundStyle(NwAppColors.primary)
-                            }
-                        }
-
-                        Button {
-                            Task { await container.buildYNABReference() }
-                        } label: {
-                            Label {
-                                Text("Build YNAB Reference")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                            } icon: {
-                                NwIcon.sync.image
-                                    .foregroundStyle(NwAppColors.primary)
-                            }
-                        }
-                        .disabled(isReferenceImportRunning)
-
-                        switch container.ynabReferenceImportCoordinator.phase {
-                        case .running(let label):
-                            HStack(spacing: NwSpacing.sm) {
-                                ProgressView().controlSize(.small)
-                                Text(label).foregroundStyle(.secondary)
-                            }
-                        case .error(let message):
-                            Text(message)
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(NwAppColors.caution)
-                        case .completed(let summary):
-                            Text("Reference built: \(summary)")
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(.secondary)
-                        case .idle:
-                            EmptyView()
-                        }
-
-                        Button {
-                            showingGroupedReview = true
-                        } label: {
-                            HStack {
-                                Label {
-                                    Text("Review Imported History")
-                                        .foregroundStyle(NwAppColors.textPrimary)
-                                } icon: {
-                                    NwIcon.confirm.image
-                                        .foregroundStyle(NwAppColors.primary)
-                                }
-                                Spacer()
-                                let pending = container
-                                    .plaidTransactionSyncCoordinator
-                                    .pendingTransactionReviewCount
-                                if pending > 0 {
-                                    Text("\(pending)")
-                                        .foregroundStyle(.secondary)
-                                }
-                                NwIcon.chevron.image
-                                    .foregroundStyle(NwAppColors.primary)
-                            }
-                        }
-
-                        Button {
-                            showingTransactionSearch = true
-                        } label: {
-                            HStack {
-                                Label {
-                                    Text("Find & Reclassify")
-                                        .foregroundStyle(NwAppColors.textPrimary)
-                                } icon: {
-                                    Image(systemName: "magnifyingglass")
-                                        .foregroundStyle(NwAppColors.primary)
-                                }
-                                Spacer()
-                                NwIcon.chevron.image
-                                    .foregroundStyle(NwAppColors.primary)
-                            }
-                        }
-                    } else {
-                        NwInlineNotice(
-                            "Banking connection required",
-                            message: "Connect your Plaid banking accounts before importing YNAB reference history.",
-                            tone: .info
-                        )
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(Color.clear)
-                    }
-                } header: {
-                    Text("Reference Import")
-                }
-            }
-        }
-        .navigationTitle("YNAB Reference")
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showingTokenSheet) {
-            PATEntrySheet().environment(container)
-        }
-        .sheet(isPresented: $showingAccountMapping) {
-            PlaidAccountMappingSheet().environment(container)
-        }
-        .sheet(isPresented: $showingGroupedReview) {
-            GroupedHistoricalReviewSheet().environment(container)
-        }
-        .sheet(isPresented: $showingTransactionSearch) {
-            TransactionSearchReclassifySheet().environment(container)
-        }
-    }
-
-    private var hasTransactionConnection: Bool {
-        plaidItems.contains { $0.products.contains("transactions") }
-    }
-
-    private var isReferenceImportRunning: Bool {
-        if case .running = container.ynabReferenceImportCoordinator.phase {
-            return true
-        }
-        return false
-    }
-}
-
 private struct ProjectionCashAccountsSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
-    @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
-    @Query private var userSettings: [DurableUserSettings]
     @Query private var overrides: [DurableProjectionCashAccountOverride]
     @Query private var goalReserves: [DurableGoalReserveAccount]
     @Query private var accountNicknames: [DurableAccountNickname]
-
-    private var cashAccounts: [CachedAccount] {
-        accounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
-    }
 
     /// Accounts actively backing Goals are excluded from the pool by
     /// derivation; the toggle locks so the user changes this in Goals, not
@@ -1281,14 +1014,13 @@ private struct ProjectionCashAccountsSheet: View {
                 Text("Choose cash available for projections.")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
-                if usesPlaidTransactions && plaidCashAccounts.isEmpty
-                    || !usesPlaidTransactions && cashAccounts.isEmpty {
+                if plaidCashAccounts.isEmpty {
                     NwEmptyState(
                         title: "No cash accounts",
-                        message: "Sync your primary banking source to load checking, savings, and cash accounts.",
+                        message: "Sync Plaid to load checking, savings, and cash accounts.",
                         icon: .accounts
                     )
-                } else if usesPlaidTransactions {
+                } else {
                     VStack(spacing: 0) {
                         ForEach(plaidCashAccounts) { account in
                             HStack(spacing: NwSpacing.sm) {
@@ -1322,36 +1054,9 @@ private struct ProjectionCashAccountsSheet: View {
                     .padding(.horizontal, NwSpacing.md)
                     .background(NwAppColors.cardSurface)
                     .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(cashAccounts) { account in
-                            HStack(spacing: NwSpacing.sm) {
-                                NwIcon.forAccountKind(account.typeRaw).image
-                                    .foregroundStyle(NwAppColors.primary)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(account.name).foregroundStyle(NwAppColors.textPrimary)
-                                    Text(account.onBudget ? "On budget" : "Off budget")
-                                        .font(NwTypography.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Toggle("", isOn: binding(for: account))
-                                    .labelsHidden()
-                            }
-                            .padding(.vertical, NwSpacing.sm)
-                            if account.id != cashAccounts.last?.id { Divider() }
-                        }
-                    }
-                    .padding(.horizontal, NwSpacing.md)
-                    .background(NwAppColors.cardSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
                 }
             }
         }
-    }
-
-    private var usesPlaidTransactions: Bool {
-        userSettings.first?.primaryFinancialDataSource == .plaid
     }
 
     private var plaidCashAccounts: [CachedFinancialAccount] {
@@ -1371,27 +1076,6 @@ private struct ProjectionCashAccountsSheet: View {
 
     private func isGoalReserve(_ account: CachedFinancialAccount) -> Bool {
         goalReserveIds.contains(account.canonicalAccountId)
-    }
-
-    private func binding(for account: CachedAccount) -> Binding<Bool> {
-        Binding(
-            get: { overrides.first(where: { $0.accountId == account.id })?.included ?? account.onBudget },
-            set: { set(account: account, included: $0) }
-        )
-    }
-
-    private func set(account: CachedAccount, included: Bool) {
-        let ctx = container.modelContainer.mainContext
-        let existing = overrides.filter { $0.accountId == account.id }
-        if included == account.onBudget {
-            existing.forEach(ctx.delete)
-        } else if let first = existing.first {
-            first.included = included
-            existing.dropFirst().forEach(ctx.delete)
-        } else {
-            ctx.insert(DurableProjectionCashAccountOverride(accountId: account.id, included: included))
-        }
-        if !ctx.safeSave(source: "settings.cashAccounts.toggle") { ctx.rollback() }
     }
 
     private func binding(for account: CachedFinancialAccount) -> Binding<Bool> {
@@ -1800,168 +1484,6 @@ private struct PlaidBankingConnectionSheet: View {
     private func message(for error: Error) -> String {
         (error as? LocalizedError)?.errorDescription
             ?? "The banking service could not complete the request."
-    }
-}
-
-struct PlaidAccountMappingSheet: View {
-    @SwiftUI.Environment(\.dismiss) private var dismiss
-    @SwiftUI.Environment(AppContainerController.self) private var container
-    @Query(sort: \DurableCanonicalAccountBinding.accountName)
-    private var bindings: [DurableCanonicalAccountBinding]
-    @Query(sort: \CachedAccount.name) private var ynabAccounts: [CachedAccount]
-    @Query private var financialAccounts: [CachedFinancialAccount]
-    @Query private var historicalMatches: [LegacyTransactionMatchRow]
-    /// Post-clean-start there is no YNAB cache; the sheet fetches account
-    /// options into memory on demand instead. Nothing is persisted.
-    @State private var liveOptions: [YNABAccountOption] = []
-    @State private var isLoadingOptions = false
-
-    private static let notReviewed = "__not_reviewed__"
-    private static let noMatch = "__no_match__"
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Text("Match each Plaid account to the YNAB account it replaces. Choose “No YNAB match” for a genuinely new account. Networth will not merge accounts unless you confirm the identity.")
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                if isLoadingOptions {
-                    Section {
-                        HStack(spacing: NwSpacing.sm) {
-                            ProgressView().controlSize(.small)
-                            Text("Loading YNAB accounts…")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } else if accountOptions.isEmpty {
-                    Section {
-                        Text(container.hasYNABToken
-                            ? "No YNAB accounts were found for this token."
-                            : "Add your YNAB token in Settings to load matching accounts.")
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                ForEach(activeBindings) { binding in
-                    Section {
-                        Picker("YNAB account", selection: selection(for: binding)) {
-                            Text("Choose a match").tag(Self.notReviewed)
-                            Text("No YNAB match").tag(Self.noMatch)
-                            ForEach(eligibleYNABAccounts(for: binding)) { account in
-                                Text(account.name).tag(account.id)
-                            }
-                        }
-
-                        let matchCount = historicalMatches.filter {
-                            $0.plaidTransactionId.hasPrefix("plaid:")
-                                && $0.reviewed == false
-                        }.count
-                        if binding.reviewed {
-                            HStack {
-                                Text("Reconciliation")
-                                Spacer()
-                                NwStatusBadge("Confirmed", style: .positive, icon: .success)
-                            }
-                        } else if matchCount > 0 {
-                            Text("Historical transaction candidates are ready after account confirmation.")
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    } header: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(binding.accountName)
-                            Text(accountSubtitle(binding))
-                                .font(NwTypography.caption)
-                                .textCase(nil)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Reconcile Accounts")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button { dismiss() } label: {
-                        NwIcon.confirm.image.foregroundStyle(NwAppColors.positive)
-                    }
-                    .accessibilityLabel("Done")
-                }
-            }
-            .task {
-                guard ynabAccounts.isEmpty,
-                      liveOptions.isEmpty,
-                      container.hasYNABToken else { return }
-                isLoadingOptions = true
-                liveOptions = await container.ynabReferenceImportCoordinator
-                    .fetchAccountOptions()
-                isLoadingOptions = false
-            }
-        }
-    }
-
-    /// Cached YNAB accounts when present (legacy path), else the live
-    /// in-memory options fetched for the post-clean-start mapping step.
-    private var accountOptions: [YNABAccountOption] {
-        let cached = ynabAccounts.filter { !$0.deleted && !$0.closed }
-        guard cached.isEmpty else {
-            return cached.map {
-                YNABAccountOption(id: $0.id, name: $0.name, kind: $0.kind)
-            }
-        }
-        return liveOptions
-    }
-
-    private var activeBindings: [DurableCanonicalAccountBinding] {
-        let activeIDs = Set(
-            financialAccounts.filter { !$0.deleted }.map(\.externalId)
-        )
-        return bindings.filter { activeIDs.contains($0.plaidAccountId) }
-    }
-
-    private func selection(for binding: DurableCanonicalAccountBinding) -> Binding<String> {
-        Binding(
-            get: {
-                guard binding.reviewed else { return Self.notReviewed }
-                return binding.ynabAccountId ?? Self.noMatch
-            },
-            set: { value in
-                guard value != Self.notReviewed else { return }
-                container.mapPlaidAccount(
-                    binding.plaidAccountId,
-                    toYNABAccount: value == Self.noMatch ? nil : value
-                )
-            }
-        )
-    }
-
-    private func eligibleYNABAccounts(
-        for binding: DurableCanonicalAccountBinding
-    ) -> [YNABAccountOption] {
-        let candidates = accountOptions
-        switch binding.accountType {
-        case .checking, .savings, .cash:
-            return candidates.filter { $0.kind.isCashLike }
-        case .creditCard:
-            return candidates.filter { $0.kind.isCreditCardLike }
-        case .investment:
-            return candidates.filter { $0.kind == .investment }
-        case .loan:
-            return candidates.filter {
-                [.mortgage, .autoLoan, .studentLoan, .personalLoan,
-                 .medicalDebt, .otherDebt].contains($0.kind)
-            }
-        case .other:
-            return candidates
-        }
-    }
-
-    private func accountSubtitle(_ binding: DurableCanonicalAccountBinding) -> String {
-        let mask = binding.mask.map { " •••• \($0)" } ?? ""
-        return "\(binding.institutionName)\(mask)"
     }
 }
 
@@ -2694,7 +2216,6 @@ struct ClusterTransactionsDetail: View {
 
     @State private var rows: [CachedFinancialTransaction] = []
     @State private var accountNamesByID: [String: String] = [:]
-    @State private var evidenceByID: [String: String] = [:]
     @State private var selectedIDs: Set<String> = []
     @State private var editingSelection: HistoricalReviewCluster?
 
@@ -2738,11 +2259,6 @@ struct ClusterTransactionsDetail: View {
                             )
                             .font(NwTypography.footnote)
                             .foregroundStyle(.secondary)
-                            if let evidence = evidenceByID[row.id] {
-                                Text(evidence)
-                                    .font(NwTypography.footnote)
-                                    .foregroundStyle(NwAppColors.accent)
-                            }
                         }
                     }
                 }
@@ -2811,27 +2327,6 @@ struct ClusterTransactionsDetail: View {
         )) ?? []
         accountNamesByID = Dictionary(
             accounts.map { ($0.canonicalAccountId, $0.name) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        let suggestions = (try? ctx.fetch(
-            FetchDescriptor<YNABReferenceSuggestion>()
-        )) ?? []
-        evidenceByID = Dictionary(
-            suggestions.map { suggestion in
-                var parts = ["YNAB"]
-                if !suggestion.payeeNameSnapshot.isEmpty {
-                    parts.append(suggestion.payeeNameSnapshot)
-                }
-                if let category = suggestion.categoryNameSnapshot,
-                   !category.isEmpty {
-                    parts.append(category)
-                }
-                parts.append(suggestion.confidence.rawValue)
-                return (
-                    suggestion.plaidTransactionId,
-                    parts.joined(separator: " · ")
-                )
-            },
             uniquingKeysWith: { first, _ in first }
         )
     }
@@ -3280,7 +2775,6 @@ struct PlaidTransactionReviewEditor: View {
     @State private var isSplit: Bool
     @State private var splitDrafts: [PlaidSplitDraft]
     @State private var splitSaveError: String?
-    @State private var ynabEvidence: String?
     @FocusState private var splitAmountFocusedID: UUID?
 
     init(
@@ -3374,7 +2868,6 @@ struct PlaidTransactionReviewEditor: View {
         .onAppear {
             prepareDirectoryIndexes()
             resolveDisplayedSelections()
-            loadYNABEvidence()
         }
         .onChange(of: canonicalPayees.count) {
             prepareDirectoryIndexes()
@@ -3444,11 +2937,6 @@ struct PlaidTransactionReviewEditor: View {
                             .font(NwTypography.footnote)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
-                    }
-                    if let evidence = ynabEvidence {
-                        Text(evidence)
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(NwAppColors.accent)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3530,31 +3018,6 @@ struct PlaidTransactionReviewEditor: View {
         }
         let fallback = categoryName.trimmed
         return fallback.isEmpty ? nil : fallback
-    }
-
-    /// The reference-match evidence line: which YNAB transaction backed
-    /// this suggestion, so a "potential transfer" is decidable at a glance.
-    private func loadYNABEvidence() {
-        let transactionID = transaction.id
-        var descriptor = FetchDescriptor<YNABReferenceSuggestion>(
-            predicate: #Predicate { $0.plaidTransactionId == transactionID }
-        )
-        descriptor.fetchLimit = 1
-        guard let suggestion = try? container.modelContainer.mainContext
-            .fetch(descriptor).first else {
-            ynabEvidence = nil
-            return
-        }
-        var parts = ["Matched YNAB"]
-        if !suggestion.payeeNameSnapshot.isEmpty {
-            parts.append(suggestion.payeeNameSnapshot)
-        }
-        if let category = suggestion.categoryNameSnapshot,
-           !category.isEmpty {
-            parts.append(category)
-        }
-        parts.append("\(suggestion.confidence.rawValue) confidence")
-        ynabEvidence = parts.joined(separator: " · ")
     }
 
     private func resolveDisplayedSelections() {
@@ -4254,15 +3717,8 @@ private struct CanonicalPayeePicker: View {
                     dismiss()
                 } label: {
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(payee.name)
-                                .foregroundStyle(NwAppColors.textPrimary)
-                            if payee.ynabPayeeId != nil {
-                                Text("YNAB contact")
-                                    .font(NwTypography.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                        Text(payee.name)
+                            .foregroundStyle(NwAppColors.textPrimary)
                         Spacer()
                         if selection == payee.canonicalId {
                             NwIcon.confirm.image
@@ -4806,7 +4262,6 @@ struct PlaidAccountReviewSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query(sort: \CachedPlaidAccount.institutionName) private var plaidAccounts: [CachedPlaidAccount]
-    @Query(sort: \CachedAccount.name) private var ynabAccounts: [CachedAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
     @Query private var treatments: [DurablePlaidAccountTreatment]
     @Query private var accountNicknames: [DurableAccountNickname]
@@ -4836,18 +4291,13 @@ struct PlaidAccountReviewSheet: View {
                             if accountSupportsInclusion(account) {
                                 Text("Separate Account").tag(PlaidAccountTreatment.included)
                             }
-                            if !eligibleYNABAccounts.isEmpty {
-                                Text("Already in YNAB").tag(PlaidAccountTreatment.duplicateYNAB)
-                            }
                             if !eligibleManualAssets.isEmpty {
                                 Text("Already a Manual Asset").tag(PlaidAccountTreatment.duplicateManualAsset)
                             }
                             Text("Exclude").tag(PlaidAccountTreatment.excluded)
                         }
 
-                        if treatment(for: account).treatment == .duplicateYNAB {
-                            matchSourceRow(for: account, sourceKind: .ynab)
-                        } else if treatment(for: account).treatment == .duplicateManualAsset {
+                        if treatment(for: account).treatment == .duplicateManualAsset {
                             matchSourceRow(for: account, sourceKind: .manualAsset)
                         }
                     } header: {
@@ -4884,10 +4334,6 @@ struct PlaidAccountReviewSheet: View {
         }
     }
 
-    private var eligibleYNABAccounts: [CachedAccount] {
-        ynabAccounts.filter { !$0.deleted && !$0.closed && $0.kind == .investment }
-    }
-
     private var accountNameResolver: AccountDisplayNameResolver {
         AccountDisplayNameResolver(nicknames: accountNicknames)
     }
@@ -4910,17 +4356,16 @@ struct PlaidAccountReviewSheet: View {
 
     private func setTreatment(_ value: PlaidAccountTreatment, for account: CachedPlaidAccount) {
         let row = persistedTreatment(for: account)
-        row.treatment = value
+        let normalizedValue: PlaidAccountTreatment = value == .duplicateYNAB
+            ? .included : value
+        row.treatment = normalizedValue
         row.duplicateSourceId = nil
         row.updatedAt = .now
         saveReviewChange(source: "settings.plaidTreatment")
 
-        switch value {
+        switch normalizedValue {
         case .duplicateYNAB:
-            matchRequest = PlaidMatchRequest(
-                plaidAccountID: account.id,
-                sourceKind: .ynab
-            )
+            break
         case .duplicateManualAsset:
             matchRequest = PlaidMatchRequest(
                 plaidAccountID: account.id,
@@ -4979,17 +4424,6 @@ struct PlaidAccountReviewSheet: View {
 
     private func matchOptions(for sourceKind: PlaidMatchSourceKind) -> [PlaidMatchOption] {
         switch sourceKind {
-        case .ynab:
-            return eligibleYNABAccounts.map { source in
-                PlaidMatchOption(
-                    id: source.id,
-                    name: source.name,
-                    sourceDescription: source.onBudget
-                        ? "YNAB · Budget account"
-                        : "YNAB · Tracking account",
-                    balance: source.balance
-                )
-            }
         case .manualAsset:
             return eligibleManualAssets.map { source in
                 let group = source.groupName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5046,12 +4480,10 @@ struct PlaidAccountReviewSheet: View {
 }
 
 private enum PlaidMatchSourceKind: String {
-    case ynab
     case manualAsset
 
     var title: String {
         switch self {
-        case .ynab: return "Match YNAB Account"
         case .manualAsset: return "Match Manual Asset"
         }
     }

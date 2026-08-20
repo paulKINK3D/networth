@@ -40,10 +40,7 @@ struct ProjectionsView: View {
             .eraseToAnyPublisher()
 
     @Environment(AppContainerController.self) private var container
-    @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
     @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
-    @Query(sort: \CachedScheduledTransaction.nextDate) private var scheduled: [CachedScheduledTransaction]
-    @Query private var categories: [CachedCategory]
     @Query private var cardSettings: [DurableCardSettings]
     @Query private var cardPaymentConfirmations:
         [DurableCardPaymentConfirmation]
@@ -122,8 +119,7 @@ struct ProjectionsView: View {
     /// small durable tables (CloudKit-synced) contribute here.
     private var inputFingerprint: String {
         [
-            "\(accounts.count)", "\(financialAccounts.count)",
-            "\(scheduled.count)", "\(categories.count)",
+            "\(financialAccounts.count)",
             "\(cardSettings.count)", "\(exclusions.count)",
             "\(cardPaymentConfirmations.count)",
             "\(transactionExclusions.count)", "\(cashAccountOverrides.count)",
@@ -548,7 +544,7 @@ struct ProjectionsView: View {
         let unfundedCardNames: [String]
         let excludedCategoryNames: [String]
         let limitedHistory: Bool
-        /// Nil on the YNAB path; detection is Plaid-first only.
+        /// The detected paycheck source, when available.
         let paycheckDetection: PaycheckDetection?
         /// Payee of the manual recurring-income entry that overrides the
         /// detected paycheck, when one matched.
@@ -763,17 +759,10 @@ struct ProjectionsView: View {
 
     }
 
-    private var usesPlaidTransactions: Bool {
-        userSettings.first?.primaryFinancialDataSource == .plaid
-    }
-
     private var availableAccountSnapshots: [AccountSnapshot] {
-        if usesPlaidTransactions {
-            return financialAccounts
-                .filter { !$0.deleted }
-                .map { $0.toAccountSnapshot() }
-        }
-        return accounts.map { $0.toSnapshot() }
+        financialAccounts
+            .filter { !$0.deleted }
+            .map { $0.toAccountSnapshot() }
     }
 
     /// Display-only: the buffer amount referenced by chart labels. The
@@ -1886,7 +1875,6 @@ private actor ProjectionsDataActor {
         let context = modelContext
         let settings = try? context
             .fetch(FetchDescriptor<DurableUserSettings>()).first
-        let usesPlaid = settings?.primaryFinancialDataSource == .plaid
         let horizonDays = settings?.projectionHorizonDays ?? 90
         let minimumCashBuffer = Money(
             milliunits: settings?.dipThresholdMilliunits ?? 500_000
@@ -1894,9 +1882,6 @@ private actor ProjectionsDataActor {
         let cutoff = Calendar(identifier: .gregorian)
             .date(byAdding: .day, value: -370, to: .now) ?? .distantPast
 
-        let accountRows = (try? context.fetch(
-            FetchDescriptor<CachedAccount>()
-        )) ?? []
         let financialRows = (try? context.fetch(
             FetchDescriptor<CachedFinancialAccount>(
                 predicate: #Predicate { !$0.deleted }
@@ -1908,13 +1893,11 @@ private actor ProjectionsDataActor {
         let accountNameResolver = AccountDisplayNameResolver(
             nicknames: accountNicknames
         )
-        let availableAccounts = usesPlaid
-            ? financialRows.map {
-                $0.toAccountSnapshot(
-                    displayName: accountNameResolver.name(for: $0)
-                )
-            }
-            : accountRows.map { $0.toSnapshot() }
+        let availableAccounts = financialRows.map {
+            $0.toAccountSnapshot(
+                displayName: accountNameResolver.name(for: $0)
+            )
+        }
         let cashAccountOverrides = (try? context.fetch(
             FetchDescriptor<DurableProjectionCashAccountOverride>()
         )) ?? []
@@ -1924,11 +1907,6 @@ private actor ProjectionsDataActor {
         let confirmationRows = (try? context.fetch(
             FetchDescriptor<DurableCardPaymentConfirmation>()
         )) ?? []
-        let allTransactions = (try? context.fetch(
-            FetchDescriptor<CachedTransaction>(
-                predicate: #Predicate { $0.date >= cutoff && !$0.deleted }
-            )
-        )) ?? []
         let financialTransactions = (try? context.fetch(
             FetchDescriptor<CachedFinancialTransaction>(
                 predicate: #Predicate {
@@ -1937,7 +1915,7 @@ private actor ProjectionsDataActor {
             )
         )) ?? []
         let categories = (try? context.fetch(
-            FetchDescriptor<CachedCategory>()
+            FetchDescriptor<DurableCanonicalCategory>()
         )) ?? []
         let exclusions = (try? context.fetch(
             FetchDescriptor<DurableExcludedSpendCategory>()
@@ -1945,21 +1923,13 @@ private actor ProjectionsDataActor {
         let transactionExclusions = (try? context.fetch(
             FetchDescriptor<DurableExcludedSpendTransaction>()
         )) ?? []
-        let hiddenNonInternal = categories.filter {
-            $0.hidden && !$0.deleted
-                && $0.groupName != "Internal Master Category"
-        }
         let excludedCategoryIds = Set(exclusions.map(\.categoryId))
-            .union(hiddenNonInternal.map(\.id))
-        let hiddenInternalCategoryIds = Set(categories.filter {
-            $0.hidden && !$0.deleted
-                && $0.groupName == "Internal Master Category"
-        }.map(\.id))
+        let hiddenInternalCategoryIds: Set<String> = []
 
         let openCash = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
         var overrideMap: [String: Bool] = [:]
         cashAccountOverrides.forEach {
-            let id = usesPlaid ? ($0.canonicalAccountId ?? $0.accountId) : $0.accountId
+            let id = $0.canonicalAccountId ?? $0.accountId
             overrideMap[id] = $0.included
         }
         let goalReserveIds = Set(((try? context.fetch(
@@ -1975,13 +1945,10 @@ private actor ProjectionsDataActor {
         let openCards = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCreditCardLike }
         let configured: [(AccountSnapshot, CardStatementSettings)] = openCards.compactMap { card in
             guard let stored = cardSettings.first(where: {
-                usesPlaid
-                    ? ($0.canonicalAccountId ?? $0.accountId) == card.id
-                    : $0.accountId == card.id
+                ($0.canonicalAccountId ?? $0.accountId) == card.id
             }),
-                  let paymentAccountID = usesPlaid
-                    ? (stored.canonicalPaymentAccountId ?? stored.paymentAccountId)
-                    : stored.paymentAccountId,
+                  let paymentAccountID = stored.canonicalPaymentAccountId
+                    ?? stored.paymentAccountId,
                   stored.statementCycleDay >= 1,
                   stored.paymentDueDay >= 1,
                   !paymentAccountID.isEmpty else { return nil }
@@ -2002,29 +1969,26 @@ private actor ProjectionsDataActor {
                   !selectedIds.contains(paymentAccountId) else { return nil }
             return card.name
         }
-        let history = usesPlaid
-            ? financialTransactions.compactMap { $0.toProjectionSummary() }
-            : allTransactions.map { $0.toSummary() }
-        let cardActivityHistory: [TransactionSummary] = usesPlaid
-            ? financialTransactions.map {
-                TransactionSummary(
-                    id: $0.id,
-                    accountId: $0.canonicalAccountId,
-                    date: $0.postedDate,
-                    amount: Money(milliunits: $0.amountMilliunits),
-                    cleared: true,
-                    approved: !$0.requiresReview,
-                    payeeName: $0.displayName,
-                    categoryName: $0.categoryDisplayName,
-                    forecastTreatment: $0.forecastTreatment,
-                    memo: nil,
-                    deleted: $0.deleted
-                )
-            }
-            : allTransactions.map { $0.toSummary() }
-        // Plaid-first: user-authored recurring expectations are the only
-        // authoritative dated future events — YNAB schedules never enter
-        // projections on any path. Expectations on card accounts raise that
+        let history = financialTransactions.compactMap {
+            $0.toProjectionSummary()
+        }
+        let cardActivityHistory: [TransactionSummary] = financialTransactions.map {
+            TransactionSummary(
+                id: $0.id,
+                accountId: $0.canonicalAccountId,
+                date: $0.postedDate,
+                amount: Money(milliunits: $0.amountMilliunits),
+                cleared: true,
+                approved: !$0.requiresReview,
+                payeeName: $0.displayName,
+                categoryName: $0.categoryDisplayName,
+                forecastTreatment: $0.forecastTreatment,
+                memo: nil,
+                deleted: $0.deleted
+            )
+        }
+        // User-authored recurring expectations are the only authoritative
+        // dated future events. Expectations on card accounts raise that
         // card's projected statement; only the generated autopay reaches
         // the pool.
         let expectations = ((try? context.fetch(
@@ -2039,7 +2003,7 @@ private actor ProjectionsDataActor {
         // wins; the detection then only reports.
         var paycheckDetection: PaycheckDetection?
         var paycheckManualOverridePayee: String?
-        if usesPlaid {
+        do {
             let detection = IncomeAnalyzer().detectPaycheck(
                 confirmedTransactions: history,
                 selectedAccountIds: selectedIds,
@@ -2134,7 +2098,10 @@ private actor ProjectionsDataActor {
             missingCardNames: missingCards,
             unfundedCardNames: unfundedCards,
             excludedCategoryNames: categories
-                .filter { !$0.deleted && excludedCategoryIds.contains($0.id) }
+                .filter {
+                    !$0.deletedAtSource
+                        && excludedCategoryIds.contains($0.canonicalId)
+                }
                 .map(\.name)
                 .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending },
             limitedHistory: result.expectedSpend.historyDays < 30,

@@ -391,24 +391,15 @@ public final class SnapshotScheduler {
         }
     }
 
-    /// True when at least one open YNAB account or one manual asset exists in
-    /// the store — i.e. there is real data that could contribute non-zero
-    /// values to today's snapshot.
+    /// True when at least one connected account or manual asset exists in the
+    /// store — i.e. there is real data that could contribute non-zero values
+    /// to today's snapshot.
     private func hasContributingData() -> Bool {
-        if usesPlaidTransactions {
-            var financialDescriptor = FetchDescriptor<CachedFinancialAccount>(
-                predicate: #Predicate { $0.deleted == false }
-            )
-            financialDescriptor.fetchLimit = 1
-            if let count = try? mainContext.fetchCount(financialDescriptor), count > 0 {
-                return true
-            }
-        }
-        var accountDescriptor = FetchDescriptor<CachedAccount>(
-            predicate: #Predicate { $0.deleted == false && $0.closed == false }
+        var financialDescriptor = FetchDescriptor<CachedFinancialAccount>(
+            predicate: #Predicate { $0.deleted == false }
         )
-        accountDescriptor.fetchLimit = 1
-        if let count = try? mainContext.fetchCount(accountDescriptor), count > 0 {
+        financialDescriptor.fetchLimit = 1
+        if let count = try? mainContext.fetchCount(financialDescriptor), count > 0 {
             return true
         }
         var manualDescriptor = FetchDescriptor<DurableManualAsset>(
@@ -420,7 +411,7 @@ public final class SnapshotScheduler {
         }
         let treatments = (try? mainContext.fetch(FetchDescriptor<DurablePlaidAccountTreatment>())) ?? []
         let includedIDs = Set(treatments.compactMap {
-            $0.treatment == .included ? $0.plaidAccountId : nil
+            $0.treatment.contributesToNetWorth ? $0.plaidAccountId : nil
         })
         if !includedIDs.isEmpty {
             let plaidAccounts = (try? mainContext.fetch(FetchDescriptor<CachedPlaidAccount>())) ?? []
@@ -447,9 +438,6 @@ public final class SnapshotScheduler {
         context: ModelContext,
         linkedIBRLoan: SharedIBRLoanSnapshot? = nil
     ) -> NetWorthBreakdown {
-        let settings = try? context
-            .fetch(FetchDescriptor<DurableUserSettings>()).first
-        let plaidPrimary = settings?.primaryFinancialDataSource == .plaid
         var cash = Money.zero
         var investments = Money.zero
         var retirement = Money.zero
@@ -458,58 +446,27 @@ public final class SnapshotScheduler {
         var loans = Money.zero
         var otherLiabs = Money.zero
 
-        let accountDescriptor = FetchDescriptor<CachedAccount>(
-            predicate: #Predicate { $0.deleted == false && $0.closed == false }
-        )
-        let accounts = (try? context.fetch(accountDescriptor)) ?? []
-        let legacyLoanKinds: Set<AccountKind> = [
-            .mortgage, .autoLoan, .studentLoan, .personalLoan,
-            .medicalDebt, .otherDebt, .otherLiability
-        ]
-        for account in accounts where !plaidPrimary || legacyLoanKinds.contains(account.kind) {
-            let kind = account.kind
+        let financialAccounts = (try? context.fetch(
+            FetchDescriptor<CachedFinancialAccount>(
+                predicate: #Predicate { $0.deleted == false }
+            )
+        )) ?? []
+        for account in financialAccounts {
             let balance = account.balance
-            switch kind {
+            switch account.type {
             case .checking, .savings, .cash:
                 cash += balance
+            case .creditCard:
+                cardDebt += balance.absolute
             case .investment:
                 investments += balance
-            case .otherAsset:
-                otherAssets += balance
-            case .creditCard, .lineOfCredit:
-                cardDebt += balance.absolute
-            case .mortgage, .autoLoan, .studentLoan, .personalLoan, .medicalDebt, .otherDebt:
+            case .loan:
                 loans += balance.absolute
-            case .otherLiability:
-                otherLiabs += balance.absolute
-            case .unknown:
-                break
-            }
-        }
-
-        if plaidPrimary {
-            let financialAccounts = (try? context.fetch(
-                FetchDescriptor<CachedFinancialAccount>(
-                    predicate: #Predicate { $0.deleted == false }
-                )
-            )) ?? []
-            for account in financialAccounts {
-                let balance = account.balance
-                switch account.type {
-                case .checking, .savings, .cash:
-                    cash += balance
-                case .creditCard:
-                    cardDebt += balance.absolute
-                case .investment:
-                    investments += balance
-                case .loan:
-                    loans += balance.absolute
-                case .other:
-                    if balance.isNegative {
-                        otherLiabs += balance.absolute
-                    } else {
-                        otherAssets += balance
-                    }
+            case .other:
+                if balance.isNegative {
+                    otherLiabs += balance.absolute
+                } else {
+                    otherAssets += balance
                 }
             }
         }
@@ -581,8 +538,4 @@ public final class SnapshotScheduler {
             && account.currentBalance != nil
     }
 
-    private var usesPlaidTransactions: Bool {
-        let settings = try? mainContext.fetch(FetchDescriptor<DurableUserSettings>()).first
-        return settings?.primaryFinancialDataSource == .plaid
-    }
 }

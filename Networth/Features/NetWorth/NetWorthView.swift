@@ -60,7 +60,6 @@ private struct NetWorthEntry: Identifiable {
 }
 
 private enum NetWorthEntryDestination {
-    case legacyAccount(CachedAccount)
     case financialAccount(CachedFinancialAccount)
     case manualAsset(DurableManualAsset)
     case plaidInvestment(CachedPlaidAccount)
@@ -117,7 +116,6 @@ private actor NetWorthDataActor {
 
 struct NetWorthView: View {
     @Environment(AppContainerController.self) private var container
-    @Query(sort: \CachedAccount.balanceMilliunits, order: .reverse) private var accounts: [CachedAccount]
     @Query(sort: \CachedFinancialAccount.currentBalanceMilliunits, order: .reverse)
     private var financialAccounts: [CachedFinancialAccount]
     @Query(sort: \DurableManualAsset.name) private var manualAssets: [DurableManualAsset]
@@ -244,7 +242,7 @@ struct NetWorthView: View {
     /// post the local save notification.
     private var inputFingerprint: String {
         [
-            "\(accounts.count)",
+            "\(financialAccounts.count)",
             "\(manualAssets.count)", "\(plaidAccounts.count)",
             "\(plaidTreatments.count)",
             "\(userSettings.first?.chartStartDate?.timeIntervalSince1970 ?? 0)",
@@ -291,12 +289,8 @@ struct NetWorthView: View {
         )
     }
 
-    private var usesPlaidTransactions: Bool {
-        userSettings.first?.primaryFinancialDataSource == .plaid
-    }
-
     /// Plaid is the only primary source. A missing connection produces this
-    /// connection state — never a YNAB fallback.
+    /// connection state.
     private var hasPrimaryConnection: Bool {
         container.hasPlaidBackendToken
     }
@@ -622,78 +616,35 @@ struct NetWorthView: View {
     }
 
     private func entries(for category: NetWorthCategory) -> [NetWorthEntry] {
-        let legacyLoanKinds: Set<AccountKind> = [
-            .mortgage, .autoLoan, .studentLoan, .personalLoan,
-            .medicalDebt, .otherDebt, .otherLiability
-        ]
-        let openAccounts = accounts.filter {
-            !$0.deleted && !$0.closed
-                && (!usesPlaidTransactions || legacyLoanKinds.contains($0.kind))
-        }
-        let ynabEntries = openAccounts.compactMap { account -> NetWorthEntry? in
+        let financialEntries = financialAccounts.compactMap { account -> NetWorthEntry? in
+            guard !account.deleted else { return nil }
             let matches: Bool
             switch category {
             case .cash:
-                matches = account.kind.isCashLike
+                matches = account.type.isCashLike
             case .investments:
-                matches = account.kind == .investment
+                matches = account.type == .investment
+            case .cards:
+                matches = account.type == .creditCard
+            case .loans:
+                matches = account.type == .loan
+            case .otherAssets:
+                matches = account.type == .other && !account.balance.isNegative
+            case .otherLiabilities:
+                matches = account.type == .other && account.balance.isNegative
             case .retirement, .property:
                 matches = false
-            case .otherAssets:
-                matches = account.kind == .otherAsset
-            case .cards:
-                matches = account.kind.isCreditCardLike
-            case .loans:
-                matches = [.mortgage, .autoLoan, .studentLoan, .personalLoan,
-                           .medicalDebt, .otherDebt].contains(account.kind)
-            case .otherLiabilities:
-                matches = account.kind == .otherLiability
             }
             guard matches else { return nil }
+            let mask = account.mask.map { " •••• \($0)" } ?? ""
             return NetWorthEntry(
-                id: "ynab:\(account.id)",
-                name: account.name,
-                subtitle: accountKindLabel(account.kind),
+                id: "financial:\(account.canonicalAccountId)",
+                name: accountNameResolver.name(for: account),
+                subtitle: "\(account.institutionName ?? accountKindLabel(account.kind))\(mask)",
                 amount: category.isLiability ? account.balance.absolute : account.balance,
-                updatedAt: nil,
-                destination: .legacyAccount(account)
+                updatedAt: account.updatedAt,
+                destination: .financialAccount(account)
             )
-        }
-
-        let financialEntries: [NetWorthEntry]
-        if usesPlaidTransactions {
-            financialEntries = financialAccounts.compactMap { account in
-                guard !account.deleted else { return nil }
-                let matches: Bool
-                switch category {
-                case .cash:
-                    matches = account.type.isCashLike
-                case .investments:
-                    matches = account.type == .investment
-                case .cards:
-                    matches = account.type == .creditCard
-                case .loans:
-                    matches = account.type == .loan
-                case .otherAssets:
-                    matches = account.type == .other && !account.balance.isNegative
-                case .otherLiabilities:
-                    matches = account.type == .other && account.balance.isNegative
-                case .retirement, .property:
-                    matches = false
-                }
-                guard matches else { return nil }
-                let mask = account.mask.map { " •••• \($0)" } ?? ""
-                return NetWorthEntry(
-                    id: "financial:\(account.canonicalAccountId)",
-                    name: accountNameResolver.name(for: account),
-                    subtitle: "\(account.institutionName ?? accountKindLabel(account.kind))\(mask)",
-                    amount: category.isLiability ? account.balance.absolute : account.balance,
-                    updatedAt: account.updatedAt,
-                    destination: .financialAccount(account)
-                )
-            }
-        } else {
-            financialEntries = []
         }
 
         let durableEntries = manualAssets
@@ -736,7 +687,7 @@ struct NetWorthView: View {
             plaidEntries = []
         }
 
-        var combined = ynabEntries + financialEntries + durableEntries + plaidEntries
+        var combined = financialEntries + durableEntries + plaidEntries
         if category == .loans,
            let document = container.linkedIBRLoanDocument {
             let loan = document.current
@@ -901,8 +852,6 @@ private struct NetWorthCategoryDetailView: View {
     @ViewBuilder
     private func destination(for entry: NetWorthEntry) -> some View {
         switch entry.destination {
-        case .legacyAccount(let account):
-            AccountDetailView(account: account)
         case .financialAccount(let account):
             FinancialAccountDetailView(account: account)
         case .manualAsset(let asset):

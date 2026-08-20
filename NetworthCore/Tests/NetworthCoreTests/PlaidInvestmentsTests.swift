@@ -52,7 +52,7 @@ struct PlaidInvestmentsTests {
             "non-usd": .included
         ])
 
-        #expect(contribution == Money.dollars(20_000))
+        #expect(contribution == Money.dollars(50_000))
     }
 
     @Test func unofficialCurrencyIsUnsupportedEvenWhenISOCodeIsUSD() {
