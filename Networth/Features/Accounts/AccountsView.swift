@@ -2,6 +2,61 @@ import SwiftUI
 import SwiftData
 import NetworthCore
 
+private struct AccountActivityTotals: Sendable {
+    let moneyIn: Money
+    let moneyOut: Money
+}
+
+/// Account details only render a short recent-activity list. Aggregate the
+/// complete 30-day window away from the main actor so opening an account never
+/// blocks navigation while SwiftData materializes a large transaction set.
+@ModelActor
+private actor AccountActivityDataActor {
+    func financialTotals(
+        accountID: String,
+        cutoff: Date
+    ) throws -> AccountActivityTotals {
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.canonicalAccountId == accountID
+                    && $0.deleted == false
+                    && $0.pending == false
+                    && $0.postedDate >= cutoff
+            }
+        )
+        let rows = try modelContext.fetch(descriptor)
+        return totals(from: rows.map(\.amountMilliunits))
+    }
+
+    func legacyTotals(
+        accountID: String,
+        cutoff: Date
+    ) throws -> AccountActivityTotals {
+        let descriptor = FetchDescriptor<CachedTransaction>(
+            predicate: #Predicate {
+                $0.accountId == accountID
+                    && $0.deleted == false
+                    && $0.date >= cutoff
+            }
+        )
+        let rows = try modelContext.fetch(descriptor)
+        return totals(from: rows.map(\.amountMilliunits))
+    }
+
+    private func totals(from amounts: [Int64]) -> AccountActivityTotals {
+        AccountActivityTotals(
+            moneyIn: amounts
+                .filter { $0 > 0 }
+                .map(Money.init(milliunits:))
+                .sum(),
+            moneyOut: amounts
+                .filter { $0 < 0 }
+                .map { Money(milliunits: $0).absolute }
+                .sum()
+        )
+    }
+}
+
 struct AccountsView: View {
     @Environment(AppContainerController.self) private var container
     @Query(sort: \CachedAccount.name) private var accounts: [CachedAccount]
@@ -1099,10 +1154,13 @@ struct AccountNicknameSheet: View {
 }
 
 struct FinancialAccountDetailView: View {
+    @Environment(AppContainerController.self) private var container
     let account: CachedFinancialAccount
     @Query private var recentTransactions: [CachedFinancialTransaction]
     @Query private var accountNicknames: [DurableAccountNickname]
     @State private var showingRename = false
+    @State private var activityTotals: AccountActivityTotals?
+    @State private var activityLoadFailed = false
 
     init(account: CachedFinancialAccount) {
         self.account = account
@@ -1112,15 +1170,17 @@ struct FinancialAccountDetailView: View {
             value: -30,
             to: .now
         ) ?? .distantPast
-        _recentTransactions = Query(
-            filter: #Predicate<CachedFinancialTransaction> {
+        var recentDescriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate<CachedFinancialTransaction> {
                 $0.canonicalAccountId == id
                     && $0.deleted == false
                     && $0.pending == false
                     && $0.postedDate >= cutoff
             },
-            sort: [SortDescriptor(\.postedDate, order: .reverse)]
+            sortBy: [SortDescriptor(\.postedDate, order: .reverse)]
         )
+        recentDescriptor.fetchLimit = 10
+        _recentTransactions = Query(recentDescriptor)
     }
 
     var body: some View {
@@ -1165,15 +1225,28 @@ struct FinancialAccountDetailView: View {
                     Text("30-Day Activity")
                         .font(NwTypography.titleSmall)
                     NwCard(style: .primary) {
-                        HStack(spacing: NwSpacing.xl) {
-                            activityMetric("Money In", amount: moneyIn, color: NwAppColors.positive)
-                            activityMetric(
-                                "Money Out",
-                                amount: moneyOut,
-                                color: account.kind.isLiability
-                                    ? NwAppColors.liability
-                                    : NwAppColors.textPrimary
-                            )
+                        if let activityTotals {
+                            HStack(spacing: NwSpacing.xl) {
+                                activityMetric(
+                                    "Money In",
+                                    amount: activityTotals.moneyIn,
+                                    color: NwAppColors.positive
+                                )
+                                activityMetric(
+                                    "Money Out",
+                                    amount: activityTotals.moneyOut,
+                                    color: account.kind.isLiability
+                                        ? NwAppColors.liability
+                                        : NwAppColors.textPrimary
+                                )
+                            }
+                        } else if activityLoadFailed {
+                            Text("Activity totals are unavailable.")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
                         }
                     }
                 }
@@ -1255,6 +1328,9 @@ struct FinancialAccountDetailView: View {
                 currentName: displayName
             )
         }
+        .task(id: account.canonicalAccountId) {
+            await loadActivityTotals()
+        }
     }
 
     private var displayName: String {
@@ -1262,18 +1338,31 @@ struct FinancialAccountDetailView: View {
             .name(for: account)
     }
 
-    private var moneyIn: Money {
-        recentTransactions
-            .filter { $0.amountMilliunits > 0 }
-            .map { Money(milliunits: $0.amountMilliunits) }
-            .sum()
-    }
-
-    private var moneyOut: Money {
-        recentTransactions
-            .filter { $0.amountMilliunits < 0 }
-            .map { Money(milliunits: $0.amountMilliunits).absolute }
-            .sum()
+    private func loadActivityTotals() async {
+        activityLoadFailed = false
+        let modelContainer = container.modelContainer
+        let accountID = account.canonicalAccountId
+        let cutoff = Calendar.current.date(
+            byAdding: .day,
+            value: -30,
+            to: .now
+        ) ?? .distantPast
+        do {
+            let totals = try await Task.detached(priority: .userInitiated) {
+                let dataActor = AccountActivityDataActor(
+                    modelContainer: modelContainer
+                )
+                return try await dataActor.financialTotals(
+                    accountID: accountID,
+                    cutoff: cutoff
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            activityTotals = totals
+        } catch {
+            guard !Task.isCancelled else { return }
+            activityLoadFailed = true
+        }
     }
 
     private func activityMetric(_ title: String, amount: Money, color: Color) -> some View {
@@ -1758,8 +1847,11 @@ enum FinancialTransactionPageFetcher {
 }
 
 struct AccountDetailView: View {
+    @Environment(AppContainerController.self) private var container
     let account: CachedAccount
     @Query private var recentTransactions: [CachedTransaction]
+    @State private var activityTotals: AccountActivityTotals?
+    @State private var activityLoadFailed = false
 
     init(account: CachedAccount) {
         self.account = account
@@ -1769,14 +1861,16 @@ struct AccountDetailView: View {
             value: -30,
             to: .now
         ) ?? .distantPast
-        _recentTransactions = Query(
-            filter: #Predicate<CachedTransaction> {
+        var recentDescriptor = FetchDescriptor<CachedTransaction>(
+            predicate: #Predicate<CachedTransaction> {
                 $0.accountId == id
                     && $0.deleted == false
                     && $0.date >= cutoff
             },
-            sort: [SortDescriptor(\.date, order: .reverse)]
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
         )
+        recentDescriptor.fetchLimit = 40
+        _recentTransactions = Query(recentDescriptor)
     }
 
     var body: some View {
@@ -1813,19 +1907,32 @@ struct AccountDetailView: View {
                     Text("30-Day Activity")
                         .font(NwTypography.titleSmall)
                     NwCard(style: .primary) {
-                        HStack(spacing: NwSpacing.xl) {
-                            activityMetric(
-                                account.kind.isLiability ? "Payments & Credits" : "Money In",
-                                amount: moneyIn,
-                                color: NwAppColors.positive
-                            )
-                            activityMetric(
-                                account.kind.isLiability ? "Charges" : "Money Out",
-                                amount: moneyOut,
-                                color: account.kind.isLiability
-                                    ? NwAppColors.liability
-                                    : NwAppColors.textPrimary
-                            )
+                        if let activityTotals {
+                            HStack(spacing: NwSpacing.xl) {
+                                activityMetric(
+                                    account.kind.isLiability
+                                        ? "Payments & Credits"
+                                        : "Money In",
+                                    amount: activityTotals.moneyIn,
+                                    color: NwAppColors.positive
+                                )
+                                activityMetric(
+                                    account.kind.isLiability
+                                        ? "Charges"
+                                        : "Money Out",
+                                    amount: activityTotals.moneyOut,
+                                    color: account.kind.isLiability
+                                        ? NwAppColors.liability
+                                        : NwAppColors.textPrimary
+                                )
+                            }
+                        } else if activityLoadFailed {
+                            Text("Activity totals are unavailable.")
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
                         }
                     }
                 }
@@ -1869,20 +1976,36 @@ struct AccountDetailView: View {
         .background(NwAppColors.background.ignoresSafeArea())
         .navigationTitle(account.name)
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: account.id) {
+            await loadActivityTotals()
+        }
     }
 
-    private var moneyIn: Money {
-        recentTransactions
-            .filter { $0.amountMilliunits > 0 }
-            .map { Money(milliunits: $0.amountMilliunits) }
-            .sum()
-    }
-
-    private var moneyOut: Money {
-        recentTransactions
-            .filter { $0.amountMilliunits < 0 }
-            .map { Money(milliunits: $0.amountMilliunits).absolute }
-            .sum()
+    private func loadActivityTotals() async {
+        activityLoadFailed = false
+        let modelContainer = container.modelContainer
+        let accountID = account.id
+        let cutoff = Calendar.current.date(
+            byAdding: .day,
+            value: -30,
+            to: .now
+        ) ?? .distantPast
+        do {
+            let totals = try await Task.detached(priority: .userInitiated) {
+                let dataActor = AccountActivityDataActor(
+                    modelContainer: modelContainer
+                )
+                return try await dataActor.legacyTotals(
+                    accountID: accountID,
+                    cutoff: cutoff
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            activityTotals = totals
+        } catch {
+            guard !Task.isCancelled else { return }
+            activityLoadFailed = true
+        }
     }
 
     private func displayAmount(_ amount: Money) -> Money {
