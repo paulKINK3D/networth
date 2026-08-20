@@ -28,6 +28,12 @@ Personal financial radar that helps the user understand their real financial pos
 - 4-tab structure: Spending · Projections · Goals · Net Worth. Investment reporting is reached through the separately scoped Investments and Retirement categories on Net Worth; account details are reached through Balance Sheet categories. Settings is opened from the shared top-right menu (not a tab).
 - Sync strategy: SwiftData local cache for re-fetchable YNAB and Plaid data; CloudKit private DB for durable data only (manual assets, daily net worth snapshots, user settings, account identity decisions, merchant rules, and transaction corrections).
 - Optional IBR loan sharing uses `group.com.bluelava.me.financial`. The decoded summary stays in memory; its dated balances overlay the chart locally and must never be copied into SwiftData or CloudKit.
+- User-entered credit-card payments are one-cycle private-CloudKit overrides
+  keyed by card and statement close date. They replace both projected amount
+  and payment date only for that cycle; future cycles remain estimated.
+- Closed-statement estimates treat only explicit card-payment transactions as
+  reducing the prior statement. Other post-close credits reduce the current
+  balance only and are added back to the conservative payment estimate.
 
 ## Startup Checks
 - At the start of work in a repo, review the global instructions exposed through
@@ -117,6 +123,9 @@ cd PlaidWorker && npm test && npm run check
 - Do not add explanatory or instructional sentences to UI by default. Prefer
   self-explanatory labels and controls; if a choice needs prose to be
   understood, redesign the interaction. Ask before making an exception.
+- Before applying a cross-screen UX consistency choice when multiple valid
+  patterns exist, discuss the recommendation and tradeoff with the user before
+  implementing it.
 - Reuse established spacing, component patterns, and tone from existing core views when adding new screens/components.
 - Prefer icon-based close/confirm controls where appropriate: red `xmark.circle.fill` for close/cancel and green `checkmark.circle.fill` for confirm/done.
 - Use the right confirmation surface for the context:

@@ -51,7 +51,186 @@ public struct UpcomingCardPayment: Sendable, Hashable, Identifiable {
     }
 }
 
+/// A user-confirmed payment for one statement cycle. Confirmations are
+/// authoritative for cash timing but never alter provider data or later
+/// statement estimates.
+public struct CardPaymentConfirmation: Sendable, Hashable, Identifiable {
+    public let id: String
+    public let cardAccountId: String
+    public let statementCloseDate: Date
+    public let amount: Money
+    public let paymentDate: Date
+    public let updatedAt: Date
+
+    public init(
+        id: String,
+        cardAccountId: String,
+        statementCloseDate: Date,
+        amount: Money,
+        paymentDate: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.cardAccountId = cardAccountId
+        self.statementCloseDate = statementCloseDate
+        self.amount = amount
+        self.paymentDate = paymentDate
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct ResolvedUpcomingCardPayment: Sendable, Hashable, Identifiable {
+    public let estimate: UpcomingCardPayment
+    public let confirmation: CardPaymentConfirmation?
+
+    public var id: String { estimate.id }
+    public var amount: Money { confirmation?.amount ?? estimate.amount }
+    public var paymentDate: Date {
+        confirmation?.paymentDate ?? estimate.dueDate
+    }
+    public var isConfirmed: Bool { confirmation != nil }
+
+    public init(
+        estimate: UpcomingCardPayment,
+        confirmation: CardPaymentConfirmation?
+    ) {
+        self.estimate = estimate
+        self.confirmation = confirmation
+    }
+
+    public var projectedPayment: UpcomingCardPayment {
+        UpcomingCardPayment(
+            cardAccountId: estimate.cardAccountId,
+            paymentAccountId: estimate.paymentAccountId,
+            cardName: estimate.cardName,
+            closeDate: estimate.closeDate,
+            dueDate: paymentDate,
+            amount: amount,
+            basis: estimate.basis,
+            startingBalanceOwed: estimate.startingBalanceOwed,
+            scheduledCharges: estimate.scheduledCharges,
+            scheduledCredits: estimate.scheduledCredits,
+            priorStatementPaymentsApplied:
+                estimate.priorStatementPaymentsApplied
+        )
+    }
+}
+
+public struct CardPaymentConfirmationResolver: Sendable {
+    private let calendar: Calendar
+
+    public init(calendar: Calendar = .current) {
+        self.calendar = calendar
+    }
+
+    public func resolve(
+        _ payment: UpcomingCardPayment,
+        confirmations: [CardPaymentConfirmation]
+    ) -> ResolvedUpcomingCardPayment {
+        let confirmation = confirmations
+            .filter {
+                $0.cardAccountId == payment.cardAccountId
+                    && $0.amount > .zero
+                    && calendar.isDate(
+                        $0.statementCloseDate,
+                        inSameDayAs: payment.closeDate
+                    )
+            }
+            .max {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt < $1.updatedAt
+                }
+                return $0.id < $1.id
+            }
+        return ResolvedUpcomingCardPayment(
+            estimate: payment,
+            confirmation: confirmation
+        )
+    }
+}
+
+public enum CardPaymentActivityEffect: Sendable, Hashable {
+    case nextStatement
+    case reducesPayment
+    case increasesPayment
+    case currentBalanceOnly
+}
+
+public struct CardPaymentReconciliationActivity: Sendable, Hashable,
+    Identifiable {
+    public let transaction: TransactionSummary
+    public let effect: CardPaymentActivityEffect
+
+    public var id: String { transaction.id }
+
+    public init(
+        transaction: TransactionSummary,
+        effect: CardPaymentActivityEffect
+    ) {
+        self.transaction = transaction
+        self.effect = effect
+    }
+}
+
+public struct CardPaymentReconciliation: Sendable, Hashable {
+    public let activity: [CardPaymentReconciliationActivity]
+    public let newPurchases: Money
+    public let currentBalanceCredits: Money
+
+    public init(
+        activity: [CardPaymentReconciliationActivity],
+        newPurchases: Money,
+        currentBalanceCredits: Money
+    ) {
+        self.activity = activity
+        self.newPurchases = newPurchases
+        self.currentBalanceCredits = currentBalanceCredits
+    }
+}
+
 extension CCPaymentForecaster {
+    /// Activity after a closed statement explains why today's card balance
+    /// differs from the remaining statement autopay. Purchases belong to the
+    /// next statement, actual payments reduce the prior statement, and other
+    /// credits affect only the current balance unless the issuer says otherwise.
+    public func reconciliation(
+        for payment: UpcomingCardPayment,
+        transactions: [TransactionSummary],
+        asOf today: Date
+    ) -> CardPaymentReconciliation {
+        let end = calendar.startOfDay(for: today)
+        let transactions = transactions
+            .filter {
+                !$0.deleted
+                    && $0.accountId == payment.cardAccountId
+                    && $0.date > payment.closeDate
+                    && $0.date <= end
+            }
+            .sorted {
+                if $0.date != $1.date { return $0.date > $1.date }
+                return $0.id < $1.id
+            }
+        let activity = transactions.map {
+            CardPaymentReconciliationActivity(
+                transaction: $0,
+                effect: activityEffect(for: $0)
+            )
+        }
+        let newPurchases = activity
+            .filter { $0.effect == .nextStatement }
+            .map { $0.transaction.amount.absolute }
+            .sum()
+        let currentBalanceCredits = activity
+            .filter { $0.effect == .currentBalanceOnly }
+            .map { $0.transaction.amount }
+            .sum()
+        return CardPaymentReconciliation(
+            activity: activity,
+            newPurchases: newPurchases,
+            currentBalanceCredits: currentBalanceCredits
+        )
+    }
+
     /// Simulates full-statement autopays through the requested horizon. Future
     /// variable purchases are intentionally excluded; the cash projector
     /// reserves for ordinary spending separately on its expected curve.
@@ -184,22 +363,44 @@ extension CCPaymentForecaster {
         history: [TransactionSummary]
     ) -> Money {
         guard closeDate < today else { return currentOwed }
-        // Current owed already reflects payments, refunds, and credits made
-        // after the statement closed. Preserve those reductions and remove
-        // only newer purchases, which belong to the next statement. Adding
-        // every signed transaction here reconstructs the original statement
-        // but incorrectly schedules amounts the user has already paid.
-        let postCloseCharges = history.lazy
+        // Current owed already reflects every post-close transaction. Remove
+        // newer purchases, preserve actual card payments, and add back other
+        // credits that reduce today's balance without reducing the prior
+        // statement's scheduled payment.
+        let postCloseActivity = history.lazy
             .filter {
                 !$0.deleted &&
                     $0.accountId == cardAccountId &&
                     $0.date > closeDate &&
-                    $0.date <= today &&
-                    $0.amount.isNegative
+                    $0.date <= today
             }
+        let postCloseCharges = postCloseActivity
+            .filter { activityEffect(for: $0) == .nextStatement }
             .reduce(Int64(0)) { $0 + $1.amount.absolute.milliunits }
-        let result = Money(milliunits: currentOwed.milliunits - postCloseCharges)
+        let currentBalanceCredits = postCloseActivity
+            .filter { activityEffect(for: $0) == .currentBalanceOnly }
+            .reduce(Int64(0)) { $0 + $1.amount.milliunits }
+        let result = Money(
+            milliunits: currentOwed.milliunits
+                - postCloseCharges
+                + currentBalanceCredits
+        )
         return result < .zero ? .zero : result
+    }
+
+    private func activityEffect(
+        for transaction: TransactionSummary
+    ) -> CardPaymentActivityEffect {
+        if transaction.forecastTreatment == .cardPayment {
+            return transaction.amount > .zero
+                ? .reducesPayment
+                : .increasesPayment
+        }
+        if transaction.amount.isNegative { return .nextStatement }
+        if transaction.transferAccountId != nil {
+            return .reducesPayment
+        }
+        return .currentBalanceOnly
     }
 
     private func nextOccurrence(ofDay day: Int, strictlyAfter reference: Date) -> Date {

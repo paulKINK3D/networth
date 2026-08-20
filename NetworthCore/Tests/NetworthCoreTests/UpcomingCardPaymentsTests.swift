@@ -141,6 +141,42 @@ struct UpcomingCardPaymentsTests {
         #expect(payments[0].basis == .closedStatementEstimate)
     }
 
+    @Test func postCloseCreditDoesNotReducePriorStatementAutopay() {
+        let f = CCPaymentForecaster(calendar: utc)
+        let visa = card(balance: Money.dollars(-900))
+        let settings = CardStatementSettings(
+            accountId: "card-1",
+            statementCycleDay: 15,
+            paymentDueDay: 11,
+            paymentAccountId: "checking-1"
+        )
+        let statementCredit = TransactionSummary(
+            id: "amex-offer",
+            accountId: "card-1",
+            date: date(2026, 3, 18),
+            amount: Money.dollars(100),
+            cleared: true,
+            approved: true,
+            payeeName: "Offer Credit",
+            categoryName: "Shopping",
+            forecastTreatment: .refund,
+            memo: nil,
+            deleted: false
+        )
+
+        let payments = f.upcomingPayments(
+            card: visa,
+            settings: settings,
+            scheduled: [],
+            historicalTransactions: [statementCredit],
+            asOf: date(2026, 3, 20),
+            horizonDays: 30
+        )
+
+        #expect(payments.count == 1)
+        #expect(payments[0].amount == Money.dollars(1_000))
+    }
+
     @Test func nextCloseAndDuePickedUpInsideHorizon() {
         // Today = 5th, close = 15th (10 days away), due = 11th of next month.
         // Current owed $500, no scheduled or post-close charges.
@@ -387,5 +423,117 @@ struct UpcomingCardPaymentsTests {
         #expect(first.count >= 2)
         #expect(first.map(\.id) == second.map(\.id))
         #expect(first.allSatisfy { $0.paymentAccountId == "checking-1" })
+    }
+
+    @Test func confirmationOverridesOnlyTheMatchingStatementCycle() {
+        let payment = UpcomingCardPayment(
+            cardAccountId: "card-1",
+            paymentAccountId: "checking-1",
+            cardName: "Visa",
+            closeDate: date(2026, 8, 10),
+            dueDate: date(2026, 8, 25),
+            amount: Money.dollars(525),
+            basis: .closedStatementEstimate
+        )
+        let confirmations = [
+            CardPaymentConfirmation(
+                id: "older",
+                cardAccountId: "card-1",
+                statementCloseDate: date(2026, 8, 10),
+                amount: Money.dollars(500),
+                paymentDate: date(2026, 8, 24),
+                updatedAt: date(2026, 8, 11)
+            ),
+            CardPaymentConfirmation(
+                id: "newer",
+                cardAccountId: "card-1",
+                statementCloseDate: date(2026, 8, 10),
+                amount: Money.dollars(510),
+                paymentDate: date(2026, 8, 26),
+                updatedAt: date(2026, 8, 12)
+            ),
+            CardPaymentConfirmation(
+                id: "other-cycle",
+                cardAccountId: "card-1",
+                statementCloseDate: date(2026, 9, 10),
+                amount: Money.dollars(900),
+                paymentDate: date(2026, 9, 25),
+                updatedAt: date(2026, 9, 11)
+            ),
+        ]
+
+        let resolved = CardPaymentConfirmationResolver(calendar: utc)
+            .resolve(payment, confirmations: confirmations)
+
+        #expect(resolved.isConfirmed)
+        #expect(resolved.amount == Money.dollars(510))
+        #expect(resolved.paymentDate == date(2026, 8, 26))
+        #expect(resolved.projectedPayment.amount == Money.dollars(510))
+        #expect(resolved.projectedPayment.dueDate == date(2026, 8, 26))
+        #expect(resolved.projectedPayment.closeDate == payment.closeDate)
+    }
+
+    @Test func reconciliationListsOnlyPostCloseCardActivity() {
+        let payment = UpcomingCardPayment(
+            cardAccountId: "card-1",
+            paymentAccountId: "checking-1",
+            cardName: "Visa",
+            closeDate: date(2026, 8, 10),
+            dueDate: date(2026, 8, 25),
+            amount: Money.dollars(525),
+            basis: .closedStatementEstimate
+        )
+        func transaction(
+            _ id: String,
+            account: String = "card-1",
+            day: Int,
+            amount: Int,
+            treatment: ForecastTreatment? = nil,
+            transferAccountId: String? = nil
+        ) -> TransactionSummary {
+            TransactionSummary(
+                id: id,
+                accountId: account,
+                date: date(2026, 8, day),
+                amount: Money.dollars(integer: amount),
+                cleared: true,
+                approved: true,
+                payeeName: id,
+                categoryName: nil,
+                forecastTreatment: treatment,
+                transferAccountId: transferAccountId,
+                memo: nil,
+                deleted: false
+            )
+        }
+        let transactions = [
+            transaction("before", day: 9, amount: -50),
+            transaction("purchase", day: 12, amount: -125),
+            transaction("credit", day: 13, amount: 20,
+                        treatment: .refund),
+            transaction("payment", day: 14, amount: 80,
+                        transferAccountId: "checking-1"),
+            transaction("payment-reversal", day: 15, amount: -30,
+                        treatment: .cardPayment),
+            transaction("other-card", account: "card-2", day: 14,
+                        amount: -80),
+            transaction("future", day: 20, amount: -60),
+        ]
+
+        let result = CCPaymentForecaster(calendar: utc).reconciliation(
+            for: payment,
+            transactions: transactions,
+            asOf: date(2026, 8, 19)
+        )
+
+        #expect(result.activity.map(\.id) == [
+            "payment-reversal", "payment", "credit", "purchase",
+        ])
+        #expect(result.activity.map(\.effect) == [
+            .increasesPayment, .reducesPayment, .currentBalanceOnly,
+            .nextStatement,
+        ])
+        #expect(result.newPurchases == Money.dollars(125))
+        #expect(result.currentBalanceCredits == Money.dollars(20))
     }
 }

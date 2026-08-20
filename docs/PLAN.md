@@ -195,6 +195,17 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-08-19** — A user-entered credit-card payment amount and payment
+  date override the forecast for one statement cycle only. The confirmation
+  is private-CloudKit durable, keyed by card plus statement close date, and
+  stops applying automatically after that cycle leaves the forecast. Later
+  cycles remain estimates until independently confirmed. Card-payment detail
+  reconciles the estimate from the exact current balance and transactions
+  since statement close; post-close purchases belong to the next statement,
+  actual card payments reduce the prior-statement obligation, and other
+  credits are treated as current-balance-only. Statement or email ingestion
+  is deferred because entering the authoritative amount and date from the
+  issuer email is faster and avoids transmitting documents.
 - **2026-08-19** — Spending budgets are optional monthly guides on existing
   user-created Spending groups, never categories. Any group may participate,
   and one budgeted group may be explicitly pinned on the Spending screen.

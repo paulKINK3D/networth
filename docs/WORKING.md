@@ -1,5 +1,30 @@
 # WORKING
 
+## Current handoff — scheduled card payments (2026-08-19)
+
+- Next Cash Activity rows now keep amounts aligned and reserve a small info
+  affordance for credit-card autopays instead of mixing disclosure chevrons
+  into otherwise static rows.
+- Card-payment detail shows exact amounts, reconciles current card balance to
+  the estimated autopay, and lists every posted transaction since statement
+  close as Next statement, Reduces payment, or Current balance only.
+- Enter Scheduled Payment accepts the issuer-email amount and payment date.
+  It overrides the projection for that card and statement cycle; Edit
+  Scheduled Payment and Use Estimate remain available from the detail.
+- `DurableCardPaymentConfirmation` is an additive private-CloudKit model with
+  defaulted fields. Duplicate rows resolve by latest update time, later cycles
+  remain estimated, and old confirmations simply stop matching after their
+  cycle leaves the forecast; no legacy-field cleanup is required.
+- Closed-statement reconstruction now considers every posted card purchase,
+  including transactions also matched to recurring expectations. Those
+  matches previously could remain inside the estimated prior statement and
+  inflate the expected autopay.
+- Post-close credits that are not actual card payments are added back when
+  estimating the prior statement. They reduce the current card balance but
+  are not assumed to reduce the issuer's scheduled payment.
+- Validation: NetworthCore 230/230, plus generic-device Debug and Release
+  builds pass. Simulator execution was not requested.
+
 ## Current handoff — Spending group budgets (2026-08-19)
 
 - Active branch: `feature/spending-group-budgets`.

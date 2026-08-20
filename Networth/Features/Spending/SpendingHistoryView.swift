@@ -227,7 +227,7 @@ struct SpendingHistoryView: View {
                 .padding(.vertical, NwSpacing.md)
             }
             .background(NwAppColors.background.ignoresSafeArea())
-            .navigationTitle("Spending History")
+            .navigationTitle("Spending")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -235,7 +235,7 @@ struct SpendingHistoryView: View {
                         canRefresh: container.hasPlaidBackendToken,
                         contextualActions: [
                             NwTopLevelMenuAction(
-                                title: "Manage Spending Groups",
+                                title: "Groups & Budgets",
                                 systemImage: "slider.horizontal.3",
                                 action: { showingGroupManager = true }
                             )
@@ -300,9 +300,6 @@ struct SpendingHistoryView: View {
                         .font(NwTypography.body.weight(.semibold))
                     Spacer()
                 }
-                Text("Approved transactions appear here and in projections.")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
                 HStack(spacing: NwSpacing.md) {
                     Button("Review groups") { showingGroupedReview = true }
                         .buttonStyle(.borderedProminent)

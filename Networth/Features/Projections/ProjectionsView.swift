@@ -21,6 +21,13 @@ enum ProjectionAccountWarningCopy {
     }
 }
 
+private struct CardPaymentDetailSelection: Identifiable {
+    let payment: UpcomingCardPayment
+    let transactions: [TransactionSummary]
+
+    var id: String { payment.id }
+}
+
 /// The app's daily decision surface: what cash is available, what will move,
 /// and whether known obligations plus ordinary spending remain above buffer.
 struct ProjectionsView: View {
@@ -38,6 +45,8 @@ struct ProjectionsView: View {
     @Query(sort: \CachedScheduledTransaction.nextDate) private var scheduled: [CachedScheduledTransaction]
     @Query private var categories: [CachedCategory]
     @Query private var cardSettings: [DurableCardSettings]
+    @Query private var cardPaymentConfirmations:
+        [DurableCardPaymentConfirmation]
     @Query private var userSettings: [DurableUserSettings]
     @Query private var exclusions: [DurableExcludedSpendCategory]
     @Query private var transactionExclusions: [DurableExcludedSpendTransaction]
@@ -48,7 +57,7 @@ struct ProjectionsView: View {
 
     @State private var showingAssumptions = false
     @State private var showingSafeToSpendDetails = false
-    @State private var selectedPayment: UpcomingCardPayment?
+    @State private var selectedPayment: CardPaymentDetailSelection?
     @State private var scrubbedProjectionDate: Date?
     @State private var showingAllUpcomingActivity = false
     /// Forecast cache: computing the projection is the single most expensive
@@ -72,6 +81,7 @@ struct ProjectionsView: View {
                         .navigationTitle("Projections")
                 }
             }
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NwTopLevelMenu(
@@ -115,6 +125,7 @@ struct ProjectionsView: View {
             "\(accounts.count)", "\(financialAccounts.count)",
             "\(scheduled.count)", "\(categories.count)",
             "\(cardSettings.count)", "\(exclusions.count)",
+            "\(cardPaymentConfirmations.count)",
             "\(transactionExclusions.count)", "\(cashAccountOverrides.count)",
             "\(userSettings.first?.lastSyncedAt?.timeIntervalSince1970 ?? 0)"
         ].joined(separator: "|")
@@ -185,7 +196,11 @@ struct ProjectionsView: View {
                 }
             }
             .sheet(item: $selectedPayment) { payment in
-                CardPaymentDetailSheet(payment: payment)
+                CardPaymentDetailSheet(
+                    payment: payment.payment,
+                    transactions: payment.transactions
+                )
+                .environment(container)
             }
     }
 
@@ -481,27 +496,42 @@ struct ProjectionsView: View {
 
     @ViewBuilder
     private func eventRow(_ event: CashProjectionEvent, data: ProjectionData) -> some View {
+        let payment = event.kind == .cardPayment
+            ? data.paymentEstimates.first { $0.id == event.id }
+            : nil
         let row = HStack(spacing: NwSpacing.md) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(event.date, format: .dateTime.month(.abbreviated).day().weekday(.abbreviated))
                     .font(NwTypography.caption)
                     .foregroundStyle(.secondary)
-                Text(event.title)
-                    .font(NwTypography.body)
-                    .foregroundStyle(NwAppColors.textPrimary)
+                HStack(spacing: NwSpacing.xs) {
+                    Text(event.title)
+                        .font(NwTypography.body)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                    if payment != nil {
+                        NwIcon.info.image
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.primary)
+                    }
+                }
             }
             Spacer()
             NwAmountText(event.amount, variant: .body,
                          color: event.amount.isNegative ? NwAppColors.liability : NwAppColors.positive)
-            if event.kind == .cardPayment { NwIcon.chevron.image.foregroundStyle(.secondary) }
         }
         .padding(NwSpacing.md)
         .contentShape(Rectangle())
 
-        if event.kind == .cardPayment,
-           let payment = data.payments.first(where: { $0.id == event.id }) {
-            Button { selectedPayment = payment } label: { row }
+        if let payment {
+            Button {
+                selectedPayment = CardPaymentDetailSelection(
+                    payment: payment,
+                    transactions: data.cardActivityByPaymentID[payment.id]
+                        ?? []
+                )
+            } label: { row }
                 .buttonStyle(.plain)
+                .accessibilityHint("Shows autopay details")
         } else {
             row
         }
@@ -511,7 +541,8 @@ struct ProjectionsView: View {
 
     fileprivate struct ProjectionData: Sendable {
         let result: CashPositionProjector.Result
-        let payments: [UpcomingCardPayment]
+        let paymentEstimates: [UpcomingCardPayment]
+        let cardActivityByPaymentID: [String: [TransactionSummary]]
         let selectedCashAccounts: [AccountSnapshot]
         let missingCardNames: [String]
         let unfundedCardNames: [String]
@@ -1489,49 +1520,360 @@ private struct MonthlySpendCategoryDetail: View {
 
 private struct CardPaymentDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppContainerController.self) private var container
+    @Query private var confirmationRows: [DurableCardPaymentConfirmation]
     let payment: UpcomingCardPayment
+    let transactions: [TransactionSummary]
+
+    @State private var showingEditor = false
+    @State private var showingUseEstimateConfirmation = false
+    @State private var persistenceError: String?
+
+    private let calendar = Calendar.current
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    HStack {
-                        Text("Expected autopay")
-                        Spacer()
-                        NwAmountText(payment.amount, variant: .body, color: NwAppColors.liability)
-                    }
-                    detail("Statement closes", payment.closeDate.formatted(date: .abbreviated, time: .omitted))
-                    detail("Autopay date", payment.dueDate.formatted(date: .abbreviated, time: .omitted))
-                }
-                Section("Estimate") {
-                    detail("Starting owed", CurrencyFormatter.compact(payment.startingBalanceOwed))
-                    if !payment.priorStatementPaymentsApplied.isZero {
-                        detail("Prior autopay removed", CurrencyFormatter.compact(payment.priorStatementPaymentsApplied))
-                    }
-                    if !payment.scheduledCharges.isZero {
-                        detail("Scheduled charges", CurrencyFormatter.compact(payment.scheduledCharges))
-                    }
-                    if !payment.scheduledCredits.isZero {
-                        detail("Scheduled credits", CurrencyFormatter.compact(payment.scheduledCredits))
-                    }
-                    Text(payment.basis == .closedStatementEstimate
-                         ? "Based on activity since the statement closed."
-                         : "Based on today's balance, prior autopays, and scheduled activity. Everyday spending is reserved separately.")
-                        .font(NwTypography.footnote)
-                        .foregroundStyle(.secondary)
+        NwModalLayout(
+            title: payment.cardName,
+            onClose: { dismiss() }
+        ) {
+            NwCard(style: .primary) {
+                VStack(spacing: NwSpacing.md) {
+                    amountRow(
+                        resolved.isConfirmed
+                            ? "Scheduled payment"
+                            : "Estimated autopay",
+                        resolved.amount,
+                        color: NwAppColors.liability
+                    )
+                    Divider()
+                    detail(
+                        "Payment date",
+                        resolved.paymentDate.formatted(
+                            date: .abbreviated,
+                            time: .omitted
+                        )
+                    )
+                    Divider()
+                    detail(
+                        "Statement closed",
+                        payment.closeDate.formatted(
+                            date: .abbreviated,
+                            time: .omitted
+                        )
+                    )
                 }
             }
-            .navigationTitle(payment.cardName)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { dismiss() } label: { NwIcon.close.image.foregroundStyle(NwAppColors.liability) }
+
+            if payment.basis == .closedStatementEstimate {
+                Text("Reconciliation")
+                    .font(NwTypography.titleSmall)
+
+                NwCard(style: .primary) {
+                    VStack(spacing: NwSpacing.md) {
+                        amountRow("Current balance", payment.startingBalanceOwed)
+                        Divider()
+                        amountRow(
+                            "New purchases",
+                            Money(
+                                milliunits:
+                                    -reconciliation.newPurchases.milliunits
+                            ),
+                            color: NwAppColors.textSecondary
+                        )
+                        if !reconciliation.currentBalanceCredits.isZero {
+                            Divider()
+                            amountRow(
+                                "Current-cycle credits",
+                                reconciliation.currentBalanceCredits,
+                                color: NwAppColors.textSecondary
+                            )
+                        }
+                        Divider()
+                        amountRow("Estimated autopay", payment.amount)
+                    }
+                }
+
+                Text(
+                    "Since \(payment.closeDate.formatted(.dateTime.month(.abbreviated).day()))"
+                )
+                .font(NwTypography.titleSmall)
+
+                activityCard
+            }
+
+            if resolved.isConfirmed {
+                Button {
+                    showingEditor = true
+                } label: {
+                    Text("Edit Scheduled Payment")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(NwAppColors.primary)
+
+                Button {
+                    showingUseEstimateConfirmation = true
+                } label: {
+                    Text("Use Estimate")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(NwAppColors.liability)
+            } else {
+                Button {
+                    showingEditor = true
+                } label: {
+                    Text("Enter Scheduled Payment")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(NwAppColors.primary)
+            }
+        }
+        .sheet(isPresented: $showingEditor) {
+            CardPaymentConfirmationSheet(
+                initialAmount: resolved.amount,
+                initialDate: resolved.paymentDate,
+                onSave: saveConfirmation
+            )
+        }
+        .alert(
+            "Use Estimate?",
+            isPresented: $showingUseEstimateConfirmation
+        ) {
+            Button("Use Estimate", role: .destructive) {
+                removeConfirmation()
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert(
+            "Couldn’t Save Payment",
+            isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
+        }
+    }
+
+    private func detail(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            Text(value)
+                .foregroundStyle(NwAppColors.textSecondary)
+        }
+    }
+
+    private func amountRow(
+        _ label: String,
+        _ amount: Money,
+        color: Color = NwAppColors.textPrimary
+    ) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            NwAmountText(
+                amount,
+                variant: .body,
+                showCents: true,
+                color: color
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var activityCard: some View {
+        if reconciliation.activity.isEmpty {
+            NwCard(style: .primary) {
+                Text("No activity")
+                    .foregroundStyle(NwAppColors.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach(Array(reconciliation.activity.enumerated()),
+                            id: \.element.id) { index, activity in
+                        let transaction = activity.transaction
+                        HStack(spacing: NwSpacing.md) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(
+                                    transaction.payeeName
+                                        ?? transaction.categoryName
+                                        ?? "Transaction"
+                                )
+                                .font(NwTypography.body)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                                Text(
+                                    activityLabel(activity.effect)
+                                )
+                                .font(NwTypography.caption)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                NwAmountText(
+                                    transaction.amount,
+                                    variant: .body,
+                                    showCents: true,
+                                    color: transaction.amount.isNegative
+                                        ? NwAppColors.liability
+                                        : NwAppColors.positive
+                                )
+                                Text(
+                                    transaction.date.formatted(
+                                        .dateTime.month(.abbreviated).day()
+                                    )
+                                )
+                                .font(NwTypography.caption)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                            }
+                        }
+                        .padding(NwSpacing.md)
+                        if index < reconciliation.activity.count - 1 {
+                            Divider().padding(.leading, NwSpacing.md)
+                        }
+                    }
                 }
             }
         }
     }
 
-    private func detail(_ label: String, _ value: String) -> some View {
-        HStack { Text(label); Spacer(); Text(value).foregroundStyle(.secondary) }
+    private func activityLabel(
+        _ effect: CardPaymentActivityEffect
+    ) -> String {
+        switch effect {
+        case .nextStatement: "Next statement"
+        case .reducesPayment: "Reduces payment"
+        case .increasesPayment: "Increases payment"
+        case .currentBalanceOnly: "Current balance only"
+        }
+    }
+
+    private var resolved: ResolvedUpcomingCardPayment {
+        CardPaymentConfirmationResolver(calendar: calendar).resolve(
+            payment,
+            confirmations: confirmationRows.map(\.coreConfirmation)
+        )
+    }
+
+    private var reconciliation: CardPaymentReconciliation {
+        CCPaymentForecaster(calendar: calendar).reconciliation(
+            for: payment,
+            transactions: transactions,
+            asOf: .now
+        )
+    }
+
+    private var matchingRows: [DurableCardPaymentConfirmation] {
+        confirmationRows.filter {
+            $0.cardAccountId == payment.cardAccountId
+                && calendar.isDate(
+                    $0.statementCloseDate,
+                    inSameDayAs: payment.closeDate
+                )
+        }
+    }
+
+    private func saveConfirmation(_ amount: Money, _ date: Date) -> Bool {
+        let context = container.modelContainer.mainContext
+        let now = Date.now
+        if matchingRows.isEmpty {
+            context.insert(DurableCardPaymentConfirmation(
+                cardAccountId: payment.cardAccountId,
+                statementCloseDate: payment.closeDate,
+                amountMilliunits: amount.milliunits,
+                paymentDate: date,
+                createdAt: now,
+                updatedAt: now
+            ))
+        } else {
+            for row in matchingRows {
+                row.amountMilliunits = amount.milliunits
+                row.paymentDate = date
+                row.updatedAt = now
+            }
+        }
+        guard context.safeSave(source: "projection.cardPayment.confirm") else {
+            persistenceError = "Your scheduled payment wasn’t saved."
+            return false
+        }
+        return true
+    }
+
+    private func removeConfirmation() {
+        let context = container.modelContainer.mainContext
+        for row in matchingRows { context.delete(row) }
+        guard context.safeSave(source: "projection.cardPayment.useEstimate")
+        else {
+            context.rollback()
+            persistenceError = "Your scheduled payment wasn’t removed."
+            return
+        }
+    }
+}
+
+private struct CardPaymentConfirmationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let onSave: (Money, Date) -> Bool
+
+    @State private var amountText: String
+    @State private var paymentDate: Date
+
+    init(
+        initialAmount: Money,
+        initialDate: Date,
+        onSave: @escaping (Money, Date) -> Bool
+    ) {
+        self.onSave = onSave
+        _amountText = State(
+            initialValue: CurrencyInputFormatter.text(for: initialAmount)
+        )
+        _paymentDate = State(initialValue: initialDate)
+    }
+
+    var body: some View {
+        NwModalLayout(
+            title: "Enter Scheduled Payment",
+            onClose: { dismiss() },
+            onConfirm: save,
+            confirmDisabled: amount == nil
+        ) {
+            NwCard(style: .primary) {
+                VStack(spacing: NwSpacing.md) {
+                    HStack(spacing: NwSpacing.md) {
+                        Text("Amount")
+                        Spacer()
+                        TextField("0.00", text: $amountText)
+                            .multilineTextAlignment(.trailing)
+                            .nwCurrencyInput(text: $amountText)
+                            .frame(width: 140, height: 44)
+                    }
+                    Divider()
+                    DatePicker(
+                        "Payment date",
+                        selection: $paymentDate,
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(.compact)
+                }
+            }
+        }
+    }
+
+    private var amount: Money? {
+        guard let amount = CurrencyInputFormatter.money(from: amountText),
+              amount > .zero else { return nil }
+        return amount
+    }
+
+    private func save() {
+        guard let amount, onSave(amount, paymentDate) else { return }
+        dismiss()
     }
 }
 
@@ -1578,6 +1920,9 @@ private actor ProjectionsDataActor {
         )) ?? []
         let cardSettings = (try? context.fetch(
             FetchDescriptor<DurableCardSettings>()
+        )) ?? []
+        let confirmationRows = (try? context.fetch(
+            FetchDescriptor<DurableCardPaymentConfirmation>()
         )) ?? []
         let allTransactions = (try? context.fetch(
             FetchDescriptor<CachedTransaction>(
@@ -1660,6 +2005,23 @@ private actor ProjectionsDataActor {
         let history = usesPlaid
             ? financialTransactions.compactMap { $0.toProjectionSummary() }
             : allTransactions.map { $0.toSummary() }
+        let cardActivityHistory: [TransactionSummary] = usesPlaid
+            ? financialTransactions.map {
+                TransactionSummary(
+                    id: $0.id,
+                    accountId: $0.canonicalAccountId,
+                    date: $0.postedDate,
+                    amount: Money(milliunits: $0.amountMilliunits),
+                    cleared: true,
+                    approved: !$0.requiresReview,
+                    payeeName: $0.displayName,
+                    categoryName: $0.categoryDisplayName,
+                    forecastTreatment: $0.forecastTreatment,
+                    memo: nil,
+                    deleted: $0.deleted
+                )
+            }
+            : allTransactions.map { $0.toSummary() }
         // Plaid-first: user-authored recurring expectations are the only
         // authoritative dated future events — YNAB schedules never enter
         // projections on any path. Expectations on card accounts raise that
@@ -1706,25 +2068,38 @@ private actor ProjectionsDataActor {
             transactions: history,
             expectations: expectations
         )
-        // Card variable-charge estimation must not also count actuals the
-        // expectation now models explicitly.
-        let cardHistory = expectationMatchedIds.isEmpty
-            ? history
-            : history.filter { !expectationMatchedIds.contains($0.id) }
         let spendIds = Set(availableAccounts.filter { !$0.deleted && $0.kind.isSpendAccount }.map(\.id))
 
         let forecaster = CCPaymentForecaster()
-        let payments = configured.flatMap { card, setting in
+        let paymentEstimates = configured.flatMap { card, setting in
             forecaster.upcomingPayments(
                 card: card,
                 settings: setting,
                 scheduled: scheduledSummaries,
-                historicalTransactions: cardHistory,
+                historicalTransactions: cardActivityHistory,
                 spendAccountIds: spendIds,
                 asOf: .now,
                 horizonDays: horizonDays
             )
         }.sorted { $0.dueDate < $1.dueDate }
+        let confirmationResolver = CardPaymentConfirmationResolver()
+        let confirmations = confirmationRows.map(\.coreConfirmation)
+        let resolvedPayments = paymentEstimates.map {
+            confirmationResolver.resolve($0, confirmations: confirmations)
+        }
+        let projectedPayments = resolvedPayments.map(\.projectedPayment)
+        let cardActivityByPaymentID = Dictionary(uniqueKeysWithValues:
+            paymentEstimates.map { payment in
+                (
+                    payment.id,
+                    forecaster.reconciliation(
+                        for: payment,
+                        transactions: cardActivityHistory,
+                        asOf: .now
+                    ).activity.map(\.transaction)
+                )
+            }
+        )
 
         let fundedCardIds: Set<String> = Set(configured.compactMap { pair -> String? in
             let (card, setting) = pair
@@ -1736,7 +2111,7 @@ private actor ProjectionsDataActor {
             selectedCashAccountIds: selectedIds,
             cardAccountIds: Set(openCards.map(\.id)),
             fundedCardAccountIds: fundedCardIds,
-            cardPayments: payments,
+            cardPayments: projectedPayments,
             scheduled: scheduledSummaries,
             estimateExemptScheduledIds: estimateExemptIds,
             historicalTransactions: history,
@@ -1753,7 +2128,8 @@ private actor ProjectionsDataActor {
         )
         return ProjectionsView.ProjectionData(
             result: result,
-            payments: payments,
+            paymentEstimates: paymentEstimates,
+            cardActivityByPaymentID: cardActivityByPaymentID,
             selectedCashAccounts: selectedCash,
             missingCardNames: missingCards,
             unfundedCardNames: unfundedCards,

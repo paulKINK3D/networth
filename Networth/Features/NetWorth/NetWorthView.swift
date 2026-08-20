@@ -191,6 +191,7 @@ struct NetWorthView: View {
             }
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Net Worth")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NwTopLevelMenu(

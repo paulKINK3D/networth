@@ -187,6 +187,49 @@ public final class DurableCardSettings {
     }
 }
 
+/// One user-confirmed credit-card autopay. The confirmation is scoped to the
+/// statement close date, so later cycles continue using the forecaster until
+/// the user confirms them independently.
+@Model
+public final class DurableCardPaymentConfirmation {
+    public var id: UUID = UUID()
+    public var cardAccountId: String = ""
+    public var statementCloseDate: Date = Date.now
+    public var amountMilliunits: Int64 = 0
+    public var paymentDate: Date = Date.now
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        cardAccountId: String = "",
+        statementCloseDate: Date = .now,
+        amountMilliunits: Int64 = 0,
+        paymentDate: Date = .now,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.cardAccountId = cardAccountId
+        self.statementCloseDate = statementCloseDate
+        self.amountMilliunits = amountMilliunits
+        self.paymentDate = paymentDate
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var coreConfirmation: CardPaymentConfirmation {
+        CardPaymentConfirmation(
+            id: id.uuidString,
+            cardAccountId: cardAccountId,
+            statementCloseDate: statementCloseDate,
+            amount: Money(milliunits: amountMilliunits),
+            paymentDate: paymentDate,
+            updatedAt: updatedAt
+        )
+    }
+}
+
 @Model
 public final class DurableUserSettings {
     public var id: String = "singleton"
