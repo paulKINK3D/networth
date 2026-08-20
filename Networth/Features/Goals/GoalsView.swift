@@ -206,19 +206,17 @@ struct GoalsView: View {
     // MARK: - List
 
     private func goalsList(_ model: GoalsModel) -> some View {
-        List {
-            plainRow { reserveCard(model) }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: NwSpacing.sm) {
+                reserveCard(model)
 
-            ForEach(model.pendingTransfers) { transfer in
-                plainRow {
+                ForEach(model.pendingTransfers) { transfer in
                     GoalTransferRequestCard(transfer: transfer) {
                         transferRequestId = transfer.id
                     }
                 }
-            }
 
-            if model.activeGoals.isEmpty {
-                plainRow {
+                if model.activeGoals.isEmpty {
                     NwCard(style: .secondary) {
                         VStack(spacing: NwSpacing.sm) {
                             Text("No goals yet")
@@ -232,44 +230,28 @@ struct GoalsView: View {
                         }
                         .frame(maxWidth: .infinity)
                     }
-                }
-            } else {
-                ForEach(model.activeGoals) { item in
-                    plainRow {
+                } else {
+                    ForEach(model.activeGoals) { item in
                         GoalCard(item: item) { detailGoalId = item.goalUUID }
                     }
                 }
-            }
 
-            if !model.archivedGoals.isEmpty {
-                Section("Archived") {
+                if !model.archivedGoals.isEmpty {
+                    Text("Archived")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                        .textCase(.uppercase)
+                        .padding(.top, NwSpacing.sm)
                     ForEach(model.archivedGoals) { item in
-                        plainRow {
-                            GoalCard(item: item) {
-                                detailGoalId = item.goalUUID
-                            }
+                        GoalCard(item: item) {
+                            detailGoalId = item.goalUUID
                         }
                     }
                 }
             }
+            .padding(.horizontal, NwSpacing.screenPadding)
+            .padding(.vertical, NwSpacing.md)
         }
-        .listStyle(.insetGrouped)
-        .listSectionMargins(.horizontal, 0)
-        .scrollContentBackground(.hidden)
-    }
-
-    /// A card row that keeps the card look inside a List: clear background,
-    /// no separators, with insets matching the screen padding.
-    private func plainRow<Content: View>(
-        @ViewBuilder _ content: () -> Content
-    ) -> some View {
-        content()
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-            .listRowInsets(EdgeInsets(
-                top: NwSpacing.xs, leading: NwSpacing.screenPadding,
-                bottom: NwSpacing.xs, trailing: NwSpacing.screenPadding
-            ))
     }
 
     // MARK: - Build
