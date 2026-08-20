@@ -195,6 +195,18 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-08-19** — Spending budgets are optional monthly guides on existing
+  user-created Spending groups, never categories. Any group may participate,
+  and one budgeted group may be explicitly pinned on the Spending screen.
+  Targets repeat until changed, changes take effect in the current month while
+  preserving prior months, and each month resets with no carryover. The screen
+  reports actual spent, target, remaining or over, days left, and the existing
+  actual Retained cash-flow number; it does not project a finish or judge pace.
+  The budgeted-group total and pinned group replace the historical average
+  on the main Spending surface. Historical averages and the former multi-month
+  controls live in Spending Trends. Budgets do not move money or write to a
+  provider. This supersedes the 2026-08-12 placement of multi-month summaries
+  on the main Spending screen without changing its arithmetic-mean rule.
 - **2026-08-16** — Imported Plaid account names remain unchanged in the local
   provider cache. A user may assign a durable display name from banking, card,
   or investment account detail; the additive private-CloudKit override is

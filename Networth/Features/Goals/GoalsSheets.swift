@@ -1068,10 +1068,9 @@ private struct GoalAllocationAmountSheet: View {
                 HStack(spacing: NwSpacing.md) {
                     Text("Amount allocated")
                     Spacer()
-                    NwAccessoryCurrencyTextField(
-                        text: $amountText,
-                        onFocusChange: { _ in }
-                    )
+                    TextField("0.00", text: $amountText)
+                        .multilineTextAlignment(.trailing)
+                        .nwCurrencyInput(text: $amountText)
                     .frame(width: 140, height: 44)
                 }
             }

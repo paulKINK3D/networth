@@ -254,11 +254,12 @@ struct GoalsView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .listSectionMargins(.horizontal, 0)
         .scrollContentBackground(.hidden)
     }
 
     /// A card row that keeps the card look inside a List: clear background,
-    /// no separators, edge-to-edge insets matching the screen padding.
+    /// no separators, with insets matching the screen padding.
     private func plainRow<Content: View>(
         @ViewBuilder _ content: () -> Content
     ) -> some View {

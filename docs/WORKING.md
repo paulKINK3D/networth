@@ -1,5 +1,40 @@
 # WORKING
 
+## Current handoff — Spending group budgets (2026-08-19)
+
+- Active branch: `feature/spending-group-budgets`.
+- Spending budgets are implemented as optional repeating monthly targets on
+  existing user-created Spending groups. Targets are effective-dated from the
+  month in which they are changed, preserve historical months, and never carry
+  unused or overspent amounts into a new month.
+- The main Spending card totals only budgeted groups and retains the existing
+  actual Income, Spent, and Retained figures. Each budgeted group row shows
+  actual spending, progress, remaining or over on the left, and its target on
+  the right. No projected finish or pace judgment is calculated.
+- Budget setup lives in each Spending group's category screen. One budgeted
+  group can be pinned from the Spending Groups list with a swipe action; the
+  pin is shown only in that management list. Disabling its budget also clears
+  its pinned status.
+- The main Spending screen is month-only. The 3-, 6-, 12-, and 24-month
+  history controls and historical averages remain available in Spending
+  Trends.
+- `DurableSpendingGroupBudgetRule` is an additive private-CloudKit model. Its
+  defaulted fields require no legacy cleanup. `isBudgetFocus` is an additive,
+  default-false field on `DurableCategoryGroup`, so existing and restored rows
+  remain unpinned until explicitly changed.
+- Budget resolution and arithmetic live in `NetworthCore`; tests cover
+  repeating targets, effective-month replacement, disabled rules, duplicate
+  resolution, totals, refunds, and transfer-role groups such as Savings.
+- Currency entry now uses the same native SwiftUI number-pad behavior across
+  budget, goal-allocation, transaction-split, recurring-amount, and cash-buffer
+  inputs, including first-tap replacement and an explicit Done control.
+- Goals list cards now use the same wider screen inset as cards on the other
+  top-level tabs.
+- Product behavior is locked in `docs/PLAN.md` and the durable agent guidance
+  is recorded in `AGENTS.md`.
+- Validation: NetworthCore 227/227, plus generic-device Debug and Release
+  builds pass. Simulator execution was not requested.
+
 ## Resume here — ordered next work (2026-08-16)
 
 ### Repository handoff

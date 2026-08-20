@@ -114,6 +114,9 @@ cd PlaidWorker && npm test && npm run check
 - Prefer large, readable typography and high-clarity layout hierarchy.
 - Keep calls to action obvious and prominent. Use concise copy.
 - Minimize non-essential on-screen text and keep interfaces focused on primary tasks.
+- Do not add explanatory or instructional sentences to UI by default. Prefer
+  self-explanatory labels and controls; if a choice needs prose to be
+  understood, redesign the interaction. Ask before making an exception.
 - Reuse established spacing, component patterns, and tone from existing core views when adding new screens/components.
 - Prefer icon-based close/confirm controls where appropriate: red `xmark.circle.fill` for close/cancel and green `checkmark.circle.fill` for confirm/done.
 - Use the right confirmation surface for the context:
@@ -140,6 +143,12 @@ cd PlaidWorker && npm test && npm run check
 - **Information architecture is fixed at 4 tabs:** Spending · Projections · Goals · Net Worth. Spending is the initial tab. Investments moved beneath Net Worth by scope decision 2026-08-14; its reporting remains available by opening the Investments Balance Sheet category. Accounts remain Balance Sheet drill-downs rather than a tab. Settings opens from the shared top-right menu (not a tab). Do not add or restore tabs without a scope decision logged in `docs/PLAN.md`.
 - **No privacy/blur mode** in v1 (explicitly scoped out).
 - **No transactions tab** in v1 (explicitly scoped out — users open YNAB to browse transactions).
+- **Spending budgets are group-level guidance only.** A user may opt any
+  existing Spending group into a repeating monthly target and explicitly
+  feature one group. Months never carry over, category-level budgets and
+  projected finishes are excluded, and Retained always remains actual income
+  minus actual ordinary spending. Historical averages belong in Spending
+  Trends, not the main monthly budget summary.
 
 ## Validation Checklist
 - App target builds.

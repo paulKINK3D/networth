@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import NetworthCore
 
 /// Standardized currency-amount label. Uses NetworthCore's formatter so views
@@ -58,11 +57,14 @@ public struct NwAmountText: View {
 
 private struct NwCurrencyInputModifier: ViewModifier {
     @Binding var text: String
+    let onFocusChange: (Bool) -> Void
     @State private var hasStartedEditing = false
+    @FocusState private var isFocused: Bool
 
     func body(content: Content) -> some View {
         content
             .keyboardType(.numberPad)
+            .focused($isFocused)
             .onChange(of: text) { _, proposedText in
                 let formatted = CurrencyInputFormatter.formatted(proposedText)
                 if formatted != proposedText {
@@ -76,113 +78,35 @@ private struct NwCurrencyInputModifier: ViewModifier {
                     text = ""
                 }
             )
+            .onChange(of: isFocused) { _, focused in
+                onFocusChange(focused)
+            }
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    if isFocused {
+                        Spacer()
+                        Button("Done") {
+                            isFocused = false
+                        }
+                        .tint(NwAppColors.primary)
+                        .accessibilityLabel("Dismiss keyboard")
+                    }
+                }
+            }
     }
 }
 
 extension View {
     /// Currency entry with an implied two-digit decimal. The first tap clears
     /// any existing value so the first number typed starts a replacement.
-    func nwCurrencyInput(text: Binding<String>) -> some View {
-        modifier(NwCurrencyInputModifier(text: text))
-    }
-}
-
-/// UIKit-backed currency field for forms that need the compact native digit
-/// keypad plus a reliable system input-accessory Done button.
-struct NwAccessoryCurrencyTextField: UIViewRepresentable {
-    @Binding private var text: String
-    private let placeholder: String
-    private let onFocusChange: (Bool) -> Void
-
-    init(
+    func nwCurrencyInput(
         text: Binding<String>,
-        placeholder: String = "0.00",
-        onFocusChange: @escaping (Bool) -> Void
-    ) {
-        _text = text
-        self.placeholder = placeholder
-        self.onFocusChange = onFocusChange
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeUIView(context: Context) -> UITextField {
-        let field = UITextField()
-        field.delegate = context.coordinator
-        field.keyboardType = .numberPad
-        field.textAlignment = .right
-        field.placeholder = placeholder
-        field.font = .preferredFont(forTextStyle: .body)
-        field.adjustsFontForContentSizeCategory = true
-        field.addTarget(
-            context.coordinator,
-            action: #selector(Coordinator.textChanged(_:)),
-            for: .editingChanged
-        )
-
-        let toolbar = UIToolbar()
-        toolbar.sizeToFit()
-        toolbar.items = [
-            UIBarButtonItem(systemItem: .flexibleSpace),
-            UIBarButtonItem(
-                barButtonSystemItem: .done,
-                target: context.coordinator,
-                action: #selector(Coordinator.doneTapped)
-            )
-        ]
-        field.inputAccessoryView = toolbar
-        context.coordinator.textField = field
-        return field
-    }
-
-    func updateUIView(_ field: UITextField, context: Context) {
-        context.coordinator.parent = self
-        if field.text != text {
-            field.text = text
-        }
-        if field.placeholder != placeholder {
-            field.placeholder = placeholder
-        }
-    }
-
-    @MainActor
-    final class Coordinator: NSObject, UITextFieldDelegate {
-        var parent: NwAccessoryCurrencyTextField
-        weak var textField: UITextField?
-        private var hasStartedEditing = false
-
-        init(parent: NwAccessoryCurrencyTextField) {
-            self.parent = parent
-        }
-
-        func textFieldDidBeginEditing(_ textField: UITextField) {
-            if !hasStartedEditing {
-                hasStartedEditing = true
-                textField.text = ""
-                parent.text = ""
-            }
-            parent.onFocusChange(true)
-        }
-
-        func textFieldDidEndEditing(_ textField: UITextField) {
-            parent.onFocusChange(false)
-        }
-
-        @objc func textChanged(_ textField: UITextField) {
-            let formatted = CurrencyInputFormatter.formatted(
-                textField.text ?? ""
-            )
-            if textField.text != formatted {
-                textField.text = formatted
-            }
-            parent.text = formatted
-        }
-
-        @objc func doneTapped() {
-            textField?.resignFirstResponder()
-        }
+        onFocusChange: @escaping (Bool) -> Void = { _ in }
+    ) -> some View {
+        modifier(NwCurrencyInputModifier(
+            text: text,
+            onFocusChange: onFocusChange
+        ))
     }
 }
 

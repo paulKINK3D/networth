@@ -1435,8 +1435,6 @@ private struct MinimumCashBufferSheet: View {
     @Query private var settingsList: [DurableUserSettings]
     @State private var amountText = ""
     @State private var saveError: String?
-    @FocusState private var amountFocused: Bool
-    @State private var replacedOnFirstFocus = false
 
     var body: some View {
         NwModalLayout(title: "Minimum Cash Buffer", onClose: { dismiss() }, onConfirm: save) {
@@ -1450,13 +1448,6 @@ private struct MinimumCashBufferSheet: View {
                 TextField("500", text: $amountText)
                     .nwCurrencyInput(text: $amountText)
                     .font(NwTypography.display)
-                    .focused($amountFocused)
-                    .onChange(of: amountFocused) { _, focused in
-                        if focused && !replacedOnFirstFocus {
-                            amountText = ""
-                            replacedOnFirstFocus = true
-                        }
-                    }
                     .padding(NwSpacing.md)
                     .background(NwAppColors.cardSurface)
                     .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
@@ -3883,24 +3874,26 @@ struct PlaidTransactionReviewEditor: View {
                         HStack(spacing: NwSpacing.md) {
                             Text("Amount")
                             Spacer()
-                            NwAccessoryCurrencyTextField(
-                                text: $draft.amountText,
-                                onFocusChange: { focused in
-                                    if focused {
-                                        splitAmountFocusedID = draft.id
-                                    } else if splitAmountFocusedID
-                                        == draft.id {
+                            TextField("0.00", text: $draft.amountText)
+                                .multilineTextAlignment(.trailing)
+                                .nwCurrencyInput(
+                                    text: $draft.amountText,
+                                    onFocusChange: { focused in
+                                        if focused {
+                                            splitAmountFocusedID = draft.id
+                                        } else if splitAmountFocusedID
+                                            == draft.id {
+                                            splitAmountFocusedID = nil
+                                        }
+                                    }
+                                )
+                                .accessibilityLabel("Split amount")
+                                .frame(width: 110)
+                                .onDisappear {
+                                    if splitAmountFocusedID == draft.id {
                                         splitAmountFocusedID = nil
                                     }
                                 }
-                            )
-                            .accessibilityLabel("Split amount")
-                            .frame(width: 110)
-                            .onDisappear {
-                                if splitAmountFocusedID == draft.id {
-                                    splitAmountFocusedID = nil
-                                }
-                            }
                         }
                         .padding(NwSpacing.md)
                     }
@@ -5561,7 +5554,7 @@ struct RecurringExpectationForm: View {
 
                 Section("Expected Amount") {
                     TextField("Amount", text: $amountText)
-                        .keyboardType(.decimalPad)
+                        .nwCurrencyInput(text: $amountText)
                 }
 
                 if let saveError {

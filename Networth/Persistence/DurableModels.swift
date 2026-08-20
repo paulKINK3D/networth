@@ -456,6 +456,9 @@ public final class DurableCategoryGroup {
     public var chartColorHex: String = ""
     public var reportingRoleRaw: String = CategoryReportingRole.spending.rawValue
     public var hidden: Bool = false
+    /// At most one user group should be featured on the Spending screen.
+    /// Stored on the durable group so the choice follows the user across devices.
+    public var isBudgetFocus: Bool = false
     public var createdAt: Date = Date.now
     public var updatedAt: Date = Date.now
 
@@ -467,6 +470,7 @@ public final class DurableCategoryGroup {
         chartColorHex: String = "",
         reportingRole: CategoryReportingRole = .spending,
         hidden: Bool = false,
+        isBudgetFocus: Bool = false,
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -477,6 +481,7 @@ public final class DurableCategoryGroup {
         self.chartColorHex = chartColorHex
         self.reportingRoleRaw = reportingRole.rawValue
         self.hidden = hidden
+        self.isBudgetFocus = isBudgetFocus
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -484,6 +489,53 @@ public final class DurableCategoryGroup {
     public var reportingRole: CategoryReportingRole {
         get { CategoryReportingRole(rawValue: reportingRoleRaw) ?? .spending }
         set { reportingRoleRaw = newValue.rawValue }
+    }
+}
+
+/// Effective-dated monthly guidance for a Spending group. A rule applies from
+/// its effective month forward until another rule for that group replaces it.
+/// Keeping old rows makes prior months stable while every month remains an
+/// independent budget period with no carryover.
+@Model
+public final class DurableSpendingGroupBudgetRule {
+    public var id: UUID = UUID()
+    public var groupIdentity: String = ""
+    public var effectiveYear: Int = 2000
+    public var effectiveMonth: Int = 1
+    public var targetMilliunits: Int64 = 0
+    public var enabled: Bool = false
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        groupIdentity: String = "",
+        effectiveYear: Int = 2000,
+        effectiveMonth: Int = 1,
+        targetMilliunits: Int64 = 0,
+        enabled: Bool = false,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.groupIdentity = groupIdentity
+        self.effectiveYear = effectiveYear
+        self.effectiveMonth = effectiveMonth
+        self.targetMilliunits = targetMilliunits
+        self.enabled = enabled
+        self.updatedAt = updatedAt
+    }
+
+    public var coreRule: SpendingGroupBudgetRule {
+        SpendingGroupBudgetRule(
+            id: id.uuidString,
+            groupIdentity: groupIdentity,
+            effectiveMonth: BudgetMonth(
+                year: effectiveYear,
+                month: effectiveMonth
+            ),
+            target: Money(milliunits: targetMilliunits),
+            enabled: enabled,
+            updatedAt: updatedAt
+        )
     }
 }
 

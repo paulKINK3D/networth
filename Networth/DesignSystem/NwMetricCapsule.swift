@@ -35,3 +35,42 @@ public struct NwMetricCapsule: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+/// Shared factual budget progress. The visible fill caps at the target while
+/// accessibility retains the uncapped percentage when spending is over.
+public struct NwBudgetProgress: View {
+    public let progress: Double
+    public let isOver: Bool
+    public let accessibilityLabel: String
+
+    public init(
+        progress: Double,
+        isOver: Bool,
+        accessibilityLabel: String = "Budget progress"
+    ) {
+        self.progress = progress
+        self.isOver = isOver
+        self.accessibilityLabel = accessibilityLabel
+    }
+
+    public var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(NwAppColors.strokeSubtle)
+                Capsule()
+                    .fill(isOver ? NwAppColors.liability : NwAppColors.primary)
+                    .frame(
+                        width: geometry.size.width
+                            * min(max(progress, 0), 1)
+                    )
+            }
+        }
+        .frame(height: 8)
+        .accessibilityElement()
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(
+            "\(Int((max(progress, 0) * 100).rounded())) percent"
+        )
+    }
+}
