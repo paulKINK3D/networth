@@ -41,15 +41,21 @@ public struct NwMetricCapsule: View {
 public struct NwBudgetProgress: View {
     public let progress: Double
     public let isOver: Bool
+    public let tint: Color?
+    public let trackTint: Color?
     public let accessibilityLabel: String
 
     public init(
         progress: Double,
         isOver: Bool,
+        tint: Color? = nil,
+        trackTint: Color? = nil,
         accessibilityLabel: String = "Budget progress"
     ) {
         self.progress = progress
         self.isOver = isOver
+        self.tint = tint
+        self.trackTint = trackTint
         self.accessibilityLabel = accessibilityLabel
     }
 
@@ -57,16 +63,21 @@ public struct NwBudgetProgress: View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(NwAppColors.strokeSubtle)
+                    .fill(trackTint ?? NwAppColors.strokeSubtle)
                 Capsule()
-                    .fill(isOver ? NwAppColors.liability : NwAppColors.primary)
+                    .fill(
+                        tint
+                            ?? (isOver
+                                ? NwAppColors.budgetAtRisk
+                                : NwAppColors.budgetOnTrack)
+                    )
                     .frame(
                         width: geometry.size.width
                             * min(max(progress, 0), 1)
                     )
             }
         }
-        .frame(height: 8)
+        .frame(height: 12)
         .accessibilityElement()
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(

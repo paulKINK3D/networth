@@ -143,7 +143,14 @@ When at least four complete monthly samples are available, Safe to Spend also sh
 - No privacy mode (tap-to-blur amounts) in v1.
 
 ### Design Language
-- **Theme:** "Deep Slate" — navy/teal accent (≈ `#1E3A8A` primary, teal for positive deltas, muted red for liabilities/regressions). Interactive semantic colors use explicit light/dark variants; fixed navy is not used as a dark-mode foreground.
+- **Theme:** "Deep Slate" — the primary navy (`#003E83`), parchment
+  (`#EBD999`), and rust (`#A93400`) derive from the third combination in the
+  sixth row of page 11 of the local Sanzo Wada reference. Navy is also used for
+  positive/on-track and accent treatments; a derived amber (`#9A5700`) means
+  watch, parchment highlights the featured Spending group, and rust means
+  liability/at-risk. Interactive semantic colors use explicit light/dark
+  variants; fixed navy is not used as a dark-mode foreground. The BlueLava
+  launch/lock gradient remains a separate shared cross-app brand treatment.
 - Modeled on WorkoutApp's design-system patterns (`Lift*` token enums, card variants, modal scaffolds).
 - Design system **built first**, screens assembled from primitives.
 
@@ -203,8 +210,11 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   Targets repeat until changed, changes take effect in the current month while
   preserving prior months, and each month resets with no carryover. The screen
   reports actual spent, target, remaining or over, days left, and the existing
-  actual Retained cash-flow number; it does not project a finish or judge pace.
-  The budgeted-group total and pinned group replace the historical average
+  actual Retained cash-flow number. A factual calendar comparison colors budget
+  progress navy when on track, amber when up to ten percentage points ahead,
+  and rust when materially ahead or over budget; it never projects a
+  finish or uses historical behavior. The budgeted-group total and detailed budget list
+  replace the historical average
   on the main Spending surface. Historical averages and the former multi-month
   controls live in Spending Trends. Budgets do not move money or write to a
   provider. This supersedes the 2026-08-12 placement of multi-month summaries

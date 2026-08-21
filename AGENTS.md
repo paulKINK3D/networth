@@ -130,6 +130,10 @@ cd PlaidWorker && npm test && npm run check
   - Custom confirmation sheets for positive/completion actions and dialogs with text input.
   - `.confirmationDialog()` for multi-option pickers with 3+ actions.
 - For numeric entry fields, first numeric tap should replace existing value by default.
+- Currency fields use the shared staged numeric-entry sheet: payment-terminal
+  cent shifting, Clear in the lower-left keypad position, backspace in the
+  lower-right, and explicit Cancel/Done actions. Do not attach dismissal
+  controls to the system keyboard for currency entry.
 - For controls that invalidate multi-year chart calculations, stage edits locally and commit with an explicit Apply action instead of recalculating on every picker change.
 - For high-frequency actions, prefer always-visible large tap targets over hidden menus.
 - For list-row management actions, prefer swipe actions.
@@ -144,7 +148,21 @@ cd PlaidWorker && npm test && npm run check
 - History views should reuse the same entry display formatting used in logging/detail screens so wording, units, and layout stay consistent.
 - Avoid duplicating cross-cutting helpers across views; prefer one shared utility so
   fixes apply globally.
-- **Theme:** "Deep Slate" — navy/teal accent (`#1E3A8A` family); teal for positive deltas, muted red for liabilities/regressions. Defined in `NwAppColors`. Brand and semantic colors must use adaptive light/dark definitions there; never use a fixed navy as an interactive foreground in dark mode.
+- **Theme:** "Deep Slate" — the primary navy (`#003E83`), parchment
+  (`#EBD999`), and rust (`#A93400`) derive from the third combination in the
+  sixth row of page 11 of the local Sanzo Wada reference. Navy is also the
+  positive/on-track and accent color; a derived amber (`#9A5700`) means watch,
+  parchment highlights the featured Spending group, and rust means
+  liability/at-risk. Defined in `NwAppColors`. Brand and semantic colors must
+  use adaptive light/dark definitions there; never use a fixed navy as an
+  interactive foreground in dark mode.
+- The BlueLava launch/lock gradient is a shared cross-app brand treatment, not
+  part of Networth's screen palette. Do not change it during Networth palette
+  work without explicit user approval.
+- For palette planning, consult `docs/2026-08-21-color-planning-reference.md`
+  and its local Sanzo Wada PDF before introducing unrelated hues. Sample exact
+  swatches from a rendered page, then adapt them in `NwAppColors` for semantic
+  meaning, contrast, and light/dark appearance.
 - **Currency display:** never show raw milliunits. Always route through `NetworthCore.Money` formatters. Hide cents where the design calls for compact metrics; show full precision in detail rows.
 - **Information architecture is fixed at 4 tabs:** Spending · Projections · Goals · Net Worth. Spending is the initial tab. Investments moved beneath Net Worth by scope decision 2026-08-14; its reporting remains available by opening the Investments Balance Sheet category. Accounts remain Balance Sheet drill-downs rather than a tab. Settings opens from the shared top-right menu (not a tab). Do not add or restore tabs without a scope decision logged in `docs/PLAN.md`.
 - **No privacy/blur mode** in v1 (explicitly scoped out).
@@ -154,7 +172,11 @@ cd PlaidWorker && npm test && npm run check
   feature one group. Months never carry over, category-level budgets and
   projected finishes are excluded, and Retained always remains actual income
   minus actual ordinary spending. Historical averages belong in Spending
-  Trends, not the main monthly budget summary.
+  Trends, not the main monthly budget summary. Factual calendar pace may compare
+  percent used with percent of the current month elapsed: navy is on track,
+  amber is up to ten percentage points ahead, and rust is materially
+  ahead or over budget. Never extrapolate that comparison into a projected
+  finish.
 
 ## Validation Checklist
 - App target builds.

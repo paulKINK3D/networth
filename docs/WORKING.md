@@ -33,7 +33,7 @@
 - Validation: NetworthCore 230/230, plus generic-device Debug and Release
   builds pass. Simulator execution was not requested.
 
-## Current handoff — Spending group budgets (2026-08-19)
+## Current handoff — Spending group budgets (2026-08-21)
 
 - Active branch: `feature/spending-group-budgets`.
 - Spending budgets are implemented as optional repeating monthly targets on
@@ -42,8 +42,10 @@
   unused or overspent amounts into a new month.
 - The main Spending card totals only budgeted groups and retains the existing
   actual Income, Spent, and Retained figures. Each budgeted group row shows
-  actual spending, progress, remaining or over on the left, and its target on
-  the right. No projected finish or pace judgment is calculated.
+  actual spending as `$spent of $budget` plus remaining or over. Its factual
+  calendar-pace color is navy when on track, amber when up to ten percentage
+  points ahead, and rust means materially ahead or over budget. No
+  projected finish or historical-behavior inference is calculated.
 - Budget setup lives in each Spending group's category screen. One budgeted
   group can be pinned from the Spending Groups list with a swipe action; the
   pin is shown only in that management list. Disabling its budget also clears
@@ -58,14 +60,22 @@
 - Budget resolution and arithmetic live in `NetworthCore`; tests cover
   repeating targets, effective-month replacement, disabled rules, duplicate
   resolution, totals, refunds, and transfer-role groups such as Savings.
-- Currency entry now uses the same native SwiftUI number-pad behavior across
+- Currency entry now uses the same staged custom keypad across
   budget, goal-allocation, transaction-split, recurring-amount, and cash-buffer
-  inputs, including first-tap replacement and an explicit Done control.
+  inputs, including first-tap replacement, payment-terminal cent shifting,
+  Clear, backspace, Cancel, Done, and swipe-to-commit dismissal. It replaces
+  the system keyboard, so no keyboard accessory can cover an amount field.
+- Empty split amounts offer Use Remaining, which fills the exact transaction
+  amount not allocated to the other split legs.
 - Goals list cards now use the same wider screen inset as cards on the other
   top-level tabs.
 - Product behavior is locked in `docs/PLAN.md` and the durable agent guidance
   is recorded in `AGENTS.md`.
-- Validation: NetworthCore 227/227, plus generic-device Debug and Release
+- App screen colors are centralized in `NwAppColors`: navy `#003E83`,
+  parchment `#EBD999`, amber `#9A5700`, and rust `#A93400`, with adaptive dark
+  variants. The BlueLava launch/lock gradient remains unchanged and separate
+  because it is shared across the user's apps.
+- Validation: NetworthCore 233/233, plus generic-device Debug and Release
   builds pass. Simulator execution was not requested.
 
 ## Resume here — ordered next work (2026-08-16)

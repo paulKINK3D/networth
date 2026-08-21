@@ -2775,7 +2775,7 @@ struct PlaidTransactionReviewEditor: View {
     @State private var isSplit: Bool
     @State private var splitDrafts: [PlaidSplitDraft]
     @State private var splitSaveError: String?
-    @FocusState private var splitAmountFocusedID: UUID?
+    @State private var splitAmountFocusedID: UUID?
 
     init(
         transaction: CachedFinancialTransaction,
@@ -3337,10 +3337,23 @@ struct PlaidTransactionReviewEditor: View {
                         HStack(spacing: NwSpacing.md) {
                             Text("Amount")
                             Spacer()
+                            if parsedSplitAmount(draft) == nil,
+                               unallocatedAmount(excluding: draft.id) > .zero {
+                                Button("Use Remaining") {
+                                    useRemainingAmount(for: draft.id)
+                                }
+                                .font(NwTypography.footnoteEm)
+                                .foregroundStyle(NwAppColors.primary)
+                                .accessibilityLabel(
+                                    "Use remaining amount for split "
+                                        + "\(splitNumber(for: draft.id))"
+                                )
+                            }
                             TextField("0.00", text: $draft.amountText)
                                 .multilineTextAlignment(.trailing)
                                 .nwCurrencyInput(
                                     text: $draft.amountText,
+                                    title: "Split \(splitNumber(for: draft.id)) Amount",
                                     onFocusChange: { focused in
                                         if focused {
                                             splitAmountFocusedID = draft.id
@@ -3429,6 +3442,29 @@ struct PlaidTransactionReviewEditor: View {
         Money(
             milliunits: Swift.abs(selectedSplitTransaction.amountMilliunits)
                 - enteredSplitTotal.milliunits
+        )
+    }
+
+    private func unallocatedAmount(excluding draftID: UUID) -> Money {
+        let allocatedElsewhere = splitDrafts.reduce(Int64(0)) {
+            total, draft in
+            guard draft.id != draftID else { return total }
+            return total + (parsedSplitAmount(draft)?.milliunits ?? 0)
+        }
+        return Money(milliunits: max(
+            0,
+            Swift.abs(selectedSplitTransaction.amountMilliunits)
+                - allocatedElsewhere
+        ))
+    }
+
+    private func useRemainingAmount(for draftID: UUID) {
+        guard let index = splitDrafts.firstIndex(where: { $0.id == draftID })
+        else { return }
+        let remaining = unallocatedAmount(excluding: draftID)
+        guard remaining > .zero else { return }
+        splitDrafts[index].amountText = CurrencyInputFormatter.text(
+            for: remaining
         )
     }
 

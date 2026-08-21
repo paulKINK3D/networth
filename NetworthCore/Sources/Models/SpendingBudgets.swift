@@ -28,8 +28,8 @@ public struct SpendingGroupBudgetRule: Identifiable, Hashable, Sendable {
     }
 }
 
-/// Factual status for one group in one month. There is deliberately no pace
-/// or projected finish: budgets guide spending without pretending to predict it.
+/// Factual amounts for one group in one month. Calendar pace is evaluated
+/// separately and never extrapolated into a projected finish.
 public struct SpendingGroupBudgetSnapshot: Identifiable, Hashable, Sendable {
     public let groupIdentity: String
     public let groupName: String
@@ -54,6 +54,47 @@ public struct SpendingGroupBudgetSnapshot: Identifiable, Hashable, Sendable {
         self.groupName = groupName
         self.spent = spent
         self.target = target
+    }
+}
+
+/// A factual comparison between budget used and calendar time elapsed.
+/// This never projects a finish or uses historical spending behavior.
+public enum SpendingBudgetPaceStatus: String, Hashable, Sendable {
+    case onTrack
+    case watch
+    case atRisk
+}
+
+public struct SpendingBudgetPaceEvaluator: Sendable {
+    /// Spending more than ten percentage points ahead of the calendar is a
+    /// material risk; any smaller lead is worth watching.
+    public static let atRiskLead: Double = 0.10
+
+    public init() {}
+
+    public func status(
+        progress: Double,
+        month: BudgetMonth,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> SpendingBudgetPaceStatus {
+        let progress = max(progress, 0)
+        if progress > 1 { return .atRisk }
+
+        let currentMonth = BudgetMonth(containing: now, calendar: calendar)
+        if month < currentMonth { return .onTrack }
+        if month > currentMonth { return .onTrack }
+
+        let interval = month.interval(calendar: calendar)
+        let duration = max(interval.duration, 1)
+        let elapsed = min(
+            max(now.timeIntervalSince(interval.start) / duration, 0),
+            1
+        )
+        let lead = progress - elapsed
+        if lead <= 0 { return .onTrack }
+        if lead <= Self.atRiskLead { return .watch }
+        return .atRisk
     }
 }
 

@@ -6,13 +6,32 @@ import Testing
 @Suite("Spending group budgets")
 struct SpendingBudgetsTests {
     private let resolver = SpendingGroupBudgetResolver()
+    private let paceEvaluator = SpendingBudgetPaceEvaluator()
 
-    private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+    private var utc: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
-        return calendar.date(
+        return calendar
+    }
+
+    private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        utc.date(
             from: DateComponents(year: year, month: month, day: day)
         )!
+    }
+
+    private func date(
+        _ year: Int,
+        _ month: Int,
+        _ day: Int,
+        hour: Int
+    ) -> Date {
+        utc.date(from: DateComponents(
+            year: year,
+            month: month,
+            day: day,
+            hour: hour
+        ))!
     }
 
     private func rule(
@@ -155,5 +174,59 @@ struct SpendingBudgetsTests {
         )
         #expect(summary.groups.first?.spent == Money.dollars(integer: 400))
         #expect(summary.remaining == Money.dollars(integer: 100))
+    }
+
+    @Test("Budget pace compares usage with elapsed calendar time")
+    func currentMonthPaceBands() {
+        let month = BudgetMonth(year: 2026, month: 8)
+        let now = date(2026, 8, 21, hour: 12)
+
+        #expect(paceEvaluator.status(
+            progress: 0.66,
+            month: month,
+            now: now,
+            calendar: utc
+        ) == .onTrack)
+        #expect(paceEvaluator.status(
+            progress: 0.70,
+            month: month,
+            now: now,
+            calendar: utc
+        ) == .watch)
+        #expect(paceEvaluator.status(
+            progress: 0.80,
+            month: month,
+            now: now,
+            calendar: utc
+        ) == .atRisk)
+    }
+
+    @Test("Over budget is always at risk")
+    func overBudgetIsAtRisk() {
+        #expect(paceEvaluator.status(
+            progress: 1.01,
+            month: BudgetMonth(year: 2026, month: 7),
+            now: date(2026, 8, 21),
+            calendar: utc
+        ) == .atRisk)
+    }
+
+    @Test("Completed months are factual under or over budget")
+    func completedMonthStatus() {
+        let month = BudgetMonth(year: 2026, month: 7)
+        let now = date(2026, 8, 21)
+
+        #expect(paceEvaluator.status(
+            progress: 0.99,
+            month: month,
+            now: now,
+            calendar: utc
+        ) == .onTrack)
+        #expect(paceEvaluator.status(
+            progress: 1.01,
+            month: month,
+            now: now,
+            calendar: utc
+        ) == .atRisk)
     }
 }

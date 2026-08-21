@@ -57,42 +57,156 @@ public struct NwAmountText: View {
 
 private struct NwCurrencyInputModifier: ViewModifier {
     @Binding var text: String
+    let title: String
     let onFocusChange: (Bool) -> Void
-    @State private var hasStartedEditing = false
-    @FocusState private var isFocused: Bool
+    @State private var showingKeypad = false
 
     func body(content: Content) -> some View {
-        content
-            .keyboardType(.numberPad)
-            .focused($isFocused)
-            .onChange(of: text) { _, proposedText in
-                let formatted = CurrencyInputFormatter.formatted(proposedText)
-                if formatted != proposedText {
-                    text = formatted
-                }
+        ZStack {
+            content
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
+            Button {
+                onFocusChange(true)
+                showingKeypad = true
+            } label: {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    guard !hasStartedEditing else { return }
-                    hasStartedEditing = true
-                    text = ""
-                }
-            )
-            .onChange(of: isFocused) { _, focused in
-                onFocusChange(focused)
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityValue(text.isEmpty ? "Not set" : text)
+        }
+        .onChange(of: text) { _, proposedText in
+            let formatted = CurrencyInputFormatter.formatted(proposedText)
+            if formatted != proposedText {
+                text = formatted
             }
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    if isFocused {
-                        Spacer()
-                        Button("Done") {
-                            isFocused = false
-                        }
-                        .tint(NwAppColors.primary)
-                        .accessibilityLabel("Dismiss keyboard")
+        }
+        .sheet(isPresented: $showingKeypad, onDismiss: {
+            onFocusChange(false)
+        }) {
+            NwCurrencyEntryPadSheet(title: title, value: $text)
+        }
+    }
+}
+
+private struct NwCurrencyEntryPadSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let title: String
+    @Binding var value: String
+
+    @State private var draft = ""
+    @State private var replaceOnNextNumber = false
+    @State private var cancelled = false
+
+    private let keys = [
+        "1", "2", "3",
+        "4", "5", "6",
+        "7", "8", "9",
+        "Clear", "0", "⌫"
+    ]
+
+    var body: some View {
+        VStack(spacing: NwSpacing.md) {
+            Text(title)
+                .font(NwTypography.titleSmall)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            Text(draft.isEmpty ? "0.00" : draft)
+                .font(NwTypography.displayLarge)
+                .monospacedDigit()
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, NwSpacing.md)
+                .nwCardStyle(.secondary, padding: 0)
+
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.flexible(), spacing: NwSpacing.sm),
+                    count: 3
+                ),
+                spacing: NwSpacing.sm
+            ) {
+                ForEach(keys, id: \.self) { key in
+                    Button {
+                        handleKey(key)
+                    } label: {
+                        Text(key)
+                            .font(NwTypography.headline)
+                            .foregroundStyle(NwAppColors.textPrimary)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(
+                                RoundedRectangle(
+                                    cornerRadius: NwCornerRadius.md,
+                                    style: .continuous
+                                )
+                                .fill(NwAppColors.cardSurface)
+                            )
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(key == "⌫" ? "Delete" : key)
                 }
             }
+
+            HStack(spacing: NwSpacing.md) {
+                Button {
+                    cancelled = true
+                    dismiss()
+                } label: {
+                    Label("Cancel", systemImage: "xmark")
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                }
+                .buttonStyle(NwDestructiveButtonStyle())
+
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Done", systemImage: "checkmark")
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                }
+                .buttonStyle(NwPrimaryButtonStyle())
+            }
+            .padding(.top, NwSpacing.xs)
+        }
+        .padding(.horizontal, NwSpacing.screenPadding)
+        .padding(.top, NwSpacing.xxl)
+        .padding(.bottom, NwSpacing.md)
+        .background(NwAppColors.background.ignoresSafeArea())
+        .onAppear {
+            draft = CurrencyInputFormatter.formatted(value)
+            replaceOnNextNumber = !draft.isEmpty
+            cancelled = false
+        }
+        .onDisappear {
+            if !cancelled {
+                value = draft
+            }
+        }
+        .presentationDetents([.height(480)])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func handleKey(_ key: String) {
+        switch key {
+        case "Clear":
+            draft = ""
+            replaceOnNextNumber = false
+        case "⌫":
+            let digits = draft.compactMap(\.wholeNumberValue)
+                .dropLast()
+                .map(String.init)
+                .joined()
+            draft = CurrencyInputFormatter.formatted(digits)
+            replaceOnNextNumber = false
+        default:
+            guard key.allSatisfy(\.isNumber) else { return }
+            let proposedText = replaceOnNextNumber ? key : draft + key
+            draft = CurrencyInputFormatter.formatted(proposedText)
+            replaceOnNextNumber = false
+        }
     }
 }
 
@@ -101,10 +215,12 @@ extension View {
     /// any existing value so the first number typed starts a replacement.
     func nwCurrencyInput(
         text: Binding<String>,
+        title: String = "Amount",
         onFocusChange: @escaping (Bool) -> Void = { _ in }
     ) -> some View {
         modifier(NwCurrencyInputModifier(
             text: text,
+            title: title,
             onFocusChange: onFocusChange
         ))
     }

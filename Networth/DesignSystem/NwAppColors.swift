@@ -1,30 +1,49 @@
 import SwiftUI
 import UIKit
 
-/// "Deep Slate" palette. Navy primary, teal accent, muted red for liabilities.
+/// Sanzo Wada-inspired palette. Deep blue primary and positive, parchment
+/// highlight, amber caution, and rust for liabilities.
 public enum NwAppColors {
     // Brand
     public static let primary = adaptiveColor(
-        light: 0x1E3A8A,
-        dark: 0x86A8FF
+        light: 0x003E83,
+        dark: 0x8DBAFF
     )
     public static let primaryDim = adaptiveColor(
-        light: 0x142661,
-        dark: 0x5F7FD6
+        light: 0x002B5C,
+        dark: 0x6695D1
     )
-    public static let accent = adaptiveColor(
-        light: 0x108D9E,
-        dark: 0x4CC9D8
-    )
+    public static let accent = primary
 
     // Semantic
-    public static let positive   = Color(red: 0.063, green: 0.620, blue: 0.482) // muted teal-green
-    public static let caution    = Color(red: 0.918, green: 0.659, blue: 0.298) // amber
-    public static let liability  = Color(red: 0.808, green: 0.318, blue: 0.318) // muted red
+    public static let positive = primary
+    public static let gold = adaptiveColor(
+        light: 0xEBD999,
+        dark: 0xD6C27F
+    )
+    public static let caution = adaptiveColor(
+        light: 0x9A5700,
+        dark: 0xE2AE55
+    )
+    public static let liability = adaptiveColor(
+        light: 0xA93400,
+        dark: 0xFF9271
+    )
     public static let info = adaptiveColor(
         light: 0x4C8AEA,
         dark: 0x78A8FF
     )
+
+    // Budget pace
+    public static let budgetOnTrack = positive
+    public static let budgetWatch = caution
+    public static let budgetAtRisk = liability
+    public static let featuredSurface = adaptiveColor(
+        light: 0xEBD999,
+        dark: 0x453D21
+    )
+    public static let featuredText = primary
+    public static let featuredTrack = primary.opacity(0.20)
 
     // Surfaces
     public static let background       = Color(.systemGroupedBackground)
