@@ -5,6 +5,10 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
     public let id: String
     public let accountId: String
     public let date: Date
+    /// Provider-authorized date when it differs from the posted date. This is
+    /// display evidence only; projections continue using the posted date
+    /// unless the user makes an explicit statement-cycle assignment.
+    public let authorizedDate: Date?
     public let amount: Money
     public let cleared: Bool
     public let approved: Bool
@@ -29,6 +33,7 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
         id: String,
         accountId: String,
         date: Date,
+        authorizedDate: Date? = nil,
         amount: Money,
         cleared: Bool,
         approved: Bool,
@@ -47,6 +52,7 @@ public struct TransactionSummary: Sendable, Hashable, Codable, Identifiable {
         self.id = id
         self.accountId = accountId
         self.date = date
+        self.authorizedDate = authorizedDate
         self.amount = amount
         self.cleared = cleared
         self.approved = approved

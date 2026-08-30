@@ -16,6 +16,7 @@ public struct UpcomingCardPayment: Sendable, Hashable, Identifiable {
     public let paymentAccountId: String
     public let cardName: String
     public let closeDate: Date
+    public let statementCycleDay: Int?
     public let dueDate: Date
     public let amount: Money
     public let basis: CardPaymentEstimateBasis
@@ -29,6 +30,7 @@ public struct UpcomingCardPayment: Sendable, Hashable, Identifiable {
         paymentAccountId: String,
         cardName: String,
         closeDate: Date,
+        statementCycleDay: Int? = nil,
         dueDate: Date,
         amount: Money,
         basis: CardPaymentEstimateBasis,
@@ -41,6 +43,7 @@ public struct UpcomingCardPayment: Sendable, Hashable, Identifiable {
         self.paymentAccountId = paymentAccountId
         self.cardName = cardName
         self.closeDate = closeDate
+        self.statementCycleDay = statementCycleDay
         self.dueDate = dueDate
         self.amount = amount
         self.basis = basis
@@ -79,6 +82,30 @@ public struct CardPaymentConfirmation: Sendable, Hashable, Identifiable {
     }
 }
 
+/// A durable, user-authored statement membership decision for one imported
+/// card transaction. The provider's posted and authorized dates stay intact.
+public struct CardStatementAssignment: Sendable, Hashable, Identifiable {
+    public let id: String
+    public let transactionId: String
+    public let cardAccountId: String
+    public let statementCloseDate: Date
+    public let updatedAt: Date
+
+    public init(
+        id: String,
+        transactionId: String,
+        cardAccountId: String,
+        statementCloseDate: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.transactionId = transactionId
+        self.cardAccountId = cardAccountId
+        self.statementCloseDate = statementCloseDate
+        self.updatedAt = updatedAt
+    }
+}
+
 public struct ResolvedUpcomingCardPayment: Sendable, Hashable, Identifiable {
     public let estimate: UpcomingCardPayment
     public let confirmation: CardPaymentConfirmation?
@@ -104,6 +131,7 @@ public struct ResolvedUpcomingCardPayment: Sendable, Hashable, Identifiable {
             paymentAccountId: estimate.paymentAccountId,
             cardName: estimate.cardName,
             closeDate: estimate.closeDate,
+            statementCycleDay: estimate.statementCycleDay,
             dueDate: paymentDate,
             amount: amount,
             basis: estimate.basis,
@@ -196,6 +224,7 @@ extension CCPaymentForecaster {
     public func reconciliation(
         for payment: UpcomingCardPayment,
         transactions: [TransactionSummary],
+        statementAssignments: [CardStatementAssignment] = [],
         asOf today: Date
     ) -> CardPaymentReconciliation {
         let end = calendar.startOfDay(for: today)
@@ -203,7 +232,11 @@ extension CCPaymentForecaster {
             .filter {
                 !$0.deleted
                     && $0.accountId == payment.cardAccountId
-                    && $0.date > payment.closeDate
+                    && isAfterStatementClose(
+                        $0,
+                        closeDate: payment.closeDate,
+                        assignments: statementAssignments
+                    )
                     && $0.date <= end
             }
             .sorted {
@@ -239,6 +272,7 @@ extension CCPaymentForecaster {
         settings: CardStatementSettings,
         scheduled: [ScheduledTransactionSummary],
         historicalTransactions: [TransactionSummary] = [],
+        statementAssignments: [CardStatementAssignment] = [],
         spendAccountIds: Set<String> = [],
         asOf today: Date,
         horizonDays: Int = 60
@@ -256,14 +290,18 @@ extension CCPaymentForecaster {
             return true
         }
 
-        let lastClose = previousCloseDate(asOf: start, cycleDay: settings.statementCycleDay)
+        let lastClose = previousCloseDate(
+            asOf: start,
+            cycleDay: settings.statementCycleDay
+        )
         let lastDue = paymentDueDate(after: lastClose, dueDay: settings.paymentDueDay)
         let lastStatement = remainingBalanceForPastStatement(
             currentOwed: card.balance.absolute,
             cardAccountId: card.id,
             closeDate: lastClose,
             today: start,
-            history: historicalTransactions
+            history: historicalTransactions,
+            assignments: statementAssignments
         )
 
         var payments: [UpcomingCardPayment] = []
@@ -276,6 +314,7 @@ extension CCPaymentForecaster {
                     paymentAccountId: paymentAccountId,
                     cardName: card.name,
                     closeDate: lastClose,
+                    statementCycleDay: settings.statementCycleDay,
                     dueDate: lastDue,
                     amount: lastStatement,
                     basis: .closedStatementEstimate,
@@ -286,7 +325,10 @@ extension CCPaymentForecaster {
 
         var owed = card.balance.absolute
         var periodStart = start
-        var close = nextCloseDate(asOf: start, cycleDay: settings.statementCycleDay)
+        var close = nextCloseDate(
+            asOf: start,
+            cycleDay: settings.statementCycleDay
+        )
 
         while close <= end {
             let startingOwed = owed
@@ -331,6 +373,7 @@ extension CCPaymentForecaster {
                     paymentAccountId: paymentAccountId,
                     cardName: card.name,
                     closeDate: close,
+                    statementCycleDay: settings.statementCycleDay,
                     dueDate: due,
                     amount: statementAmount,
                     basis: .futureScheduledOnly,
@@ -360,7 +403,8 @@ extension CCPaymentForecaster {
         cardAccountId: String,
         closeDate: Date,
         today: Date,
-        history: [TransactionSummary]
+        history: [TransactionSummary],
+        assignments: [CardStatementAssignment]
     ) -> Money {
         guard closeDate < today else { return currentOwed }
         // Current owed already reflects every post-close transaction. Remove
@@ -371,7 +415,11 @@ extension CCPaymentForecaster {
             .filter {
                 !$0.deleted &&
                     $0.accountId == cardAccountId &&
-                    $0.date > closeDate &&
+                    isAfterStatementClose(
+                        $0,
+                        closeDate: closeDate,
+                        assignments: assignments
+                    ) &&
                     $0.date <= today
             }
         let postCloseCharges = postCloseActivity
@@ -386,6 +434,81 @@ extension CCPaymentForecaster {
                 + currentBalanceCredits
         )
         return result < .zero ? .zero : result
+    }
+
+    /// Transactions close enough to a boundary to be plausible statement
+    /// membership corrections. Payments and transfers are intentionally
+    /// excluded because this control only moves purchases and merchant credits.
+    public func statementBoundaryTransactions(
+        for payment: UpcomingCardPayment,
+        transactions: [TransactionSummary],
+        windowDays: Int = 3
+    ) -> [TransactionSummary] {
+        let close = calendar.startOfDay(for: payment.closeDate)
+        let radius = max(0, windowDays)
+        guard let start = calendar.date(byAdding: .day, value: -radius, to: close),
+              let end = calendar.date(byAdding: .day, value: radius, to: close)
+        else { return [] }
+        return transactions.filter { transaction in
+            guard !transaction.deleted,
+                  transaction.accountId == payment.cardAccountId else {
+                return false
+            }
+            let effect = activityEffect(for: transaction)
+            guard effect == .nextStatement || effect == .currentBalanceOnly
+            else { return false }
+            let posted = calendar.startOfDay(for: transaction.date)
+            let authorized = transaction.authorizedDate.map {
+                calendar.startOfDay(for: $0)
+            }
+            return (posted >= start && posted <= end)
+                || authorized.map { $0 >= start && $0 <= end } == true
+        }.sorted {
+            if $0.date != $1.date { return $0.date < $1.date }
+            return $0.id < $1.id
+        }
+    }
+
+    public func followingStatementCloseDate(
+        after closeDate: Date,
+        cycleDay: Int? = nil
+    ) -> Date {
+        let close = calendar.startOfDay(for: closeDate)
+        let day = cycleDay ?? calendar.component(.day, from: close)
+        let reference = calendar.date(byAdding: .day, value: 1, to: close)
+            ?? close
+        return nextCloseDate(asOf: reference, cycleDay: day)
+    }
+
+    private func isAfterStatementClose(
+        _ transaction: TransactionSummary,
+        closeDate: Date,
+        assignments: [CardStatementAssignment]
+    ) -> Bool {
+        if let assignedClose = statementAssignment(
+            for: transaction,
+            assignments: assignments
+        )?.statementCloseDate {
+            return calendar.startOfDay(for: assignedClose)
+                > calendar.startOfDay(for: closeDate)
+        }
+        return calendar.startOfDay(for: transaction.date)
+            > calendar.startOfDay(for: closeDate)
+    }
+
+    private func statementAssignment(
+        for transaction: TransactionSummary,
+        assignments: [CardStatementAssignment]
+    ) -> CardStatementAssignment? {
+        assignments.filter {
+            $0.transactionId == transaction.id
+                && $0.cardAccountId == transaction.accountId
+        }.max {
+            if $0.updatedAt != $1.updatedAt {
+                return $0.updatedAt < $1.updatedAt
+            }
+            return $0.id < $1.id
+        }
     }
 
     private func activityEffect(

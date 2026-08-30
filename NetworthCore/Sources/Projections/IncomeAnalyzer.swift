@@ -274,6 +274,59 @@ public struct PaycheckPortion: Sendable, Hashable {
     }
 }
 
+/// A user-authored schedule for one detected payer. Amounts and receiving
+/// accounts continue to come from confirmed deposits; only future dates are
+/// authoritative here.
+public struct PaycheckScheduleOverride: Sendable, Hashable {
+    public let payeeKey: String
+    public let cadence: CommitmentCadence
+    public let nextPayday: Date
+
+    public init(
+        payeeKey: String,
+        cadence: CommitmentCadence,
+        nextPayday: Date
+    ) {
+        self.payeeKey = payeeKey
+        self.cadence = cadence
+        self.nextPayday = nextPayday
+    }
+
+    public func applies(to paycheck: DetectedPaycheck) -> Bool {
+        payeeKey == paycheck.payeeKey
+    }
+
+    public func nextOccurrence(
+        after date: Date,
+        calendar: Calendar = .current
+    ) -> Date? {
+        guard let firstEligible = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: calendar.startOfDay(for: date)
+        ) else { return nil }
+        return occurrence(onOrAfter: firstEligible, calendar: calendar)
+    }
+
+    public func occurrence(
+        onOrAfter date: Date,
+        calendar: Calendar = .current
+    ) -> Date? {
+        var cursor = calendar.startOfDay(for: nextPayday)
+        let cutoff = calendar.startOfDay(for: date)
+        var guardRail = 0
+        while cursor < cutoff && guardRail < 400 {
+            let next = RecurringExpectations.advance(
+                cursor, cadence: cadence, calendar: calendar
+            )
+            guard next > cursor else { return nil }
+            cursor = next
+            guardRail += 1
+        }
+        return cursor >= cutoff ? cursor : nil
+    }
+}
+
 /// The primary paycheck detected from confirmed Plaid income history,
 /// compiled into exact dated inflows through the phase-aware
 /// `IncomePattern` machinery (payday-of-month clamping, no unobserved
@@ -292,6 +345,9 @@ public struct DetectedPaycheck: Sendable, Hashable {
     /// Total expected take-home of the next paycheck across portions.
     public let nextAmount: Money
     public let confirmedDepositCount: Int
+    /// An expected but unconfirmed payday on the as-of civil day. It is
+    /// informational only and never enters the cash curve.
+    public let expectedTodayAmount: Money?
 
     public var payeeKey: String { pattern.payeeKey }
     public var displayName: String { pattern.displayName }
@@ -303,7 +359,8 @@ public struct DetectedPaycheck: Sendable, Hashable {
         portions: [PaycheckPortion],
         nextDate: Date,
         nextAmount: Money,
-        confirmedDepositCount: Int
+        confirmedDepositCount: Int,
+        expectedTodayAmount: Money? = nil
     ) {
         self.pattern = pattern
         self.payeeCanonicalId = payeeCanonicalId
@@ -311,6 +368,7 @@ public struct DetectedPaycheck: Sendable, Hashable {
         self.nextDate = nextDate
         self.nextAmount = nextAmount
         self.confirmedDepositCount = confirmedDepositCount
+        self.expectedTodayAmount = expectedTodayAmount
     }
 
     /// A portion's projected amount for one month: the phase price for
@@ -360,22 +418,52 @@ public struct DetectedPaycheck: Sendable, Hashable {
     public func scheduledSummaries(
         asOf: Date,
         horizonDays: Int,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        scheduleOverride: PaycheckScheduleOverride? = nil
     ) -> [ScheduledTransactionSummary] {
         guard let end = calendar.date(
             byAdding: .day, value: max(1, horizonDays), to: asOf
         ) else { return [] }
         let todayStart = calendar.startOfDay(for: asOf)
         var summaries: [ScheduledTransactionSummary] = []
-        var month = BudgetMonth(containing: asOf, calendar: calendar)
-        let lastMonth = BudgetMonth(containing: end, calendar: calendar)
-        while month <= lastMonth {
+        let paydays: [Date]
+        if let scheduleOverride,
+           scheduleOverride.applies(to: self),
+           let first = scheduleOverride.nextOccurrence(
+               after: todayStart, calendar: calendar
+           ) {
+            var dates: [Date] = []
+            var cursor = first
+            var guardRail = 0
+            while cursor <= end && guardRail < 400 {
+                dates.append(cursor)
+                let next = RecurringExpectations.advance(
+                    cursor,
+                    cadence: scheduleOverride.cadence,
+                    calendar: calendar
+                )
+                guard next > cursor else { break }
+                cursor = next
+                guardRail += 1
+            }
+            paydays = dates
+        } else {
+            var dates: [Date] = []
+            var month = BudgetMonth(containing: asOf, calendar: calendar)
+            let lastMonth = BudgetMonth(containing: end, calendar: calendar)
+            while month <= lastMonth {
+                dates.append(contentsOf: pattern.expectedPaycheckDates(
+                    in: month, calendar: calendar
+                ).filter { $0 > todayStart && $0 <= end })
+                month = month.next
+            }
+            paydays = dates
+        }
+        for payday in paydays {
+            let month = BudgetMonth(containing: payday, calendar: calendar)
             let amounts = portions.map {
                 (portion: $0, amount: amount(for: $0, in: month, calendar: calendar))
             }
-            for payday in pattern.expectedPaycheckDates(
-                in: month, calendar: calendar
-            ) where payday > todayStart && payday <= end {
                 let day = calendar.dateComponents(
                     [.year, .month, .day], from: payday
                 )
@@ -390,11 +478,11 @@ public struct DetectedPaycheck: Sendable, Hashable {
                         nextDate: payday,
                         frequency: .never,
                         amount: entry.amount,
-                        payeeName: displayName
+                        payeeName: displayName,
+                        source: .detectedPaycheck,
+                        sourceID: payeeKey
                     ))
                 }
-            }
-            month = month.next
         }
         return summaries
     }
@@ -583,12 +671,17 @@ extension IncomeAnalyzer {
         }
         let dates = onCycle.map(\.date)
         guard let cadenceResult = classifyCadence(dates, calendar: calendar),
-              let anchor = dates.last else {
+              let observedAnchor = dates.last else {
             return .unstableCadence(
                 payeeName: primary.group.displayName,
                 depositCount: onCycle.count
             )
         }
+        let anchor = normalizedScheduleAnchor(
+            dates,
+            cadence: cadenceResult.cadence,
+            calendar: calendar
+        ) ?? observedAnchor
 
         let datesOnlyPattern = IncomePattern(
             payeeKey: primary.group.payeeKey,
@@ -618,7 +711,7 @@ extension IncomeAnalyzer {
         guard missed <= Self.maxMissedPaydays else {
             return .staleHistory(
                 payeeName: primary.group.displayName,
-                lastDepositDate: anchor
+                lastDepositDate: observedAnchor
             )
         }
 
@@ -737,14 +830,99 @@ extension IncomeAnalyzer {
                 depositCount: onCycle.count
             )
         }
+        let todayIsUnconfirmedPayday = isNominalPayday(
+            todayStart,
+            anchor: anchor,
+            cadence: cadenceResult.cadence,
+            daysOfMonth: cadenceResult.daysOfMonth,
+            calendar: calendar
+        ) && anchor < todayStart
+        let expectedTodayAmount: Money? = todayIsUnconfirmedPayday
+            ? portions.map {
+                DetectedPaycheck.portionAmount(
+                    pattern: pattern,
+                    portion: $0,
+                    month: todayMonth,
+                    calendar: calendar
+                )
+            }.sum()
+            : nil
         return .detected(DetectedPaycheck(
             pattern: pattern,
             payeeCanonicalId: primary.group.payeeCanonicalId,
             portions: portions,
             nextDate: firstPayday,
             nextAmount: nextAmount,
-            confirmedDepositCount: onCycle.count
+            confirmedDepositCount: onCycle.count,
+            expectedTodayAmount: expectedTodayAmount
         ))
+    }
+
+    /// Interval cadences use the dominant weekday from recent confirmed
+    /// history, then map the latest observed deposit to its nearest nominal
+    /// payday. A holiday-shifted Thursday can fulfill Friday without moving
+    /// every future paycheck to Thursday.
+    private func normalizedScheduleAnchor(
+        _ dates: [Date],
+        cadence: CommitmentCadence,
+        calendar: Calendar
+    ) -> Date? {
+        guard cadence == .weekly || cadence == .biweekly,
+              let latest = dates.last else { return dates.last }
+        let recent = Array(dates.suffix(8))
+        var countByWeekday: [Int: Int] = [:]
+        var latestIndexByWeekday: [Int: Int] = [:]
+        for (index, date) in recent.enumerated() {
+            let weekday = calendar.component(.weekday, from: date)
+            countByWeekday[weekday, default: 0] += 1
+            latestIndexByWeekday[weekday] = index
+        }
+        guard let canonicalWeekday = countByWeekday.keys.max(by: { lhs, rhs in
+            let lhsRank = (
+                countByWeekday[lhs, default: 0],
+                latestIndexByWeekday[lhs, default: -1]
+            )
+            let rhsRank = (
+                countByWeekday[rhs, default: 0],
+                latestIndexByWeekday[rhs, default: -1]
+            )
+            return lhsRank < rhsRank
+        }) else { return latest }
+        let latestDay = calendar.startOfDay(for: latest)
+        for distance in 0...2 {
+            let offsets = distance == 0 ? [0] : [-distance, distance]
+            for offset in offsets {
+                guard let candidate = calendar.date(
+                    byAdding: .day, value: offset, to: latestDay
+                ) else { continue }
+                if calendar.component(.weekday, from: candidate)
+                    == canonicalWeekday {
+                    return candidate
+                }
+            }
+        }
+        return latestDay
+    }
+
+    private func isNominalPayday(
+        _ date: Date,
+        anchor: Date,
+        cadence: CommitmentCadence,
+        daysOfMonth: [Int],
+        calendar: Calendar
+    ) -> Bool {
+        let day = calendar.startOfDay(for: date)
+        let anchorDay = calendar.startOfDay(for: anchor)
+        if let stepDays = cadence.stepDays {
+            guard let distance = calendar.dateComponents(
+                [.day], from: anchorDay, to: day
+            ).day else { return false }
+            return distance >= 0 && distance.isMultiple(of: stepDays)
+        }
+        let component = calendar.component(.day, from: day)
+        let lastDay = calendar.range(of: .day, in: .month, for: day)?.count
+            ?? component
+        return daysOfMonth.contains { min($0, lastDay) == component }
     }
 
     /// Occurrences that sit on the payday grid. Interval cadences drop any

@@ -807,6 +807,7 @@ public final class CachedFinancialTransaction {
             id: id,
             accountId: canonicalAccountId,
             date: postedDate,
+            authorizedDate: authorizedDate,
             amount: Money(milliunits: amountMilliunits),
             cleared: true,
             approved: !requiresReview,

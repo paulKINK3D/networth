@@ -342,7 +342,9 @@ public struct CashPositionProjector: Sendable {
                         amount: signedAmount,
                         kind: kind,
                         title: title,
-                        accountId: sourceSelected ? item.accountId : item.transferAccountId
+                        accountId: sourceSelected ? item.accountId : item.transferAccountId,
+                        source: item.source,
+                        sourceID: item.sourceID
                     ))
                 }
 
@@ -357,7 +359,9 @@ public struct CashPositionProjector: Sendable {
                             ? (item.amount.isNegative ? .scheduledExpense : .scheduledIncome)
                             : (item.amount.isNegative ? .transferOut : .transferIn),
                         title: sourceTitle,
-                        accountId: item.accountId
+                        accountId: item.accountId,
+                        source: item.source,
+                        sourceID: item.sourceID
                     ))
                 }
                 if destinationSelected, let destinationId = item.transferAccountId {
@@ -370,7 +374,9 @@ public struct CashPositionProjector: Sendable {
                         amount: destinationAmount,
                         kind: destinationAmount.isNegative ? .transferOut : .transferIn,
                         title: destinationTitle,
-                        accountId: destinationId
+                        accountId: destinationId,
+                        source: item.source,
+                        sourceID: item.sourceID
                     ))
                 }
             }

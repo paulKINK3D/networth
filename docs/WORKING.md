@@ -1,5 +1,31 @@
 # WORKING
 
+## Current handoff — projection timing refinements (2026-08-30)
+
+- Active branch: `feature/projection-refinements`.
+- Weekly and biweekly paycheck detection now keeps the dominant recent
+  weekday when one deposit arrives up to two days early or late. A
+  holiday-shifted Thursday can fulfill a Friday schedule without moving every
+  future payday to Thursday; a consistently Thursday history remains Thursday.
+- Detected paycheck rows are labeled in Next Cash Activity and open an editor
+  for cadence plus next payday. The durable override changes dates only;
+  detected amounts and receiving accounts remain automatic. Recurring-income
+  rows open their existing editor from the same timeline.
+- An unconfirmed paycheck expected on the current day appears as `Expected
+  today · Awaiting confirmation` but is not counted in projected cash until a
+  confirmed deposit arrives.
+- Closed card-payment detail lists eligible purchases and merchant credits
+  within three days of the statement close, including a differing authorized
+  date. A transaction can be assigned to the closing statement or the next
+  statement, or restored to its posted-date behavior. The imported dates are
+  never edited.
+- `DurableCardStatementAssignment` is an additive private-CloudKit model with
+  defaulted fields. `DurableIncomePatternOverride` gained defaulted opt-in
+  schedule fields; legacy rows remain inert. No legacy cleanup is required.
+- Validation: 242 NetworthCore tests, generic-device Debug and Release builds,
+  and generic-device app-test compilation pass. Simulator execution was not
+  requested.
+
 ## YNAB retirement (2026-08-20, physical validation complete)
 
 - The August 12 removal recommendation is now the active product decision. The completed backlog-reference workflow is being retired rather than retained in a submenu.

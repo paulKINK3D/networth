@@ -44,6 +44,10 @@ struct ProjectionsView: View {
     @Query private var cardSettings: [DurableCardSettings]
     @Query private var cardPaymentConfirmations:
         [DurableCardPaymentConfirmation]
+    @Query private var cardStatementAssignments:
+        [DurableCardStatementAssignment]
+    @Query private var incomePatternOverrides: [DurableIncomePatternOverride]
+    @Query private var recurringExpectations: [DurableRecurringExpectation]
     @Query private var userSettings: [DurableUserSettings]
     @Query private var exclusions: [DurableExcludedSpendCategory]
     @Query private var transactionExclusions: [DurableExcludedSpendTransaction]
@@ -57,6 +61,9 @@ struct ProjectionsView: View {
     @State private var selectedPayment: CardPaymentDetailSelection?
     @State private var scrubbedProjectionDate: Date?
     @State private var showingAllUpcomingActivity = false
+    @State private var showingPaycheckSchedule = false
+    @State private var openPaycheckAfterAssumptions = false
+    @State private var editingRecurringIncome: DurableRecurringExpectation?
     /// Forecast cache: computing the projection is the single most expensive
     /// render-path operation in the app; body must never do it per frame
     /// (chart scrubbing re-evaluates body continuously).
@@ -122,6 +129,9 @@ struct ProjectionsView: View {
             "\(financialAccounts.count)",
             "\(cardSettings.count)", "\(exclusions.count)",
             "\(cardPaymentConfirmations.count)",
+            "\(cardStatementAssignments.count)",
+            "\(incomePatternOverrides.count)",
+            "\(recurringExpectations.count)",
             "\(transactionExclusions.count)", "\(cashAccountOverrides.count)",
             "\(userSettings.first?.lastSyncedAt?.timeIntervalSince1970 ?? 0)"
         ].joined(separator: "|")
@@ -178,8 +188,18 @@ struct ProjectionsView: View {
             .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Projections")
             .refreshable { await container.syncNow() }
-            .sheet(isPresented: $showingAssumptions) {
-                ProjectionAssumptionsSheet(data: data)
+            .sheet(
+                isPresented: $showingAssumptions,
+                onDismiss: {
+                    guard openPaycheckAfterAssumptions else { return }
+                    openPaycheckAfterAssumptions = false
+                    showingPaycheckSchedule = true
+                }
+            ) {
+                ProjectionAssumptionsSheet(data: data) {
+                    openPaycheckAfterAssumptions = true
+                    showingAssumptions = false
+                }
             }
             .sheet(isPresented: $showingSafeToSpendDetails) {
                 if let estimate = data.result.safeToSpend {
@@ -197,6 +217,19 @@ struct ProjectionsView: View {
                     transactions: payment.transactions
                 )
                 .environment(container)
+            }
+            .sheet(isPresented: $showingPaycheckSchedule) {
+                if case .detected(let paycheck) = data.paycheckDetection {
+                    PaycheckScheduleSheet(
+                        paycheck: paycheck,
+                        existingOverride: activePaycheckOverride(for: paycheck)
+                    )
+                    .environment(container)
+                }
+            }
+            .sheet(item: $editingRecurringIncome) { expectation in
+                RecurringExpectationForm(expectation: expectation)
+                    .environment(container)
             }
     }
 
@@ -451,6 +484,26 @@ struct ProjectionsView: View {
         return VStack(alignment: .leading, spacing: NwSpacing.md) {
             Text("Next Cash Activity")
                 .font(NwTypography.titleSmall)
+            if case .detected(let paycheck) = data.paycheckDetection,
+               let amount = data.expectedTodayPaycheckAmount {
+                NwCard(style: .primary) {
+                    HStack(spacing: NwSpacing.md) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Expected today · Awaiting confirmation")
+                                .font(NwTypography.caption)
+                                .foregroundStyle(NwAppColors.caution)
+                            Text(paycheck.displayName)
+                                .font(NwTypography.body)
+                        }
+                        Spacer()
+                        NwAmountText(
+                            amount,
+                            variant: .body,
+                            color: NwAppColors.textSecondary
+                        )
+                    }
+                }
+            }
             if data.result.events.isEmpty {
                 NwInlineNotice(
                     "No known events",
@@ -510,6 +563,11 @@ struct ProjectionsView: View {
                             .foregroundStyle(NwAppColors.primary)
                     }
                 }
+                if let label = eventSourceLabel(event, data: data) {
+                    Text(label)
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                }
             }
             Spacer()
             NwAmountText(event.amount, variant: .body,
@@ -528,9 +586,54 @@ struct ProjectionsView: View {
             } label: { row }
                 .buttonStyle(.plain)
                 .accessibilityHint("Shows autopay details")
+        } else if event.source == .detectedPaycheck {
+            Button {
+                showingPaycheckSchedule = true
+            } label: { row }
+                .buttonStyle(.plain)
+                .accessibilityHint("Adjusts the detected paycheck schedule")
+        } else if event.source == .recurringExpectation,
+                  let sourceID = event.sourceID,
+                  let expectationID = UUID(uuidString: sourceID),
+                  let expectation = recurringExpectations.first(where: {
+                      $0.id == expectationID
+                  }) {
+            Button {
+                editingRecurringIncome = expectation
+            } label: { row }
+                .buttonStyle(.plain)
+                .accessibilityHint("Edits recurring income")
         } else {
             row
         }
+    }
+
+    private func eventSourceLabel(
+        _ event: CashProjectionEvent,
+        data: ProjectionData
+    ) -> String? {
+        switch event.source {
+        case .detectedPaycheck:
+            return data.paycheckScheduleOverride == nil
+                ? "Detected paycheck"
+                : "Adjusted paycheck"
+        case .recurringExpectation:
+            return event.amount > .zero ? "Recurring income" : nil
+        case nil:
+            return nil
+        }
+    }
+
+    private func activePaycheckOverride(
+        for paycheck: DetectedPaycheck
+    ) -> DurableIncomePatternOverride? {
+        incomePatternOverrides
+            .filter {
+                $0.scheduleOverrideEnabled
+                    && $0.payeeKey == paycheck.payeeKey
+                    && $0.nextPaydayAt != nil
+            }
+            .max { $0.updatedAt < $1.updatedAt }
     }
 
     // MARK: - Data
@@ -550,6 +653,8 @@ struct ProjectionsView: View {
         /// detected paycheck, when one matched.
         let paycheckManualOverridePayee: String?
         let hasManualIncome: Bool
+        let paycheckScheduleOverride: PaycheckScheduleOverride?
+        let expectedTodayPaycheckAmount: Money?
 
         var setupIncomplete: Bool {
             !missingCardNames.isEmpty || !unfundedCardNames.isEmpty
@@ -1175,6 +1280,7 @@ private struct SafeToSpendDetailSheet: View {
 private struct ProjectionAssumptionsSheet: View {
     @Environment(\.dismiss) private var dismiss
     let data: ProjectionsView.ProjectionData
+    let onAdjustPaycheck: () -> Void
 
     var body: some View {
         NavigationStack {
@@ -1297,8 +1403,15 @@ private struct ProjectionAssumptionsSheet: View {
                 } else {
                     switch detection {
                     case .detected(let paycheck):
+                        let nextDeposit = data.paycheckScheduleOverride?
+                            .nextOccurrence(after: .now)
+                            ?? paycheck.nextDate
                         detail("Payer", paycheck.displayName)
-                        detail("Cadence", paycheck.cadence.displayName)
+                        detail(
+                            "Cadence",
+                            (data.paycheckScheduleOverride?.cadence
+                                ?? paycheck.cadence).displayName
+                        )
                         detail("Next paycheck", CurrencyFormatter.compact(paycheck.nextAmount))
                         if paycheck.portions.count > 1 {
                             let month = BudgetMonth(containing: paycheck.nextDate)
@@ -1311,11 +1424,23 @@ private struct ProjectionAssumptionsSheet: View {
                                 )
                             }
                         }
-                        detail("Next deposit", paycheck.nextDate.formatted(.dateTime.month(.abbreviated).day()))
+                        detail(
+                            "Next deposit",
+                            nextDeposit.formatted(
+                                .dateTime.month(.abbreviated).day()
+                            )
+                        )
                         detail("Confirmed deposits", "\(paycheck.confirmedDepositCount)")
-                        Text("Detected from confirmed deposits. Add recurring income in Settings to override.")
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(.secondary)
+                        Button {
+                            onAdjustPaycheck()
+                        } label: {
+                            Label(
+                                data.paycheckScheduleOverride == nil
+                                    ? "Adjust Schedule"
+                                    : "Edit Adjusted Schedule",
+                                systemImage: "calendar.badge.clock"
+                            )
+                        }
                     case .staleHistory(let payeeName, let lastDepositDate):
                         incomeWarningText(
                             "No confirmed deposit from \(payeeName) since \(lastDepositDate.formatted(.dateTime.month(.abbreviated).day())) — paychecks aren't projected until deposits resume."
@@ -1511,11 +1636,14 @@ private struct CardPaymentDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AppContainerController.self) private var container
     @Query private var confirmationRows: [DurableCardPaymentConfirmation]
+    @Query private var statementAssignmentRows:
+        [DurableCardStatementAssignment]
     let payment: UpcomingCardPayment
     let transactions: [TransactionSummary]
 
     @State private var showingEditor = false
     @State private var showingUseEstimateConfirmation = false
+    @State private var selectedBoundaryTransaction: TransactionSummary?
     @State private var persistenceError: String?
 
     private let calendar = Calendar.current
@@ -1554,6 +1682,13 @@ private struct CardPaymentDetailSheet: View {
             }
 
             if payment.basis == .closedStatementEstimate {
+                if !boundaryTransactions.isEmpty {
+                    Text("Around Statement Close")
+                        .font(NwTypography.titleSmall)
+
+                    boundaryActivityCard
+                }
+
                 Text("Reconciliation")
                     .font(NwTypography.titleSmall)
 
@@ -1646,6 +1781,39 @@ private struct CardPaymentDetailSheet: View {
         } message: {
             Text(persistenceError ?? "Please try again.")
         }
+        .confirmationDialog(
+            "Statement Cycle",
+            isPresented: Binding(
+                get: { selectedBoundaryTransaction != nil },
+                set: { if !$0 { selectedBoundaryTransaction = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let transaction = selectedBoundaryTransaction {
+                Button(
+                    "Statement Closed \(shortDate(payment.closeDate))"
+                ) {
+                    assign(
+                        transaction,
+                        to: payment.closeDate
+                    )
+                }
+                Button(
+                    "Next Statement \(shortDate(nextStatementCloseDate))"
+                ) {
+                    assign(
+                        transaction,
+                        to: nextStatementCloseDate
+                    )
+                }
+                if assignment(for: transaction) != nil {
+                    Button("Use Posted Date", role: .destructive) {
+                        removeAssignment(for: transaction)
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private func detail(_ label: String, _ value: String) -> some View {
@@ -1732,6 +1900,56 @@ private struct CardPaymentDetailSheet: View {
         }
     }
 
+    private var boundaryActivityCard: some View {
+        NwCard(style: .primary, padding: 0) {
+            VStack(spacing: 0) {
+                ForEach(Array(boundaryTransactions.enumerated()),
+                        id: \.element.id) { index, transaction in
+                    Button {
+                        selectedBoundaryTransaction = transaction
+                    } label: {
+                        HStack(spacing: NwSpacing.md) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(
+                                    transaction.payeeName
+                                        ?? transaction.categoryName
+                                        ?? "Transaction"
+                                )
+                                .font(NwTypography.body)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                                Text(boundaryDateLabel(transaction))
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(
+                                        NwAppColors.textSecondary
+                                    )
+                                if let label = assignmentLabel(for: transaction) {
+                                    Text(label)
+                                        .font(NwTypography.caption)
+                                        .foregroundStyle(NwAppColors.accent)
+                                }
+                            }
+                            Spacer()
+                            NwAmountText(
+                                transaction.amount,
+                                variant: .body,
+                                showCents: true,
+                                color: transaction.amount.isNegative
+                                    ? NwAppColors.liability
+                                    : NwAppColors.positive
+                            )
+                        }
+                        .padding(NwSpacing.md)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if index < boundaryTransactions.count - 1 {
+                        Divider().padding(.leading, NwSpacing.md)
+                    }
+                }
+            }
+        }
+    }
+
     private func activityLabel(
         _ effect: CardPaymentActivityEffect
     ) -> String {
@@ -1754,8 +1972,56 @@ private struct CardPaymentDetailSheet: View {
         CCPaymentForecaster(calendar: calendar).reconciliation(
             for: payment,
             transactions: transactions,
+            statementAssignments: statementAssignmentRows.map(
+                \.coreAssignment
+            ),
             asOf: .now
         )
+    }
+
+    private var boundaryTransactions: [TransactionSummary] {
+        CCPaymentForecaster(calendar: calendar).statementBoundaryTransactions(
+            for: payment,
+            transactions: transactions
+        )
+    }
+
+    private var nextStatementCloseDate: Date {
+        CCPaymentForecaster(calendar: calendar)
+            .followingStatementCloseDate(
+                after: payment.closeDate,
+                cycleDay: payment.statementCycleDay
+            )
+    }
+
+    private func assignment(
+        for transaction: TransactionSummary
+    ) -> DurableCardStatementAssignment? {
+        statementAssignmentRows.filter {
+            $0.transactionId == transaction.id
+                && $0.cardAccountId == payment.cardAccountId
+        }.max { $0.updatedAt < $1.updatedAt }
+    }
+
+    private func assignmentLabel(for transaction: TransactionSummary) -> String? {
+        guard let assignment = assignment(for: transaction) else { return nil }
+        return calendar.isDate(
+            assignment.statementCloseDate,
+            inSameDayAs: payment.closeDate
+        ) ? "Assigned to this statement" : "Assigned to next statement"
+    }
+
+    private func boundaryDateLabel(_ transaction: TransactionSummary) -> String {
+        var parts = ["Posted \(shortDate(transaction.date))"]
+        if let authorized = transaction.authorizedDate,
+           !calendar.isDate(authorized, inSameDayAs: transaction.date) {
+            parts.append("Authorized \(shortDate(authorized))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func shortDate(_ date: Date) -> String {
+        date.formatted(.dateTime.month(.abbreviated).day())
     }
 
     private var matchingRows: [DurableCardPaymentConfirmation] {
@@ -1803,6 +2069,57 @@ private struct CardPaymentDetailSheet: View {
             persistenceError = "Your scheduled payment wasn’t removed."
             return
         }
+    }
+
+    private func assign(
+        _ transaction: TransactionSummary,
+        to closeDate: Date
+    ) {
+        let context = container.modelContainer.mainContext
+        let now = Date.now
+        let matches = statementAssignmentRows.filter {
+            $0.transactionId == transaction.id
+                && $0.cardAccountId == payment.cardAccountId
+        }
+        if matches.isEmpty {
+            context.insert(DurableCardStatementAssignment(
+                transactionId: transaction.id,
+                cardAccountId: payment.cardAccountId,
+                statementCloseDate: calendar.startOfDay(for: closeDate),
+                createdAt: now,
+                updatedAt: now
+            ))
+        } else {
+            for row in matches {
+                row.statementCloseDate = calendar.startOfDay(for: closeDate)
+                row.updatedAt = now
+            }
+        }
+        guard context.safeSave(source: "projection.cardStatement.assign")
+        else {
+            context.rollback()
+            persistenceError = "Your statement assignment wasn’t saved."
+            return
+        }
+        selectedBoundaryTransaction = nil
+        dismiss()
+    }
+
+    private func removeAssignment(for transaction: TransactionSummary) {
+        let context = container.modelContainer.mainContext
+        let matches = statementAssignmentRows.filter {
+            $0.transactionId == transaction.id
+                && $0.cardAccountId == payment.cardAccountId
+        }
+        for row in matches { context.delete(row) }
+        guard context.safeSave(source: "projection.cardStatement.usePostedDate")
+        else {
+            context.rollback()
+            persistenceError = "Your statement assignment wasn’t removed."
+            return
+        }
+        selectedBoundaryTransaction = nil
+        dismiss()
     }
 }
 
@@ -1866,6 +2183,147 @@ private struct CardPaymentConfirmationSheet: View {
     }
 }
 
+private struct PaycheckScheduleSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppContainerController.self) private var container
+
+    let paycheck: DetectedPaycheck
+    let existingOverride: DurableIncomePatternOverride?
+
+    @State private var cadence: CommitmentCadence
+    @State private var nextPayday: Date
+    @State private var showingResetConfirmation = false
+    @State private var persistenceError: String?
+
+    init(
+        paycheck: DetectedPaycheck,
+        existingOverride: DurableIncomePatternOverride?
+    ) {
+        self.paycheck = paycheck
+        self.existingOverride = existingOverride
+        _cadence = State(
+            initialValue: existingOverride?.cadence ?? paycheck.cadence
+        )
+        _nextPayday = State(
+            initialValue: existingOverride?.nextPaydayAt ?? paycheck.nextDate
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Paycheck") {
+                    LabeledContent("Payer", value: paycheck.displayName)
+                    Picker("Repeats", selection: $cadence) {
+                        ForEach(CommitmentCadence.allCases) { cadence in
+                            Text(cadence.displayName).tag(cadence)
+                        }
+                    }
+                    DatePicker(
+                        "Next payday",
+                        selection: $nextPayday,
+                        in: Calendar.current.startOfDay(for: .now)...,
+                        displayedComponents: .date
+                    )
+                }
+
+                if existingOverride != nil {
+                    Section {
+                        Button("Use Detected Schedule", role: .destructive) {
+                            showingResetConfirmation = true
+                        }
+                    }
+                }
+
+                if let persistenceError {
+                    Section {
+                        Text(persistenceError)
+                            .foregroundStyle(NwAppColors.caution)
+                    }
+                }
+            }
+            .navigationTitle("Paycheck Schedule")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { dismiss() } label: {
+                        NwIcon.close.image
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) {
+                        NwIcon.confirm.image
+                            .foregroundStyle(NwAppColors.positive)
+                    }
+                    .accessibilityLabel("Save")
+                }
+            }
+            .alert(
+                "Use Detected Schedule?",
+                isPresented: $showingResetConfirmation
+            ) {
+                Button("Use Detected Schedule", role: .destructive) {
+                    reset()
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+        }
+    }
+
+    private func save() {
+        let context = container.modelContainer.mainContext
+        let rows = (try? context.fetch(
+            FetchDescriptor<DurableIncomePatternOverride>()
+        )) ?? []
+        let target = rows
+            .filter { $0.payeeKey == paycheck.payeeKey || $0.id == "singleton" }
+            .max { $0.updatedAt < $1.updatedAt }
+            ?? {
+                let row = DurableIncomePatternOverride()
+                context.insert(row)
+                return row
+            }()
+        target.payeeKey = paycheck.payeeKey
+        target.displayName = paycheck.displayName
+        target.cadence = cadence
+        target.nextPaydayAt = Calendar.current.startOfDay(for: nextPayday)
+        target.scheduleOverrideEnabled = true
+        target.confirmed = true
+        target.confirmedAt = target.confirmedAt ?? .now
+        target.updatedAt = .now
+        guard context.safeSave(source: "projection.paycheckSchedule.save")
+        else {
+            persistenceError = "Your paycheck schedule wasn’t saved."
+            return
+        }
+        dismiss()
+    }
+
+    private func reset() {
+        let context = container.modelContainer.mainContext
+        let rows = (try? context.fetch(
+            FetchDescriptor<DurableIncomePatternOverride>()
+        )) ?? []
+        let matching = rows.filter {
+            $0.payeeKey == paycheck.payeeKey && $0.scheduleOverrideEnabled
+        }
+        for row in matching {
+            row.scheduleOverrideEnabled = false
+            row.nextPaydayAt = nil
+            row.updatedAt = .now
+        }
+        guard context.safeSave(source: "projection.paycheckSchedule.reset")
+        else {
+            context.rollback()
+            persistenceError = "Your detected schedule wasn’t restored."
+            return
+        }
+        dismiss()
+    }
+}
+
 /// Off-main assembly of the full projection: the only implementation of the
 /// forecast pipeline. Owns its own ModelContext; the view renders only
 /// finished results.
@@ -1906,6 +2364,12 @@ private actor ProjectionsDataActor {
         )) ?? []
         let confirmationRows = (try? context.fetch(
             FetchDescriptor<DurableCardPaymentConfirmation>()
+        )) ?? []
+        let statementAssignmentRows = (try? context.fetch(
+            FetchDescriptor<DurableCardStatementAssignment>()
+        )) ?? []
+        let incomeOverrideRows = (try? context.fetch(
+            FetchDescriptor<DurableIncomePatternOverride>()
         )) ?? []
         let financialTransactions = (try? context.fetch(
             FetchDescriptor<CachedFinancialTransaction>(
@@ -1977,6 +2441,7 @@ private actor ProjectionsDataActor {
                 id: $0.id,
                 accountId: $0.canonicalAccountId,
                 date: $0.postedDate,
+                authorizedDate: $0.authorizedDate,
                 amount: Money(milliunits: $0.amountMilliunits),
                 cleared: true,
                 approved: !$0.requiresReview,
@@ -2003,6 +2468,8 @@ private actor ProjectionsDataActor {
         // wins; the detection then only reports.
         var paycheckDetection: PaycheckDetection?
         var paycheckManualOverridePayee: String?
+        var paycheckScheduleOverride: PaycheckScheduleOverride?
+        var expectedTodayPaycheckAmount: Money?
         do {
             let detection = IncomeAnalyzer().detectPaycheck(
                 confirmedTransactions: history,
@@ -2011,14 +2478,60 @@ private actor ProjectionsDataActor {
             )
             paycheckDetection = detection
             if case .detected(let paycheck) = detection {
+                let storedSchedule = incomeOverrideRows
+                    .filter {
+                        $0.scheduleOverrideEnabled
+                            && $0.payeeKey == paycheck.payeeKey
+                            && $0.nextPaydayAt != nil
+                    }
+                    .max { $0.updatedAt < $1.updatedAt }
+                if let storedSchedule,
+                   let nextPayday = storedSchedule.nextPaydayAt {
+                    paycheckScheduleOverride = PaycheckScheduleOverride(
+                        payeeKey: paycheck.payeeKey,
+                        cadence: storedSchedule.cadence,
+                        nextPayday: nextPayday
+                    )
+                }
                 if let manual = IncomeAnalyzer.manualIncomeOverride(
                     for: paycheck, expectations: expectations
                 ) {
                     paycheckManualOverridePayee = manual.payeeName
                 } else {
                     scheduledSummaries.append(contentsOf: paycheck.scheduledSummaries(
-                        asOf: .now, horizonDays: horizonDays
+                        asOf: .now,
+                        horizonDays: horizonDays,
+                        scheduleOverride: paycheckScheduleOverride
                     ))
+                    if let schedule = paycheckScheduleOverride {
+                        let calendar = Calendar.current
+                        let today = calendar.startOfDay(for: .now)
+                        let scheduledToday = schedule.occurrence(
+                            onOrAfter: today,
+                            calendar: calendar
+                        ).map {
+                            calendar.isDate($0, inSameDayAs: today)
+                        } == true
+                        let alreadyConfirmed = paycheck.pattern
+                            .observedPaycheckDates.contains {
+                                calendar.isDate($0, inSameDayAs: today)
+                            }
+                        if scheduledToday && !alreadyConfirmed {
+                            let month = BudgetMonth(
+                                containing: today,
+                                calendar: calendar
+                            )
+                            expectedTodayPaycheckAmount = paycheck.portions.map {
+                                paycheck.amount(
+                                    for: $0,
+                                    in: month,
+                                    calendar: calendar
+                                )
+                            }.sum()
+                        }
+                    } else {
+                        expectedTodayPaycheckAmount = paycheck.expectedTodayAmount
+                    }
                 }
             }
         }
@@ -2035,12 +2548,14 @@ private actor ProjectionsDataActor {
         let spendIds = Set(availableAccounts.filter { !$0.deleted && $0.kind.isSpendAccount }.map(\.id))
 
         let forecaster = CCPaymentForecaster()
+        let statementAssignments = statementAssignmentRows.map(\.coreAssignment)
         let paymentEstimates = configured.flatMap { card, setting in
             forecaster.upcomingPayments(
                 card: card,
                 settings: setting,
                 scheduled: scheduledSummaries,
                 historicalTransactions: cardActivityHistory,
+                statementAssignments: statementAssignments,
                 spendAccountIds: spendIds,
                 asOf: .now,
                 horizonDays: horizonDays
@@ -2056,11 +2571,9 @@ private actor ProjectionsDataActor {
             paymentEstimates.map { payment in
                 (
                     payment.id,
-                    forecaster.reconciliation(
-                        for: payment,
-                        transactions: cardActivityHistory,
-                        asOf: .now
-                    ).activity.map(\.transaction)
+                    cardActivityHistory.filter {
+                        $0.accountId == payment.cardAccountId
+                    }
                 )
             }
         )
@@ -2109,7 +2622,9 @@ private actor ProjectionsDataActor {
             paycheckManualOverridePayee: paycheckManualOverridePayee,
             hasManualIncome: expectations.contains {
                 $0.treatment == .income && $0.amount.milliunits > 0
-            }
+            },
+            paycheckScheduleOverride: paycheckScheduleOverride,
+            expectedTodayPaycheckAmount: expectedTodayPaycheckAmount
         )
     }
 }

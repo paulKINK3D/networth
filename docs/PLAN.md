@@ -189,6 +189,18 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-08-30** — Projection timing corrections never rewrite imported Plaid
+  dates. Weekly and biweekly paycheck detection uses the dominant recent
+  weekday so an isolated holiday shift does not move the future schedule. A
+  user may override only the detected cadence and next payday in Projections;
+  confirmed history continues to determine amount and receiving accounts.
+  Expected income due today is visible but stays outside projected cash until
+  confirmed. Credit-card purchases and non-payment credits within three days
+  of a statement close expose their posted and differing authorized dates and
+  may be assigned to either adjacent statement cycle. That private-CloudKit
+  assignment affects statement estimates only and can be removed to restore
+  posted-date behavior. Predicted paycheck and recurring-income events remain
+  visible and editable from the Projections timeline.
 - **2026-08-22** — The monthly Spending summary follows the user's
   one-month-ahead funding model. `Funded` is the preceding calendar month's
   confirmed Income, `Spent` is the selected month's actual ordinary spending,

@@ -230,6 +230,45 @@ public final class DurableCardPaymentConfirmation {
     }
 }
 
+/// One explicit statement-cycle assignment for an imported card transaction.
+/// This never mutates the disposable Plaid transaction or either source date.
+/// All fields are defaulted for additive CloudKit schema compatibility.
+@Model
+public final class DurableCardStatementAssignment {
+    public var id: UUID = UUID()
+    public var transactionId: String = ""
+    public var cardAccountId: String = ""
+    public var statementCloseDate: Date = Date.now
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        transactionId: String = "",
+        cardAccountId: String = "",
+        statementCloseDate: Date = .now,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.transactionId = transactionId
+        self.cardAccountId = cardAccountId
+        self.statementCloseDate = statementCloseDate
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var coreAssignment: CardStatementAssignment {
+        CardStatementAssignment(
+            id: id.uuidString,
+            transactionId: transactionId,
+            cardAccountId: cardAccountId,
+            statementCloseDate: statementCloseDate,
+            updatedAt: updatedAt
+        )
+    }
+}
+
 @Model
 public final class DurableUserSettings {
     public var id: String = "singleton"
@@ -1654,6 +1693,10 @@ public final class DurableIncomePatternOverride {
     /// 0 = plan with the detected phase evidence; a positive value pins the
     /// expected per-paycheck take-home instead.
     public var perPaycheckOverrideMilliunits: Int64 = 0
+    /// New schedule overrides are opt-in. Legacy confirmed rows remain inert
+    /// until the user explicitly saves a schedule in Projections.
+    public var scheduleOverrideEnabled: Bool = false
+    public var nextPaydayAt: Date? = nil
     public var confirmedAt: Date? = nil
     public var updatedAt: Date = Date.now
 

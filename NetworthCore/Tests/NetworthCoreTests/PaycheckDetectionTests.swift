@@ -498,6 +498,73 @@ struct PaycheckDetectionTests {
         ) == nil)
     }
 
+    @Test("A holiday-shifted Thursday does not move a Friday schedule")
+    func earlyDepositKeepsDominantWeekday() throws {
+        var deposits = biweekly(from: date(2026, 3, 6), count: 8)
+        deposits[7] = deposit(
+            date: date(2026, 6, 11),
+            amount: .dollars(4_000),
+            payee: "Acme Payroll"
+        )
+        let paycheck = try #require(detected(detect(
+            deposits,
+            asOf: date(2026, 6, 20)
+        )))
+
+        #expect(paycheck.nextDate == date(2026, 6, 26))
+    }
+
+    @Test("A stable Thursday schedule remains Thursday")
+    func stableThursdaySchedule() throws {
+        let paycheck = try #require(detected(detect(
+            biweekly(from: date(2026, 3, 5), count: 8),
+            asOf: date(2026, 6, 20)
+        )))
+
+        #expect(paycheck.nextDate == date(2026, 6, 25))
+    }
+
+    @Test("Expected-today pay stays informational until confirmed")
+    func expectedTodayIsNotScheduled() throws {
+        let paycheck = try #require(detected(detect(
+            biweekly(from: date(2026, 3, 6), count: 8),
+            asOf: date(2026, 6, 26)
+        )))
+
+        #expect(paycheck.expectedTodayAmount == .dollars(4_000))
+        #expect(paycheck.nextDate == date(2026, 7, 10))
+        #expect(paycheck.scheduledSummaries(
+            asOf: date(2026, 6, 26),
+            horizonDays: 30,
+            calendar: utc
+        ).allSatisfy { $0.nextDate > date(2026, 6, 26) })
+    }
+
+    @Test("A schedule override changes dates but keeps detected amounts")
+    func scheduleOverrideKeepsAutomaticAmount() throws {
+        let paycheck = try #require(detected(detect(
+            biweekly(from: date(2026, 3, 6), count: 8),
+            asOf: date(2026, 6, 20)
+        )))
+        let schedule = PaycheckScheduleOverride(
+            payeeKey: paycheck.payeeKey,
+            cadence: .biweekly,
+            nextPayday: date(2026, 6, 22)
+        )
+        let summaries = paycheck.scheduledSummaries(
+            asOf: date(2026, 6, 20),
+            horizonDays: 35,
+            calendar: utc,
+            scheduleOverride: schedule
+        )
+
+        #expect(summaries.map(\.nextDate) == [
+            date(2026, 6, 22), date(2026, 7, 6), date(2026, 7, 20),
+        ])
+        #expect(summaries.allSatisfy { $0.amount == .dollars(4_000) })
+        #expect(summaries.allSatisfy { $0.source == .detectedPaycheck })
+    }
+
     @Test("Direct-deposit account switch retires the old account's portion")
     func accountSwitchRetiresStalePortion() throws {
         // The real-data bug this reproduces: pay went to "old" through

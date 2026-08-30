@@ -536,4 +536,143 @@ struct UpcomingCardPaymentsTests {
         #expect(result.newPurchases == Money.dollars(125))
         #expect(result.currentBalanceCredits == Money.dollars(20))
     }
+
+    @Test func postClosePurchaseCanBeAssignedToClosedStatement() {
+        let forecaster = CCPaymentForecaster(calendar: utc)
+        let settings = CardStatementSettings(
+            accountId: "card-1",
+            statementCycleDay: 15,
+            paymentDueDay: 11,
+            paymentAccountId: "checking-1"
+        )
+        let purchase = TransactionSummary(
+            id: "boundary-purchase",
+            accountId: "card-1",
+            date: date(2026, 3, 16),
+            amount: .dollars(-200),
+            cleared: true,
+            approved: true,
+            payeeName: "Boundary Purchase",
+            categoryName: "Shopping",
+            memo: nil,
+            deleted: false
+        )
+        let assignment = CardStatementAssignment(
+            id: "assignment",
+            transactionId: purchase.id,
+            cardAccountId: purchase.accountId,
+            statementCloseDate: date(2026, 3, 15),
+            updatedAt: date(2026, 3, 20)
+        )
+
+        let payments = forecaster.upcomingPayments(
+            card: card(balance: .dollars(-1_000)),
+            settings: settings,
+            scheduled: [],
+            historicalTransactions: [purchase],
+            statementAssignments: [assignment],
+            asOf: date(2026, 3, 20),
+            horizonDays: 30
+        )
+
+        #expect(payments.first?.amount == .dollars(1_000))
+    }
+
+    @Test func preClosePurchaseCanBeAssignedToNextStatement() {
+        let forecaster = CCPaymentForecaster(calendar: utc)
+        let settings = CardStatementSettings(
+            accountId: "card-1",
+            statementCycleDay: 15,
+            paymentDueDay: 11,
+            paymentAccountId: "checking-1"
+        )
+        let purchase = TransactionSummary(
+            id: "early-boundary-purchase",
+            accountId: "card-1",
+            date: date(2026, 3, 14),
+            amount: .dollars(-200),
+            cleared: true,
+            approved: true,
+            payeeName: "Early Boundary Purchase",
+            categoryName: "Shopping",
+            memo: nil,
+            deleted: false
+        )
+        let assignment = CardStatementAssignment(
+            id: "assignment",
+            transactionId: purchase.id,
+            cardAccountId: purchase.accountId,
+            statementCloseDate: date(2026, 4, 15),
+            updatedAt: date(2026, 3, 20)
+        )
+
+        let payments = forecaster.upcomingPayments(
+            card: card(balance: .dollars(-1_000)),
+            settings: settings,
+            scheduled: [],
+            historicalTransactions: [purchase],
+            statementAssignments: [assignment],
+            asOf: date(2026, 3, 20),
+            horizonDays: 30
+        )
+
+        #expect(payments.first?.amount == .dollars(800))
+    }
+
+    @Test func boundaryWindowIncludesAuthorizedDateAndExcludesPayments() {
+        let payment = UpcomingCardPayment(
+            cardAccountId: "card-1",
+            paymentAccountId: "checking-1",
+            cardName: "Visa",
+            closeDate: date(2026, 8, 10),
+            dueDate: date(2026, 8, 25),
+            amount: .dollars(500),
+            basis: .closedStatementEstimate
+        )
+        let authorizedNearClose = TransactionSummary(
+            id: "authorized-near",
+            accountId: "card-1",
+            date: date(2026, 8, 15),
+            authorizedDate: date(2026, 8, 11),
+            amount: .dollars(-40),
+            cleared: true,
+            approved: true,
+            payeeName: "Merchant",
+            categoryName: "Shopping",
+            memo: nil,
+            deleted: false
+        )
+        let paymentTransaction = TransactionSummary(
+            id: "payment",
+            accountId: "card-1",
+            date: date(2026, 8, 11),
+            amount: .dollars(40),
+            cleared: true,
+            approved: true,
+            payeeName: "Payment",
+            categoryName: nil,
+            forecastTreatment: .cardPayment,
+            memo: nil,
+            deleted: false
+        )
+
+        let boundary = CCPaymentForecaster(calendar: utc)
+            .statementBoundaryTransactions(
+                for: payment,
+                transactions: [authorizedNearClose, paymentTransaction]
+            )
+
+        #expect(boundary.map(\.id) == ["authorized-near"])
+    }
+
+    @Test func followingClosePreservesConfiguredMonthEndDay() {
+        let following = CCPaymentForecaster(calendar: utc)
+            .followingStatementCloseDate(
+                after: date(2027, 2, 28),
+                cycleDay: 31
+            )
+
+        #expect(following == date(2027, 3, 31))
+    }
+
 }

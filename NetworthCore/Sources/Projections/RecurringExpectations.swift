@@ -79,7 +79,9 @@ public struct RecurringExpectation: Sendable, Hashable, Identifiable {
             categoryId: categoryCanonicalId,
             transferAccountId: treatment == .internalTransfer
                 ? destinationAccountId
-                : nil
+                : nil,
+            source: .recurringExpectation,
+            sourceID: id
         )
     }
 }

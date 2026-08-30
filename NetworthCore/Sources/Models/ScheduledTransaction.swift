@@ -18,6 +18,13 @@ public enum ScheduleFrequency: String, Sendable, Hashable, Codable {
     case everyOtherYear
 }
 
+/// Where a dated projection item came from. UI surfaces use this typed
+/// provenance for editing and explanation instead of parsing generated IDs.
+public enum ScheduledTransactionSource: String, Sendable, Hashable, Codable {
+    case detectedPaycheck
+    case recurringExpectation
+}
+
 public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifiable {
     public let id: String
     public let accountId: String
@@ -30,6 +37,8 @@ public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifi
     public let transferAccountId: String?
     public let memo: String?
     public let deleted: Bool
+    public let source: ScheduledTransactionSource?
+    public let sourceID: String?
 
     public init(
         id: String,
@@ -42,7 +51,9 @@ public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifi
         categoryId: String? = nil,
         transferAccountId: String? = nil,
         memo: String? = nil,
-        deleted: Bool = false
+        deleted: Bool = false,
+        source: ScheduledTransactionSource? = nil,
+        sourceID: String? = nil
     ) {
         self.id = id
         self.accountId = accountId
@@ -55,6 +66,8 @@ public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifi
         self.transferAccountId = transferAccountId
         self.memo = memo
         self.deleted = deleted
+        self.source = source
+        self.sourceID = sourceID
     }
 }
 

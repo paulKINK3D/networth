@@ -98,6 +98,8 @@ public struct CashProjectionEvent: Sendable, Hashable, Codable, Identifiable {
     public let title: String
     public let accountId: String?
     public let cardAccountId: String?
+    public let source: ScheduledTransactionSource?
+    public let sourceID: String?
 
     public init(
         id: String,
@@ -106,7 +108,9 @@ public struct CashProjectionEvent: Sendable, Hashable, Codable, Identifiable {
         kind: Kind,
         title: String,
         accountId: String? = nil,
-        cardAccountId: String? = nil
+        cardAccountId: String? = nil,
+        source: ScheduledTransactionSource? = nil,
+        sourceID: String? = nil
     ) {
         self.id = id
         self.date = date
@@ -115,6 +119,8 @@ public struct CashProjectionEvent: Sendable, Hashable, Codable, Identifiable {
         self.title = title
         self.accountId = accountId
         self.cardAccountId = cardAccountId
+        self.source = source
+        self.sourceID = sourceID
     }
 }
 
