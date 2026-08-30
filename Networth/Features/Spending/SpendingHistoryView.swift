@@ -379,7 +379,13 @@ struct SpendingHistoryView: View {
         model: SpendingHistoryModel
     ) -> some View {
         let month = period.summary
-        let display = month.wholeDollarDisplay
+        let display = month.fundingDisplay(
+            fundedBy: SpendingHistoryBuilder.fundingIncome(
+                for: month,
+                within: model.months,
+                calendar: calendar
+            )
+        )
         let budget = model.budgetSummary(for: month)
         return NwCard(style: .primary) {
             if budget.groups.isEmpty {
@@ -400,14 +406,14 @@ struct SpendingHistoryView: View {
                     Divider()
                     HStack(alignment: .top, spacing: NwSpacing.sm) {
                         companionMetric(
-                            title: "Income",
-                            amount: display.incomeHeadline
+                            title: "Funded",
+                            amount: display.fundedHeadline
                         )
                         Divider().frame(height: 44)
                         companionMetric(
-                            title: "Retained",
-                            amount: display.retainedHeadline,
-                            color: retainedColor(display.retainedHeadline)
+                            title: "Remaining",
+                            amount: display.remainingHeadline,
+                            color: remainingColor(display.remainingHeadline)
                         )
                     }
                 }
@@ -548,17 +554,17 @@ struct SpendingHistoryView: View {
     }
 
     private func monthlyMetricStack(
-        _ display: SpendingHistoryWholeDollarDisplay
+        _ display: SpendingHistoryFundingDisplay
     ) -> some View {
         VStack(spacing: NwSpacing.md) {
-            monthlyMetricRow(title: "Income", amount: display.incomeHeadline)
+            monthlyMetricRow(title: "Funded", amount: display.fundedHeadline)
             Divider()
             monthlyMetricRow(title: "Spent", amount: display.ordinaryHeadline)
             Divider()
             monthlyMetricRow(
-                title: "Retained",
-                amount: display.retainedHeadline,
-                color: retainedColor(display.retainedHeadline)
+                title: "Remaining",
+                amount: display.remainingHeadline,
+                color: remainingColor(display.remainingHeadline)
             )
         }
         .frame(maxWidth: .infinity)
@@ -566,7 +572,7 @@ struct SpendingHistoryView: View {
 
     private func monthlyMetricRow(
         title: String,
-        amount: Money,
+        amount: Money?,
         color: Color = NwAppColors.textPrimary
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: NwSpacing.sm) {
@@ -574,12 +580,18 @@ struct SpendingHistoryView: View {
                 .font(NwTypography.footnote)
                 .foregroundStyle(NwAppColors.textSecondary)
             Spacer(minLength: NwSpacing.sm)
-            NwAmountText(
-                amount,
-                variant: .body,
-                showCents: false,
-                color: color
-            )
+            if let amount {
+                NwAmountText(
+                    amount,
+                    variant: .body,
+                    showCents: false,
+                    color: color
+                )
+            } else {
+                Text("—")
+                    .font(NwTypography.body)
+                    .foregroundStyle(NwAppColors.textSecondary)
+            }
         }
     }
 
@@ -600,24 +612,31 @@ struct SpendingHistoryView: View {
 
     private func companionMetric(
         title: String,
-        amount: Money,
+        amount: Money?,
         color: Color = NwAppColors.textPrimary
     ) -> some View {
         VStack(alignment: .leading, spacing: NwSpacing.xs) {
             Text(title)
                 .font(NwTypography.caption)
                 .foregroundStyle(NwAppColors.textSecondary)
-            NwAmountText(
-                amount,
-                variant: .compact,
-                showCents: false,
-                color: color
-            )
+            if let amount {
+                NwAmountText(
+                    amount,
+                    variant: .compact,
+                    showCents: false,
+                    color: color
+                )
+            } else {
+                Text("—")
+                    .font(NwTypography.headline)
+                    .foregroundStyle(NwAppColors.textSecondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func retainedColor(_ amount: Money) -> Color {
+    private func remainingColor(_ amount: Money?) -> Color {
+        guard let amount else { return NwAppColors.textSecondary }
         if amount.isNegative { return NwAppColors.liability }
         if amount > .zero { return NwAppColors.positive }
         return NwAppColors.textSecondary

@@ -175,15 +175,27 @@ public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
             )
         }
         return SpendingHistoryWholeDollarDisplay(
-            incomeHeadline: Money(
-                milliunits: Self.roundedWholeDollar(incomeMilliunits)
-            ),
             ordinaryHeadline: Money(milliunits: headlineMilliunits),
-            groupAmountsByID: groupAmounts,
-            retainedHeadline: Money(
-                milliunits: Self.roundedWholeDollar(incomeMilliunits)
-                    - headlineMilliunits
-            )
+            groupAmountsByID: groupAmounts
+        )
+    }
+
+    /// Whole-dollar amounts for the selected month's funding comparison.
+    /// Spending remains activity from this month, while `fundedBy` is the
+    /// confirmed income from the preceding calendar month.
+    public func fundingDisplay(
+        fundedBy income: Money?
+    ) -> SpendingHistoryFundingDisplay {
+        let spendingDisplay = wholeDollarDisplay
+        let fundedHeadline = income.map {
+            Money(milliunits: Self.roundedWholeDollar($0.milliunits))
+        }
+        return SpendingHistoryFundingDisplay(
+            fundedHeadline: fundedHeadline,
+            ordinaryHeadline: spendingDisplay.ordinaryHeadline,
+            remainingHeadline: fundedHeadline.map {
+                $0 - spendingDisplay.ordinaryHeadline
+            }
         )
     }
 
@@ -197,10 +209,14 @@ public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
 }
 
 public struct SpendingHistoryWholeDollarDisplay: Sendable, Hashable {
-    public let incomeHeadline: Money
     public let ordinaryHeadline: Money
     public let groupAmountsByID: [String: Money]
-    public let retainedHeadline: Money
+}
+
+public struct SpendingHistoryFundingDisplay: Sendable, Hashable {
+    public let fundedHeadline: Money?
+    public let ordinaryHeadline: Money
+    public let remainingHeadline: Money?
 }
 
 /// Builds the Spending History months from approved activity.
@@ -230,6 +246,28 @@ public enum SpendingHistoryBuilder {
         case .income, .cardPayment, .reimbursement, .goalSpend, .goalRefund,
              .excluded, .unknown: false
         }
+    }
+
+    /// Returns the confirmed income from the calendar month immediately
+    /// preceding the selected spending month. Missing history stays nil so
+    /// callers never silently substitute forecast income.
+    public static func fundingIncome(
+        for month: SpendingHistoryMonth,
+        within months: [SpendingHistoryMonth],
+        calendar: Calendar = .current
+    ) -> Money? {
+        guard let precedingMonth = calendar.date(
+            byAdding: .month,
+            value: -1,
+            to: month.month
+        ) else { return nil }
+        return months.first {
+            calendar.isDate(
+                $0.month,
+                equalTo: precedingMonth,
+                toGranularity: .month
+            )
+        }?.income
     }
 
     /// Combines consecutive monthly summaries into one trailing-period

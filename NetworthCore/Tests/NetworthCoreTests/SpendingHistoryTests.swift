@@ -553,32 +553,60 @@ struct SpendingHistoryTests {
         )
     }
 
-    @Test func wholeDollarIncomeSpentAndRetainedReconcile() {
-        let month = SpendingHistoryBuilder.build(
+    @Test func fundingDisplayUsesPrecedingIncomeAndCurrentSpending() {
+        let months = SpendingHistoryBuilder.build(
             entries: [
                 entry(
-                    date: day(2026, 8, 1),
+                    date: day(2026, 7, 31),
                     amount: Money.dollars(Decimal(string: "100.51")!),
                     treatment: .income
                 ),
                 entry(
                     date: day(2026, 8, 2),
                     amount: Money.dollars(Decimal(string: "-40.49")!)
+                ),
+                entry(
+                    date: day(2026, 8, 3),
+                    amount: Money.dollars(200),
+                    treatment: .income
                 )
             ],
+            monthsBack: 2,
+            now: day(2026, 8, 4),
+            calendar: calendar
+        )
+        let month = months[1]
+
+        let display = month.fundingDisplay(
+            fundedBy: SpendingHistoryBuilder.fundingIncome(
+                for: month,
+                within: months,
+                calendar: calendar
+            )
+        )
+        #expect(display.fundedHeadline == Money.dollars(101))
+        #expect(display.ordinaryHeadline == Money.dollars(40))
+        #expect(display.remainingHeadline == Money.dollars(61))
+        #expect(
+            SpendingHistoryBuilder.fundingIncome(
+                for: months[0],
+                within: months,
+                calendar: calendar
+            ) == nil
+        )
+    }
+
+    @Test func fundingDisplayDoesNotInventMissingIncome() {
+        let month = SpendingHistoryBuilder.build(
+            entries: [],
             monthsBack: 1,
             now: day(2026, 8, 4),
             calendar: calendar
         )[0]
 
-        let display = month.wholeDollarDisplay
-        #expect(display.incomeHeadline == Money.dollars(101))
-        #expect(display.ordinaryHeadline == Money.dollars(40))
-        #expect(display.retainedHeadline == Money.dollars(61))
-        #expect(
-            display.incomeHeadline - display.ordinaryHeadline
-                == display.retainedHeadline
-        )
+        let display = month.fundingDisplay(fundedBy: nil)
+        #expect(display.fundedHeadline == nil)
+        #expect(display.remainingHeadline == nil)
     }
 
 }
