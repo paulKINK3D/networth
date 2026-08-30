@@ -40,8 +40,11 @@
   existing user-created Spending groups. Targets are effective-dated from the
   month in which they are changed, preserve historical months, and never carry
   unused or overspent amounts into a new month.
-- The main Spending card totals only budgeted groups and retains the existing
-  actual Income, Spent, and Retained figures. Each budgeted group row shows
+- The main Spending card totals only budgeted groups. Its `Funded` figure uses
+  the preceding calendar month's confirmed Income, `Spent` remains the selected
+  month's actual ordinary spending, and `Remaining` is Funded minus Spent.
+  Missing preceding-month history stays unavailable rather than falling back
+  to an estimate. Each budgeted group row shows
   actual spending as `$spent of $budget` plus remaining or over. Its factual
   calendar-pace color is navy when on track, amber when up to ten percentage
   points ahead, and rust means materially ahead or over budget. No
@@ -112,8 +115,7 @@
   already below the buffer they say so directly. The supporting line names the
   maximum buffer gap and its date, while the chart header keeps the exact
   projected low. NetworthCore 220/220 and a generic-
-  device Debug build pass. The deeper projection-audit CSV milestone remains
-  separate and unimplemented.
+  device Debug build pass.
 - Projection scenario coverage, required distinctions, and the Outlook card's
   information hierarchy are recorded in
   `docs/2026-08-14-projection-state-language.md`. Exact user-facing copy is not
@@ -131,10 +133,10 @@
   dropdown for the single-month view; 3/6/12-month summaries always use the
   preceding completed months and exclude the current partial month. Aggregate
   summaries retain category and transaction drill-down detail.
-- The Spending summary now reconciles actual Spent, confirmed Income, and
-  Retained (`Income − Spent`). Multi-month summaries show `Avg/mo = total ÷
-  month count`; the single-month comparison is explicitly labeled `12-mo avg`.
-  Income includes only reviewed positive entries classified as Income.
+- The Spending summary aligns actual Spent with the preceding calendar month's
+  confirmed Income: `Funded` is prior-month Income and `Remaining` is Funded
+  minus current-month Spent. Income includes only reviewed positive entries
+  classified as Income.
 - All Transactions now appears at the bottom of Spending instead of Net Worth;
   its searchable, category-filterable cross-account history is unchanged.
 - Historical spending and funding estimates now use arithmetic means so lumpy
@@ -354,11 +356,10 @@
 
 - Exact Outlook wording across projection scenarios other than the approved
   account-underfunding warning.
-- Full Projection Audit and local reproducibility CSV export.
 - Removal of legacy YNAB scaffolding and relocation of repair tools to
   Advanced.
-- New product surfaces: Can I Afford This, Safe-to-Spend widget, cash alerts,
-  What Changed summaries, and forecast-confidence treatment.
+- New product surfaces: Safe-to-Spend widget, cash alerts, What Changed
+  summaries, and forecast-confidence treatment.
 
 ## Stabilization checkpoint (2026-08-11)
 
@@ -639,16 +640,6 @@ DiscretionaryBudgetSettingsSheet struct removed from SettingsView.swift.
   transaction drill-downs show the offset. Live-device replay moved the
   then-current everyday median from $9,002.08 to $7,917.84 before
   installation. The 2026-08-12 mean-based policy supersedes this method.
-- [ ] Required projection-audit CSV export: add a user-initiated local export
-  from Projection Details with one row for every source transaction/split leg
-  considered (including excluded rows), its stored treatment, signed amount,
-  projection bucket, inclusion/exclusion reason, recurring match, and monthly
-  sample. Include all dated forecast events, running balances, calculation
-  settings, and reconciliation rows for every displayed total so the math can
-  be reproduced independently. Keep stored facts separate from computed labels;
-  never infer semantics such as reimbursement from payee/category. Exclude
-  credentials and raw provider/account identifiers.
-
 ### Step-4 Codex review — 2 blockers + 5 majors, all fixed same session
 - BLOCKER redesign: exactly-once is now ID-BASED. Every expectation summary
   is estimate-exempt (the theoretical backward-occurrence subtraction never

@@ -90,12 +90,10 @@ The near-term priority is to make Projections the clearest and most trustworthy 
 - Horizon cash-flow bridge reconciling starting cash, income, scheduled outflows, card payments, unscheduled spending, and projected ending cash.
 - Drill-down from each projected payment or low point to the contributing transactions and assumptions.
 - Monthly spending drill-down showing every complete month used by the arithmetic mean, its scheduled/unscheduled split, included category totals, and excluded category list.
-- User-initiated local projection-audit CSV export that lets the user independently reproduce the displayed math. The export must include the calculation date and horizon, selected-account opening balances, every source transaction or split leg considered, its stored classification, signed amount, projection bucket, inclusion/exclusion decision and exact reason, recurring-match status, monthly sample assignment, every dated forecast event, running balance, and reconciliation rows for all UI totals. Stored facts must remain distinguishable from computed labels; the exporter must not infer meanings such as reimbursement from payee or category. Exported totals must reconcile exactly to Projection Details, while credentials, provider tokens, raw provider/account identifiers, and unrelated data remain excluded.
 - Transaction-level expected-spending exclusions from monthly category details, persisted in CloudKit and reversible from the central Spending Exclusions screen. Split transactions are excluded by individual split leg.
 - Plain-language uncertainty treatment so estimates are useful without appearing guaranteed.
 
 **Deferred / optional:**
-- Full / minimum / custom card payoff scenarios and resulting carryover.
 - Payday-to-bill alerts as a distinct notification surface.
 - Category burn-down forecast ("Groceries will overspend by $120").
 
@@ -116,7 +114,6 @@ The near-term priority is to make Projections the clearest and most trustworthy 
 - **Upcoming full-statement autopay debit(s)** with statement-close and due dates.
 - **Statement balance projection** = current balance + Σ(scheduled charges before next close date) − Σ(scheduled payments before next close date), adjusted for the relevant open/closed statement period.
 - **Minimum payment** = max(floor, percent × statement balance projection).
-- **Optional payoff scenarios** — full / minimum / custom amount; show resulting carryover. Interest impact deferred.
 
 **Algorithm lives in `NetworthCore.Projections.CCPaymentForecaster`** — pure Swift, fully unit-tested with `swift test`.
 
@@ -192,6 +189,14 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-08-22** — The monthly Spending summary follows the user's
+  one-month-ahead funding model. `Funded` is the preceding calendar month's
+  confirmed Income, `Spent` is the selected month's actual ordinary spending,
+  and `Remaining` is Funded minus Spent. Income received during the selected
+  month does not change that month's funding comparison. When preceding-month
+  history is unavailable, Funded and Remaining remain unavailable rather than
+  silently falling back to an estimate. Expected income remains a Projections
+  concept.
 - **2026-08-20** — YNAB is fully retired. The completed one-time backlog reference workflow is superseded by a Plaid-only runtime: no YNAB UI, token management, network client, account mapping, reference import, cached-data fallback, classification evidence, or report contribution remains. An idempotent per-launch local cleanup purges disposable YNAB cache/reference rows while preserving every approved Networth decision, contact, category, split, snapshot, goal, setting, and Plaid/IBR record. The synchronized Keychain token is removed only after the data-preserving release is verified on the physical device. Provider-derived canonical IDs and optional CloudKit fields may remain inert when rewriting or deleting them would risk durable relationships or schema compatibility.
 - **2026-08-19** — A user-entered credit-card payment amount and payment
   date override the forecast for one statement cycle only. The confirmation
@@ -209,8 +214,9 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   and one budgeted group may be explicitly pinned on the Spending screen.
   Targets repeat until changed, changes take effect in the current month while
   preserving prior months, and each month resets with no carryover. The screen
-  reports actual spent, target, remaining or over, days left, and the existing
-  actual Retained cash-flow number. A factual calendar comparison colors budget
+  reports actual spent, target, remaining or over, days left, and the
+  then-existing actual Retained cash-flow number; that last portion is
+  superseded by the 2026-08-22 funding decision. A factual calendar comparison colors budget
   progress navy when on track, amber when up to ten percentage points ahead,
   and rust when materially ahead or over budget; it never projects a
   finish or uses historical behavior. The budgeted-group total and detailed budget list
@@ -260,7 +266,6 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
 - **2026-08-09** — Spending groups are always visible; group hiding is retired. Unused canonical categories remain visible and manageable. Deleting a user group rechecks current state, moves every category copy to Unassigned, and removes every duplicate row for the logical group in one atomic save.
 - **2026-08-09** — Investment contribution remains a high-level transaction type and is **not a category**. Spending derives a fixed, non-ordinary **Investment Contributions** reporting group directly from `.investmentContribution`; it never creates or assigns a canonical-category row for that type. Internal transfers, including transfers between savings accounts, are not Spending activity.
 - **2026-08-07** — IA change: **Goals** becomes the fifth tab (Net Worth · Spending · Projections · Investments · Goals), superseding the four-tab decision and the 2026-08-02 plan's placement of sinking funds inside Spending. Goals are backed by a **reserve pool** of user-selected dedicated savings accounts (single-device assumption; Plaid-primary only). Money never moves by itself: contributions are confirm-first (suggested from confirmed internal transfers into reserve accounts), purchases are explicit per-transaction assignments capped by the transaction's *adjustable* (ordinary-spending) amount, and every ledger mutation flows through one validating service that keeps balances nonnegative and allocations within the pool. An account actively backing goals is **derived out of the Projections cash pool** (no override rows are written; the user's stored setting is preserved and restores on deselection). Goal-funded purchases move into a synthetic, non-headline **Goal Purchases** column in Spending — visible, but the Spent headline reads out-of-pocket only — and drill-downs display report-adjusted line amounts. The emergency-fund target originally derived from the median of complete-month **ordinary** Spending totals (excludes savings transfers, investment contributions, and goal purchases) × months × a reduction factor, adopted with hysteresis (nearest $100, ≥5% or ≥$250 moves); its median basis is superseded by the 2026-08-12 arithmetic-mean decision. The legacy sinking-fund record types remain purge-on-sight; four new durable record types store goals, ledger entries, reserve selections, and suggestion dismissals. Linked-category auto-drain is retired. Refund-into-goal UI, withdrawal suggestions, and swipe-action purchase marking are fast-follows.
-- **2026-08-06** — Projections require a user-initiated, local CSV audit export before their math is considered independently verifiable. It must expose every included and excluded input row, the exact stored treatment and exclusion reason, all computed forecast events and intermediate buckets, and a reconciliation to each displayed total. The export must report stored facts without inventing semantic distinctions from payees or categories and must not expose credentials or raw provider/account identifiers.
 - **2026-08-05** — Spending remains the product and navigation label, but its report answers the broader question “where did the money go?” Spending groups are entirely user-defined: the user creates groups and assigns individual categories; Networth seeds no destination names. YNAB group identities are reference metadata only and never become Spending columns or cleanup work. Assigned and Unassigned lists retain unused categories so the directory remains fully user-controlled. Credit-card payments and internal transfers remain excluded; investment contributions are type-derived information outside ordinary spending. Internal reporting roles are not exposed as user-facing controls.
 - **2026-08-02** — IA change: the Accounts tab is replaced by **Spending** (Net Worth · Spending · Projections · Investments); Accounts moved behind an "All Accounts" card on Net Worth. Spending is a judgment-free awareness surface — per-category monthly spending with YNAB envelope "Available" imported read-only (per-month `budgeted/activity/balance` via the months endpoint, reversing the earlier no-budgeted-import stance at the user's explicit request) — plus Monarch-style opt-in sinking funds (save-to-spend vs keep-filled, linked-category drains, manual ledger). The interim "operating budget" model (income − fixed − necessities − surplus margin) was built, user-tested, and rejected the same day: the user does not budget with limits. No coaching copy anywhere on the surface.
 - **2026-07-30** — Networth may expose an opt-in read-only financial snapshot to the user's Claude.ai account through a private remote MCP connector modeled on LiftLog. Enabling requires explicit consent; the app uploads full-replacement snapshots after successful saves and offers a manual sync. The encrypted Worker copy may include account labels/balances, effective manual assets, reconciled holdings, confirmed transaction dates/amounts/contacts/categories/splits, and aggregate net-worth history. It excludes credentials, provider IDs, account numbers/masks, notes, raw bank descriptions, unreviewed Plaid transactions, and the local IBR bridge. OAuth uses dynamic registration, PKCE, one-time 10-minute app codes, and revocable hashed access grants. Turning access off deletes the server snapshot and every grant before clearing the local opt-in.
