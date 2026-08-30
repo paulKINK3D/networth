@@ -43,6 +43,7 @@ public struct NwBudgetProgress: View {
     public let isOver: Bool
     public let tint: Color?
     public let trackTint: Color?
+    public let height: CGFloat
     public let accessibilityLabel: String
 
     public init(
@@ -50,12 +51,14 @@ public struct NwBudgetProgress: View {
         isOver: Bool,
         tint: Color? = nil,
         trackTint: Color? = nil,
+        height: CGFloat = 12,
         accessibilityLabel: String = "Budget progress"
     ) {
         self.progress = progress
         self.isOver = isOver
         self.tint = tint
         self.trackTint = trackTint
+        self.height = height
         self.accessibilityLabel = accessibilityLabel
     }
 
@@ -77,7 +80,7 @@ public struct NwBudgetProgress: View {
                     )
             }
         }
-        .frame(height: 12)
+        .frame(height: height)
         .accessibilityElement()
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(

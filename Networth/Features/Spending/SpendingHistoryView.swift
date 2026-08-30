@@ -55,6 +55,26 @@ private struct SpendingTrendDatum: Identifiable {
     var id: Date { month }
 }
 
+enum SpendingBudgetVisibility {
+    static func visibleBudgets(
+        _ budgets: [SpendingGroupBudgetSnapshot],
+        featuredGroupID: String?,
+        expanded: Bool
+    ) -> [SpendingGroupBudgetSnapshot] {
+        guard !expanded, budgets.count > 3 else { return budgets }
+        guard let featuredGroupID,
+              let featured = budgets.first(where: {
+                  $0.groupIdentity == featuredGroupID
+              }),
+              !budgets.prefix(3).contains(where: {
+                  $0.groupIdentity == featuredGroupID
+              }) else {
+            return Array(budgets.prefix(3))
+        }
+        return Array(budgets.prefix(2)) + [featured]
+    }
+}
+
 private func spendingTrendData(
     model: SpendingHistoryModel,
     monthCount: Int,
@@ -185,6 +205,7 @@ struct SpendingHistoryView: View {
     @State private var showingGroupedReview = false
     @State private var showingIndividualReview = false
     @State private var showingGroupManager = false
+    @State private var showingAllBudgets = false
     @State private var rebuildTask: Task<Void, Never>?
 
     private let calendar = Calendar.current
@@ -271,6 +292,9 @@ struct SpendingHistoryView: View {
         }
         .sheet(isPresented: $showingGroupManager) {
             SpendingGroupManagementSheet().environment(container)
+        }
+        .onChange(of: selectedMonth) { _, _ in
+            showingAllBudgets = false
         }
     }
 
@@ -387,54 +411,13 @@ struct SpendingHistoryView: View {
             )
         )
         let budget = model.budgetSummary(for: month)
-        return NwCard(style: .primary) {
+        return VStack(spacing: NwSpacing.md) {
             if budget.groups.isEmpty {
-                VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                    Text("Spent")
-                        .font(NwTypography.caption)
-                        .foregroundStyle(NwAppColors.textSecondary)
-                    NwAmountText(
-                        display.ordinaryHeadline,
-                        variant: .hero,
-                        showCents: false
-                    )
-                    Button("Set Up Budgets") {
-                        showingGroupManager = true
-                    }
-                    .font(NwTypography.bodyEmphasis)
-                    .foregroundStyle(NwAppColors.primary)
-                    Divider()
-                    HStack(alignment: .top, spacing: NwSpacing.sm) {
-                        companionMetric(
-                            title: "Funded",
-                            amount: display.fundedHeadline
-                        )
-                        Divider().frame(height: 44)
-                        companionMetric(
-                            title: "Remaining",
-                            amount: display.remainingHeadline,
-                            color: remainingColor(display.remainingHeadline)
-                        )
-                    }
-                }
+                noBudgetHero(display, month: month.month)
             } else {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: NwSpacing.lg) {
-                        spendingBudgetGauge(
-                            budget,
-                            month: month.month
-                        )
-                        monthlyMetricStack(display)
-                    }
-                    VStack(spacing: NwSpacing.lg) {
-                        spendingBudgetGauge(
-                            budget,
-                            month: month.month
-                        )
-                        monthlyMetricStack(display)
-                    }
-                }
+                spendingBudgetHero(budget, month: month.month)
             }
+            retainedStrip(display)
         }
         .contentShape(Rectangle())
         .gesture(
@@ -457,46 +440,90 @@ struct SpendingHistoryView: View {
         }
     }
 
-    private func spendingBudgetGauge(
+    private func noBudgetHero(
+        _ display: SpendingHistoryFundingDisplay,
+        month: Date
+    ) -> some View {
+        NwDashboardHero {
+            VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isCurrentMonth(month) ? "SPENT THIS MONTH" : "SPENT")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.dashboardHeroSecondary)
+                    NwAmountText(
+                        display.ordinaryHeadline,
+                        variant: .hero,
+                        showCents: false,
+                        color: NwAppColors.dashboardHeroText
+                    )
+                }
+
+                Button {
+                    showingGroupManager = true
+                } label: {
+                    HStack(spacing: NwSpacing.sm) {
+                        NwIcon.add.image
+                        Text("Set Up Budgets")
+                    }
+                    .font(NwTypography.bodyEmphasis)
+                    .foregroundStyle(NwAppColors.dashboardHeroSurface)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .background(
+                        RoundedRectangle(
+                            cornerRadius: NwCornerRadius.md,
+                            style: .continuous
+                        )
+                        .fill(NwAppColors.gold)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func spendingBudgetHero(
         _ budget: SpendingBudgetSummary,
         month: Date
     ) -> some View {
         let displayedProgress = min(max(budget.progress, 0), 1)
         let pace = budgetPaceStatus(progress: budget.progress, month: month)
-        return ZStack {
-            Circle()
-                .stroke(NwAppColors.strokeSubtle, lineWidth: 13)
-            Circle()
-                .trim(from: 0, to: displayedProgress)
-                .stroke(
-                    budgetPaceColor(pace),
-                    style: StrokeStyle(
-                        lineWidth: 13,
-                        lineCap: .butt
+        return NwDashboardHero {
+            VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                HStack(alignment: .center, spacing: NwSpacing.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("MONTHLY BUDGET")
+                            .font(NwTypography.caption)
+                            .foregroundStyle(
+                                NwAppColors.dashboardHeroSecondary
+                            )
+                        NwAmountText(
+                            budget.remaining.absolute,
+                            variant: .hero,
+                            showCents: false,
+                            color: budget.isOver
+                                ? NwAppColors.dashboardHeroOver
+                                : NwAppColors.dashboardHeroText
+                        )
+                    }
+                    Spacer(minLength: NwSpacing.sm)
+                    spendingBudgetArc(
+                        progress: displayedProgress,
+                        isOver: budget.isOver
                     )
-                )
-                .rotationEffect(.degrees(-90))
-            VStack(spacing: 2) {
-                NwAmountText(
-                    budget.remaining.absolute,
-                    variant: .large,
-                    showCents: false,
-                    color: budget.isOver
-                        ? NwAppColors.liability
-                        : NwAppColors.textPrimary
-                )
-                Text(budgetGaugeSubtitle(budget, month: month))
-                    .font(NwTypography.footnoteEm)
-                    .foregroundStyle(
-                        budget.isOver
-                            ? NwAppColors.liability
-                            : NwAppColors.textSecondary
-                    )
-                    .lineLimit(1)
+                }
+
+                if let days = daysLeft(in: month) {
+                    Text("\(days) day\(days == 1 ? "" : "s")")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(
+                            NwAppColors.dashboardHeroSecondary
+                        )
+                }
             }
-            .padding(NwSpacing.md)
         }
-        .frame(width: 138, height: 138)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Monthly budget")
         .accessibilityValue(
@@ -506,15 +533,30 @@ struct SpendingHistoryView: View {
         )
     }
 
-    private func budgetGaugeSubtitle(
-        _ budget: SpendingBudgetSummary,
-        month: Date
-    ) -> String {
-        let status = budget.isOver ? "over" : "left"
-        guard !budget.isOver, let days = daysLeft(in: month) else {
-            return status
+    private func spendingBudgetArc(
+        progress: Double,
+        isOver: Bool
+    ) -> some View {
+        ZStack {
+            Circle()
+                .trim(from: 0.125, to: 0.875)
+                .stroke(
+                    NwAppColors.dashboardHeroTrack,
+                    style: StrokeStyle(lineWidth: 12, lineCap: .round)
+                )
+                .rotationEffect(.degrees(90))
+            Circle()
+                .trim(from: 0.125, to: 0.125 + (0.75 * progress))
+                .stroke(
+                    isOver
+                        ? NwAppColors.dashboardHeroOver
+                        : NwAppColors.dashboardHeroProgress,
+                    style: StrokeStyle(lineWidth: 12, lineCap: .round)
+                )
+                .rotationEffect(.degrees(90))
         }
-        return "\(status) · \(days) days"
+        .frame(width: 118, height: 118)
+        .accessibilityHidden(true)
     }
 
     private func budgetPaceStatus(
@@ -543,55 +585,95 @@ struct SpendingHistoryView: View {
         }
     }
 
-    private func budgetPaceColor(
-        _ pace: SpendingBudgetPaceStatus
+    private func budgetProgressColor(
+        isOver: Bool
     ) -> Color {
-        switch pace {
-        case .onTrack: return NwAppColors.budgetOnTrack
-        case .watch: return NwAppColors.budgetWatch
-        case .atRisk: return NwAppColors.budgetAtRisk
-        }
+        isOver ? NwAppColors.budgetOver : NwAppColors.primary
     }
 
-    private func monthlyMetricStack(
+    private func retainedStrip(
         _ display: SpendingHistoryFundingDisplay
     ) -> some View {
-        VStack(spacing: NwSpacing.md) {
-            monthlyMetricRow(title: "Funded", amount: display.fundedHeadline)
-            Divider()
-            monthlyMetricRow(title: "Spent", amount: display.ordinaryHeadline)
-            Divider()
-            monthlyMetricRow(
-                title: "Remaining",
-                amount: display.remainingHeadline,
-                color: remainingColor(display.remainingHeadline)
-            )
+        NwCard(style: .secondary) {
+            VStack(spacing: NwSpacing.md) {
+                HStack(alignment: .firstTextBaseline, spacing: NwSpacing.md) {
+                    fundingMetric(
+                        title: "Funded",
+                        amount: display.fundedHeadline,
+                        color: NwAppColors.primary,
+                        alignment: .leading
+                    )
+                    Spacer(minLength: NwSpacing.md)
+                    fundingMetric(
+                        title: "Retained",
+                        amount: display.remainingHeadline,
+                        color: retainedColor(display.remainingHeadline),
+                        alignment: .trailing
+                    )
+                }
+                retainedBar(display)
+            }
         }
-        .frame(maxWidth: .infinity)
     }
 
-    private func monthlyMetricRow(
+    private func fundingMetric(
         title: String,
         amount: Money?,
-        color: Color = NwAppColors.textPrimary
+        color: Color = NwAppColors.textPrimary,
+        alignment: HorizontalAlignment
     ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: NwSpacing.sm) {
+        VStack(alignment: alignment, spacing: 2) {
             Text(title)
-                .font(NwTypography.footnote)
+                .font(NwTypography.caption)
                 .foregroundStyle(NwAppColors.textSecondary)
-            Spacer(minLength: NwSpacing.sm)
             if let amount {
                 NwAmountText(
                     amount,
-                    variant: .body,
+                    variant: .compact,
                     showCents: false,
                     color: color
                 )
             } else {
                 Text("—")
-                    .font(NwTypography.body)
+                    .font(NwTypography.headline)
                     .foregroundStyle(NwAppColors.textSecondary)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func retainedBar(
+        _ display: SpendingHistoryFundingDisplay
+    ) -> some View {
+        if let funded = display.fundedHeadline, funded > .zero {
+            let spentShare = min(
+                max(display.ordinaryHeadline.doubleValue / funded.doubleValue, 0),
+                1
+            )
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(NwAppColors.favorableFill)
+                    Capsule()
+                        .fill(
+                            display.remainingHeadline?.isNegative == true
+                                ? NwAppColors.budgetOver
+                                : NwAppColors.primary
+                        )
+                        .frame(width: proxy.size.width * spentShare)
+                }
+            }
+            .frame(height: 8)
+            .accessibilityElement()
+            .accessibilityLabel("Funding use")
+            .accessibilityValue(
+                "\(CurrencyFormatter.currency(display.ordinaryHeadline, showCents: false)) spent, "
+                    + "\(display.remainingHeadline.map { CurrencyFormatter.currency($0, showCents: false) } ?? "unknown") retained"
+            )
+        } else {
+            Capsule()
+                .fill(NwAppColors.strokeSubtle)
+                .frame(height: 8)
+                .accessibilityHidden(true)
         }
     }
 
@@ -610,35 +692,10 @@ struct SpendingHistoryView: View {
         return max(0, days.count - today)
     }
 
-    private func companionMetric(
-        title: String,
-        amount: Money?,
-        color: Color = NwAppColors.textPrimary
-    ) -> some View {
-        VStack(alignment: .leading, spacing: NwSpacing.xs) {
-            Text(title)
-                .font(NwTypography.caption)
-                .foregroundStyle(NwAppColors.textSecondary)
-            if let amount {
-                NwAmountText(
-                    amount,
-                    variant: .compact,
-                    showCents: false,
-                    color: color
-                )
-            } else {
-                Text("—")
-                    .font(NwTypography.headline)
-                    .foregroundStyle(NwAppColors.textSecondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func remainingColor(_ amount: Money?) -> Color {
+    private func retainedColor(_ amount: Money?) -> Color {
         guard let amount else { return NwAppColors.textSecondary }
-        if amount.isNegative { return NwAppColors.liability }
-        if amount > .zero { return NwAppColors.positive }
+        if amount.isNegative { return NwAppColors.budgetOver }
+        if amount > .zero { return NwAppColors.favorableText }
         return NwAppColors.textSecondary
     }
 
@@ -665,45 +722,86 @@ struct SpendingHistoryView: View {
     ) -> some View {
         let month = period.summary
         let budgets = model.budgetSummary(for: month).groups
-        VStack(alignment: .leading, spacing: NwSpacing.sm) {
-            HStack {
-                Text("Budgets")
+        let visibleBudgets = SpendingBudgetVisibility.visibleBudgets(
+            budgets,
+            featuredGroupID: model.focusGroupIdentity,
+            expanded: showingAllBudgets
+        )
+        if !budgets.isEmpty {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                HStack {
+                    Text("Budgets")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                        .textCase(.uppercase)
+                }
+                .padding(.horizontal, NwSpacing.xs)
+
+                VStack(spacing: NwSpacing.xs) {
+                    ForEach(visibleBudgets) { budget in
+                        budgetRow(
+                            budget,
+                            month: month,
+                            periodStartMonth: period.startMonth
+                        )
+                    }
+
+                    if budgets.count > 3 {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showingAllBudgets.toggle()
+                            }
+                        } label: {
+                            HStack {
+                                Text(
+                                    showingAllBudgets
+                                        ? "Show fewer"
+                                        : "Show all \(budgets.count)"
+                                )
+                                Spacer()
+                                Image(
+                                    systemName: showingAllBudgets
+                                        ? "chevron.up"
+                                        : "chevron.down"
+                                )
+                            }
+                            .font(NwTypography.bodyEmphasis)
+                            .foregroundStyle(NwAppColors.primary)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .padding(.horizontal, NwSpacing.md)
+                            .background(
+                                RoundedRectangle(
+                                    cornerRadius: NwCornerRadius.md,
+                                    style: .continuous
+                                )
+                                .fill(NwAppColors.cardSurface)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Text("Half-width comparison")
                     .font(NwTypography.caption)
                     .foregroundStyle(NwAppColors.textSecondary)
                     .textCase(.uppercase)
-                Spacer()
-                Text("\(budgets.count) active")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(NwAppColors.textSecondary)
-            }
-            .padding(.horizontal, NwSpacing.xs)
+                    .padding(.horizontal, NwSpacing.xs)
+                    .padding(.top, NwSpacing.sm)
 
-            NwCard(style: .primary, padding: 0) {
-                VStack(spacing: 0) {
-                    if budgets.isEmpty {
-                        Button("Set Up Budgets") {
-                            showingGroupManager = true
-                        }
-                        .font(NwTypography.bodyEmphasis)
-                        .foregroundStyle(NwAppColors.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(NwSpacing.md)
-                    } else {
-                        ForEach(
-                            Array(budgets.enumerated()),
-                            id: \.element.id
-                        ) { index, budget in
-                            budgetRow(
-                                budget,
-                                month: month,
-                                periodStartMonth: period.startMonth,
-                                isFeatured: budget.groupIdentity
-                                    == model.focusGroupIdentity
-                            )
-                            if index < budgets.count - 1 {
-                                Divider().padding(.leading, NwSpacing.md)
-                            }
-                        }
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: NwSpacing.sm),
+                        GridItem(.flexible(), spacing: NwSpacing.sm)
+                    ],
+                    spacing: NwSpacing.sm
+                ) {
+                    ForEach(visibleBudgets) { budget in
+                        halfWidthBudgetCard(
+                            budget,
+                            month: month,
+                            periodStartMonth: period.startMonth
+                        )
                     }
                 }
             }
@@ -714,8 +812,7 @@ struct SpendingHistoryView: View {
     private func budgetRow(
         _ budget: SpendingGroupBudgetSnapshot,
         month: SpendingHistoryMonth,
-        periodStartMonth: Date,
-        isFeatured: Bool
+        periodStartMonth: Date
     ) -> some View {
         let group = month.groups.first { $0.id == budget.groupIdentity }
         let pace = budgetPaceStatus(
@@ -730,12 +827,7 @@ struct SpendingHistoryView: View {
                 periodStartMonth: periodStartMonth
             )
         } label: {
-            budgetRowContent(
-                budget,
-                month: month.month,
-                pace: pace,
-                isFeatured: isFeatured
-            )
+            budgetRowContent(budget)
         }
         .buttonStyle(.plain)
         .disabled(group == nil)
@@ -749,63 +841,112 @@ struct SpendingHistoryView: View {
     }
 
     private func budgetRowContent(
-        _ budget: SpendingGroupBudgetSnapshot,
-        month: Date,
-        pace: SpendingBudgetPaceStatus,
-        isFeatured: Bool
+        _ budget: SpendingGroupBudgetSnapshot
     ) -> some View {
-        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: NwSpacing.sm) {
                 Text(budget.groupName)
                     .font(NwTypography.bodyEmphasis)
-                    .foregroundStyle(
-                        isFeatured
-                            ? NwAppColors.featuredText
-                            : NwAppColors.textPrimary
-                    )
+                    .foregroundStyle(NwAppColors.textPrimary)
                     .lineLimit(1)
                 Spacer(minLength: NwSpacing.sm)
-                Text(budgetStatusText(budget.remaining))
+                Text(budgetDisplayAmount(budget.remaining))
                     .font(NwTypography.bodyEmphasis)
                     .foregroundStyle(
                         budget.isOver
-                            ? NwAppColors.liability
-                            : (isFeatured
-                                ? NwAppColors.featuredText
-                                : NwAppColors.textPrimary)
+                            ? NwAppColors.budgetOver
+                            : NwAppColors.primary
                     )
                     .monospacedDigit()
             }
 
-            Text(budgetAmountProgressText(
-                spent: budget.spent,
-                target: budget.target
-            ))
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-            .font(NwTypography.footnote)
-            .foregroundStyle(
-                isFeatured
-                    ? NwAppColors.featuredText
-                    : NwAppColors.textSecondary
-            )
-
             NwBudgetProgress(
                 progress: budget.progress,
                 isOver: budget.isOver,
-                tint: budgetPaceColor(pace),
-                trackTint: isFeatured
-                    ? NwAppColors.featuredTrack
-                    : nil,
+                tint: budgetProgressColor(isOver: budget.isOver),
+                height: 6,
                 accessibilityLabel: "\(budget.groupName) budget progress"
             )
         }
         .padding(.horizontal, NwSpacing.md)
-        .padding(.vertical, NwSpacing.rowVertical)
+        .padding(.vertical, NwSpacing.xs)
+        .frame(minHeight: 44)
         .background(
-            isFeatured ? NwAppColors.featuredSurface : Color.clear
+            RoundedRectangle(
+                cornerRadius: NwCornerRadius.card,
+                style: .continuous
+            )
+            .fill(NwAppColors.cardSurface)
         )
+        .nwShadow(NwShadow.card)
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func halfWidthBudgetCard(
+        _ budget: SpendingGroupBudgetSnapshot,
+        month: SpendingHistoryMonth,
+        periodStartMonth: Date
+    ) -> some View {
+        let group = month.groups.first { $0.id == budget.groupIdentity }
+        let pace = budgetPaceStatus(
+            progress: budget.progress,
+            month: month.month
+        )
+        Button {
+            guard let group else { return }
+            detailSelection = SpendingGroupDetailSelection(
+                month: month,
+                group: group,
+                periodStartMonth: periodStartMonth
+            )
+        } label: {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                Text(budget.groupName)
+                    .font(NwTypography.footnoteEm)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                    .lineLimit(1)
+
+                Text(budgetDisplayAmount(budget.remaining))
+                    .font(NwTypography.headline)
+                    .foregroundStyle(
+                        budget.isOver
+                            ? NwAppColors.budgetOver
+                            : NwAppColors.primary
+                    )
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                NwBudgetProgress(
+                    progress: budget.progress,
+                    isOver: budget.isOver,
+                    tint: budgetProgressColor(isOver: budget.isOver),
+                    height: 6,
+                    accessibilityLabel: "\(budget.groupName) budget progress"
+                )
+            }
+            .padding(NwSpacing.md)
+            .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+            .background(
+                RoundedRectangle(
+                    cornerRadius: NwCornerRadius.card,
+                    style: .continuous
+                )
+                .fill(NwAppColors.cardSurface)
+            )
+            .nwShadow(NwShadow.card)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(group == nil)
+        .accessibilityLabel(
+            "Open \(budget.groupName) details, "
+                + "\(budgetStatusText(budget.remaining)), "
+                + "\(budgetPaceLabel(pace, month: month.month)), "
+                + "\(budgetAmountProgressText(spent: budget.spent, target: budget.target))"
+        )
+        .accessibilityHint("Shows categories and transactions")
     }
 
     private func budgetAmountProgressText(
@@ -816,59 +957,56 @@ struct SpendingHistoryView: View {
             + CurrencyFormatter.currency(target, showCents: false)
     }
 
+    private func budgetDisplayAmount(_ remaining: Money) -> String {
+        CurrencyFormatter.currency(remaining.absolute, showCents: false)
+    }
+
     private func spendingDetailLinks(
         _ model: SpendingHistoryModel
     ) -> some View {
-        HStack(alignment: .top, spacing: NwSpacing.md) {
-            NavigationLink {
-                SpendingTrendsView(model: model)
-            } label: {
-                spendingDetailTile(
-                    icon: .netWorth,
-                    title: "Spending Trends",
-                    subtitle: "History and averages"
-                )
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows detailed monthly spending trends")
+        NwCard(style: .primary, padding: 0) {
+            HStack(spacing: 0) {
+                NavigationLink {
+                    SpendingTrendsView(model: model)
+                } label: {
+                    spendingDetailAction(
+                        icon: .netWorth,
+                        title: "Trends"
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows detailed monthly spending trends")
 
-            NavigationLink {
-                FinancialAccountTransactionHistoryView()
-            } label: {
-                spendingDetailTile(
-                    icon: .history,
-                    title: "Transactions",
-                    subtitle: "Search and review"
-                )
+                Divider().frame(height: 36)
+
+                NavigationLink {
+                    FinancialAccountTransactionHistoryView()
+                } label: {
+                    spendingDetailAction(
+                        icon: .history,
+                        title: "Transactions"
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows all transactions")
             }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows all transactions")
         }
     }
 
-    private func spendingDetailTile(
+    private func spendingDetailAction(
         icon: NwIcon,
-        title: String,
-        subtitle: String
+        title: String
     ) -> some View {
-        NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                icon.image
-                    .font(NwTypography.headline)
-                    .foregroundStyle(NwAppColors.primary)
-                Spacer(minLength: NwSpacing.sm)
-                Text(title)
-                    .font(NwTypography.bodyEmphasis)
-                    .foregroundStyle(NwAppColors.textPrimary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
-                Text(subtitle)
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(NwAppColors.textSecondary)
-                    .lineLimit(2)
-            }
-            .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+        HStack(spacing: NwSpacing.sm) {
+            icon.image
+                .font(NwTypography.headline)
+            Text(title)
+                .font(NwTypography.bodyEmphasis)
+                .lineLimit(1)
         }
+        .foregroundStyle(NwAppColors.primary)
+        .frame(maxWidth: .infinity, minHeight: 56)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Build

@@ -21,6 +21,71 @@ enum ProjectionAccountWarningCopy {
     }
 }
 
+enum ProjectionHeroMetricKind: Sendable, Equatable {
+    case setup
+    case available
+    case transferNeeded
+    case bufferGap
+    case projectedBalance
+    case projectedLow
+}
+
+struct ProjectionHeroMetric: Sendable, Equatable {
+    let kind: ProjectionHeroMetricKind
+    let label: String
+    let amount: Money?
+
+    static func resolve(
+        setupIncomplete: Bool,
+        canLeadWithSpendingRoom: Bool,
+        availableAmount: Money?,
+        showsPaymentFundingHeadline: Bool,
+        status: CashProjectionStatus,
+        headlineAmount: Money?
+    ) -> ProjectionHeroMetric {
+        if setupIncomplete {
+            return ProjectionHeroMetric(
+                kind: .setup,
+                label: "Setup needed",
+                amount: nil
+            )
+        }
+        if canLeadWithSpendingRoom, let availableAmount {
+            return ProjectionHeroMetric(
+                kind: .available,
+                label: "Available",
+                amount: availableAmount
+            )
+        }
+        if showsPaymentFundingHeadline {
+            return ProjectionHeroMetric(
+                kind: .transferNeeded,
+                label: "Transfer needed",
+                amount: headlineAmount
+            )
+        }
+        if status == .tight {
+            return ProjectionHeroMetric(
+                kind: .bufferGap,
+                label: "Buffer gap",
+                amount: headlineAmount
+            )
+        }
+        if status == .shortfall {
+            return ProjectionHeroMetric(
+                kind: .projectedBalance,
+                label: "Projected balance",
+                amount: headlineAmount
+            )
+        }
+        return ProjectionHeroMetric(
+            kind: .projectedLow,
+            label: "Projected low",
+            amount: headlineAmount
+        )
+    }
+}
+
 private struct CardPaymentDetailSelection: Identifiable {
     let payment: UpcomingCardPayment
     let transactions: [TransactionSummary]
@@ -305,166 +370,222 @@ struct ProjectionsView: View {
 
     private func cashChart(_ data: ProjectionData) -> some View {
         let selectedPoint = selectedProjectionPoint(data)
-        return NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.md) {
+        let hero = projectionHeroMetric(data)
+        let accent = projectionHeroAccent(hero.kind)
+        return NwDashboardHero {
+            VStack(alignment: .leading, spacing: NwSpacing.lg) {
                 HStack {
-                    Text("Outlook")
-                        .font(NwTypography.headline)
+                    Text("CASH OUTLOOK")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.dashboardHeroSecondary)
                     Spacer()
                     Button {
                         showingAssumptions = true
                     } label: {
                         Image(systemName: "info.circle")
-                            .foregroundStyle(.secondary)
+                            .font(NwTypography.headline)
+                            .foregroundStyle(NwAppColors.dashboardHeroSecondary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Projection assumptions")
                 }
+                .frame(height: 28)
 
-                projectionSummaryRow(data)
+                projectionHeroSummary(data, hero: hero, accent: accent)
 
-                Divider()
+                if !data.result.expectedPoints.isEmpty {
+                    Chart {
+                        ForEach(data.result.expectedPoints) { point in
+                            AreaMark(
+                                x: .value("Date", point.date),
+                                y: .value(
+                                    "Projected cash",
+                                    point.balance.doubleValue
+                                )
+                            )
+                            .foregroundStyle(.linearGradient(
+                                colors: [
+                                    accent.opacity(0.34),
+                                    accent.opacity(0.03)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+
+                            LineMark(
+                                x: .value("Date", point.date),
+                                y: .value(
+                                    "Projected cash",
+                                    point.balance.doubleValue
+                                ),
+                                series: .value("Series", "Projected cash")
+                            )
+                            .foregroundStyle(accent)
+                            .lineStyle(StrokeStyle(lineWidth: 3))
+                        }
+                        RuleMark(
+                            y: .value(
+                                "Buffer",
+                                minimumCashBuffer.doubleValue
+                            )
+                        )
+                        .foregroundStyle(NwAppColors.gold.opacity(0.75))
+                        .lineStyle(
+                            StrokeStyle(lineWidth: 1, dash: [4, 4])
+                        )
+
+                        if let lowPoint = data.result.expectedLowPoint {
+                            PointMark(
+                                x: .value("Low date", lowPoint.date),
+                                y: .value(
+                                    "Projected low",
+                                    lowPoint.balance.doubleValue
+                                )
+                            )
+                            .foregroundStyle(accent)
+                            .symbolSize(55)
+                        }
+
+                        if let scrubbedProjectionDate {
+                            RuleMark(
+                                x: .value(
+                                    "Selected date",
+                                    scrubbedProjectionDate
+                                )
+                            )
+                            .foregroundStyle(
+                                NwAppColors.dashboardHeroText.opacity(0.55)
+                            )
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        }
+                    }
+                    .chartLegend(.hidden)
+                    .chartYAxis(.hidden)
+                    .chartXAxis {
+                        AxisMarks(values: .automatic(desiredCount: 3)) { value in
+                            AxisValueLabel {
+                                if let date = value.as(Date.self) {
+                                    Text(
+                                        date,
+                                        format: .dateTime
+                                            .month(.abbreviated)
+                                            .day()
+                                    )
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(
+                                        NwAppColors.dashboardHeroSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    .chartXSelection(value: $scrubbedProjectionDate)
+                    .frame(height: 158)
+                }
 
                 if let selectedPoint {
                     HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(scrubbedProjectionDate == nil ? "PROJECTED LOW" : "PROJECTED CASH")
-                                .font(NwTypography.caption)
-                                .foregroundStyle(.secondary)
-                            Text(selectedPoint.date, format: .dateTime.month(.abbreviated).day().weekday(.abbreviated))
-                                .font(NwTypography.footnoteEm)
-                                .foregroundStyle(NwAppColors.textPrimary)
-                        }
-                        Spacer()
+                        Text(
+                            scrubbedProjectionDate == nil
+                                ? "Low · \(selectedPoint.date.formatted(.dateTime.month(.abbreviated).day().weekday(.abbreviated)))"
+                                : selectedPoint.date.formatted(
+                                    .dateTime.month(.abbreviated).day()
+                                        .weekday(.abbreviated)
+                                )
+                        )
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(NwAppColors.dashboardHeroSecondary)
+                        Spacer(minLength: NwSpacing.sm)
                         NwAmountText(
                             selectedPoint.balance,
                             variant: .body,
                             showCents: false,
-                            color: selectedPoint.balance.isNegative
-                                ? NwAppColors.liability
-                                : (selectedPoint.balance < minimumCashBuffer
-                                    ? NwAppColors.caution
-                                    : NwAppColors.textPrimary)
+                            color: NwAppColors.dashboardHeroText
                         )
                     }
                 }
-
-                Chart {
-                    ForEach(data.result.expectedPoints) { point in
-                        AreaMark(
-                            x: .value("Date", point.date),
-                            y: .value("Projected cash", point.balance.doubleValue)
-                        )
-                        .foregroundStyle(.linearGradient(
-                            colors: [
-                                NwAppColors.primary.opacity(0.25),
-                                NwAppColors.primary.opacity(0.02)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ))
-
-                        LineMark(
-                            x: .value("Date", point.date),
-                            y: .value("Projected cash", point.balance.doubleValue),
-                            series: .value("Series", "Projected cash")
-                        )
-                        .foregroundStyle(NwAppColors.primary)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5))
-                    }
-                    RuleMark(y: .value("Buffer", minimumCashBuffer.doubleValue))
-                        .foregroundStyle(NwAppColors.caution.opacity(0.7))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .annotation(position: .top, alignment: .leading) {
-                            Text("Buffer")
-                                .font(NwTypography.caption)
-                                .foregroundStyle(NwAppColors.caution)
-                        }
-
-                    if let lowPoint = data.result.expectedLowPoint {
-                        PointMark(
-                            x: .value("Low date", lowPoint.date),
-                            y: .value("Projected low", lowPoint.balance.doubleValue)
-                        )
-                        .foregroundStyle(
-                            lowPoint.balance.isNegative
-                                ? NwAppColors.liability
-                                : (lowPoint.balance < minimumCashBuffer
-                                    ? NwAppColors.caution
-                                    : NwAppColors.primary)
-                        )
-                        .symbolSize(45)
-                    }
-
-                    if let scrubbedProjectionDate {
-                        RuleMark(x: .value("Selected date", scrubbedProjectionDate))
-                            .foregroundStyle(NwAppColors.primary.opacity(0.5))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    }
-                }
-                .chartXSelection(value: $scrubbedProjectionDate)
-                .frame(height: 220)
             }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Cash outlook")
+    }
+
+    private func projectionHeroMetric(
+        _ data: ProjectionData
+    ) -> ProjectionHeroMetric {
+        ProjectionHeroMetric.resolve(
+            setupIncomplete: data.setupIncomplete,
+            canLeadWithSpendingRoom: data.canLeadWithSpendingRoom,
+            availableAmount: data.result.safeToSpend?.amount,
+            showsPaymentFundingHeadline: data.showsPaymentFundingHeadline,
+            status: data.result.status,
+            headlineAmount: data.headlineAmount
+        )
+    }
+
+    private func projectionHeroAccent(
+        _ kind: ProjectionHeroMetricKind
+    ) -> Color {
+        switch kind {
+        case .available, .projectedLow:
+            return NwAppColors.gold
+        case .setup, .transferNeeded, .bufferGap:
+            return NwAppColors.dashboardHeroCaution
+        case .projectedBalance:
+            return NwAppColors.dashboardHeroLiability
         }
     }
 
-    @ViewBuilder
-    private func projectionSummaryRow(_ data: ProjectionData) -> some View {
-        if data.canLeadWithSpendingRoom,
-           let estimate = data.result.safeToSpend {
-            Button {
+    private func projectionHeroSummary(
+        _ data: ProjectionData,
+        hero: ProjectionHeroMetric,
+        accent: Color
+    ) -> some View {
+        Button {
+            if hero.kind == .available {
                 showingSafeToSpendDetails = true
-            } label: {
-                HStack(alignment: .center, spacing: NwSpacing.md) {
-                    Text("Available")
-                        .font(NwTypography.bodyEmphasis)
-                        .foregroundStyle(NwAppColors.textPrimary)
-                    Spacer(minLength: NwSpacing.sm)
-                    NwAmountText(
-                        estimate.amount,
-                        variant: .large,
-                        showCents: false,
-                        color: NwAppColors.positive
-                    )
-                    NwIcon.chevron.image
-                        .foregroundStyle(NwAppColors.primary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        } else {
-            Button {
+            } else {
                 showingAssumptions = true
-            } label: {
-                HStack(alignment: .center, spacing: NwSpacing.md) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(data.headlineTitle)
-                            .font(NwTypography.bodyEmphasis)
-                            .foregroundStyle(data.statusColor)
-                        if let subtitle = data.headlineSubtitle {
-                            Text(subtitle)
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(NwAppColors.textSecondary)
-                        }
-                    }
-                    Spacer(minLength: NwSpacing.sm)
-                    if !data.showsTightBufferHeadline,
-                       let amount = data.headlineAmount {
+            }
+        } label: {
+            HStack(alignment: .center, spacing: NwSpacing.md) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(hero.label.uppercased())
+                        .font(NwTypography.caption)
+                        .foregroundStyle(accent)
+                    if let amount = hero.amount {
                         NwAmountText(
                             amount,
-                            variant: .compact,
+                            variant: .hero,
                             showCents: false,
-                            color: data.statusColor
+                            color: NwAppColors.dashboardHeroText
                         )
+                    } else {
+                        NwIcon.projections.image
+                            .font(NwTypography.display)
+                            .foregroundStyle(accent)
+                            .padding(.vertical, NwSpacing.xs)
                     }
-                    NwIcon.chevron.image
-                        .foregroundStyle(NwAppColors.primary)
+                    Text(data.headlineTitle)
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(NwAppColors.dashboardHeroSecondary)
+                        .lineLimit(2)
                 }
-                .contentShape(Rectangle())
+                Spacer(minLength: NwSpacing.sm)
+                NwIcon.chevron.image
+                    .font(NwTypography.headline)
+                    .foregroundStyle(accent)
             }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows why the projection has this status")
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityHint(
+            hero.kind == .available
+                ? "Shows how available cash is calculated"
+                : "Shows why the projection has this status"
+        )
     }
 
     private func selectedProjectionPoint(_ data: ProjectionData) -> CashPositionPoint? {
@@ -480,45 +601,41 @@ struct ProjectionsView: View {
     private func timeline(_ data: ProjectionData) -> some View {
         let visibleEvents = showingAllUpcomingActivity
             ? data.result.events
-            : Array(data.result.events.prefix(5))
+            : Array(data.result.events.prefix(3))
+        let hasExpectedPaycheck = data.expectedTodayPaycheckAmount != nil
         return VStack(alignment: .leading, spacing: NwSpacing.md) {
             Text("Next Cash Activity")
                 .font(NwTypography.titleSmall)
-            if case .detected(let paycheck) = data.paycheckDetection,
-               let amount = data.expectedTodayPaycheckAmount {
-                NwCard(style: .primary) {
-                    HStack(spacing: NwSpacing.md) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Expected today · Awaiting confirmation")
-                                .font(NwTypography.caption)
-                                .foregroundStyle(NwAppColors.caution)
-                            Text(paycheck.displayName)
-                                .font(NwTypography.body)
-                        }
-                        Spacer()
-                        NwAmountText(
-                            amount,
-                            variant: .body,
-                            color: NwAppColors.textSecondary
-                        )
-                    }
-                }
-            }
-            if data.result.events.isEmpty {
+            if data.result.events.isEmpty && !hasExpectedPaycheck {
                 NwInlineNotice(
                     "No known events",
                     message: "Add recurring income and bills in Settings.",
                     tone: .info
                 )
             } else {
-                NwCard(style: .primary, padding: 0) {
+                NwCard(style: .primary, padding: NwSpacing.md) {
                     VStack(spacing: 0) {
-                        ForEach(visibleEvents) { event in
-                            eventRow(event, data: data)
-                            if event.id != visibleEvents.last?.id { Divider() }
+                        if case .detected(let paycheck) = data.paycheckDetection,
+                           let amount = data.expectedTodayPaycheckAmount {
+                            expectedPaycheckRow(
+                                paycheck: paycheck,
+                                amount: amount,
+                                isLast: visibleEvents.isEmpty
+                            )
                         }
-                        if data.result.events.count > 5 {
-                            Divider()
+
+                        ForEach(
+                            Array(visibleEvents.enumerated()),
+                            id: \.element.id
+                        ) { index, event in
+                            eventRow(
+                                event,
+                                data: data,
+                                isLast: index == visibleEvents.count - 1
+                            )
+                        }
+
+                        if data.result.events.count > 3 {
                             Button {
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     showingAllUpcomingActivity.toggle()
@@ -532,7 +649,8 @@ struct ProjectionsView: View {
                                         .font(NwTypography.footnoteEm)
                                 }
                                 .foregroundStyle(NwAppColors.primary)
-                                .padding(NwSpacing.md)
+                                .frame(maxWidth: .infinity, minHeight: 48)
+                                .padding(.horizontal, NwSpacing.sm)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
@@ -544,37 +662,20 @@ struct ProjectionsView: View {
     }
 
     @ViewBuilder
-    private func eventRow(_ event: CashProjectionEvent, data: ProjectionData) -> some View {
+    private func eventRow(
+        _ event: CashProjectionEvent,
+        data: ProjectionData,
+        isLast: Bool
+    ) -> some View {
         let payment = event.kind == .cardPayment
             ? data.paymentEstimates.first { $0.id == event.id }
             : nil
-        let row = HStack(spacing: NwSpacing.md) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(event.date, format: .dateTime.month(.abbreviated).day().weekday(.abbreviated))
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: NwSpacing.xs) {
-                    Text(event.title)
-                        .font(NwTypography.body)
-                        .foregroundStyle(NwAppColors.textPrimary)
-                    if payment != nil {
-                        NwIcon.info.image
-                            .font(NwTypography.footnote)
-                            .foregroundStyle(NwAppColors.primary)
-                    }
-                }
-                if let label = eventSourceLabel(event, data: data) {
-                    Text(label)
-                        .font(NwTypography.caption)
-                        .foregroundStyle(NwAppColors.textSecondary)
-                }
-            }
-            Spacer()
-            NwAmountText(event.amount, variant: .body,
-                         color: event.amount.isNegative ? NwAppColors.liability : NwAppColors.positive)
-        }
-        .padding(NwSpacing.md)
-        .contentShape(Rectangle())
+        let row = timelineEventContent(
+            event,
+            data: data,
+            showsInfo: payment != nil,
+            isLast: isLast
+        )
 
         if let payment {
             Button {
@@ -605,6 +706,126 @@ struct ProjectionsView: View {
                 .accessibilityHint("Edits recurring income")
         } else {
             row
+        }
+    }
+
+    private func expectedPaycheckRow(
+        paycheck: DetectedPaycheck,
+        amount: Money,
+        isLast: Bool
+    ) -> some View {
+        Button {
+            showingPaycheckSchedule = true
+        } label: {
+            HStack(alignment: .top, spacing: NwSpacing.md) {
+                timelineMarker(
+                    icon: .awaiting,
+                    color: NwAppColors.caution,
+                    isLast: isLast
+                )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("TODAY · AWAITING")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.caution)
+                    Text(paycheck.displayName)
+                        .font(NwTypography.bodyEmphasis)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: NwSpacing.sm)
+                NwAmountText(
+                    amount,
+                    variant: .body,
+                    color: NwAppColors.textSecondary
+                )
+            }
+            .padding(.vertical, NwSpacing.sm)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Adjusts the detected paycheck schedule")
+    }
+
+    private func timelineEventContent(
+        _ event: CashProjectionEvent,
+        data: ProjectionData,
+        showsInfo: Bool,
+        isLast: Bool
+    ) -> some View {
+        let color = event.amount.isNegative
+            ? NwAppColors.liability
+            : NwAppColors.positive
+        return HStack(alignment: .top, spacing: NwSpacing.md) {
+            timelineMarker(
+                icon: timelineIcon(event),
+                color: color,
+                isLast: isLast
+            )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(
+                    event.date,
+                    format: .dateTime.month(.abbreviated).day()
+                        .weekday(.abbreviated)
+                )
+                .font(NwTypography.caption)
+                .foregroundStyle(NwAppColors.textSecondary)
+                HStack(spacing: NwSpacing.xs) {
+                    Text(event.title)
+                        .font(NwTypography.bodyEmphasis)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                        .lineLimit(1)
+                    if showsInfo {
+                        NwIcon.info.image
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.primary)
+                    }
+                }
+                if let label = eventSourceLabel(event, data: data) {
+                    Text(label)
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: NwSpacing.sm)
+            NwAmountText(event.amount, variant: .body, color: color)
+        }
+        .padding(.vertical, NwSpacing.sm)
+        .contentShape(Rectangle())
+    }
+
+    private func timelineMarker(
+        icon: NwIcon,
+        color: Color,
+        isLast: Bool
+    ) -> some View {
+        VStack(spacing: NwSpacing.xs) {
+            ZStack {
+                Circle().fill(color.opacity(0.14))
+                icon.image
+                    .font(NwTypography.footnoteEm)
+                    .foregroundStyle(color)
+            }
+            .frame(width: 34, height: 34)
+            if !isLast {
+                Rectangle()
+                    .fill(NwAppColors.strokeSubtle)
+                    .frame(width: 2)
+                    .frame(maxHeight: .infinity)
+            }
+        }
+        .frame(width: 34)
+        .accessibilityHidden(true)
+    }
+
+    private func timelineIcon(_ event: CashProjectionEvent) -> NwIcon {
+        switch event.kind {
+        case .scheduledIncome, .transferIn:
+            return .cashIn
+        case .cardPayment:
+            return .creditCard
+        case .scheduledExpense, .transferOut:
+            return .cashOut
         }
     }
 

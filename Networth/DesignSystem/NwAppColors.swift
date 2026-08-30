@@ -29,6 +29,18 @@ public enum NwAppColors {
         light: 0xA93400,
         dark: 0xFF9271
     )
+    public static let favorableText = adaptiveColor(
+        light: 0x007A46,
+        dark: 0x67DFA4
+    )
+    public static let favorableFill = adaptiveColor(
+        light: 0x23C17C,
+        dark: 0x33D991
+    )
+    public static let budgetOver = adaptiveColor(
+        light: 0xD50C42,
+        dark: 0xFF7399
+    )
     public static let info = adaptiveColor(
         light: 0x4C8AEA,
         dark: 0x78A8FF
@@ -43,8 +55,40 @@ public enum NwAppColors {
         dark: 0x453D21
     )
     public static let featuredText = primary
-    public static let featuredTrack = primary.opacity(0.20)
 
+    // Dashboard hierarchy
+    public static let dashboardHeroSurface = adaptiveColor(
+        light: 0x003E83,
+        dark: 0x102A4D
+    )
+    public static let dashboardHeroText = adaptiveColor(
+        light: 0xFFFFFF,
+        dark: 0xF5F8FF
+    )
+    public static let dashboardHeroSecondary = adaptiveColor(
+        light: 0xD9E7F7,
+        dark: 0xC7D8EB
+    )
+    public static let dashboardHeroTrack = adaptiveColor(
+        light: 0x164D82,
+        dark: 0x244363
+    )
+    public static let dashboardHeroProgress = adaptiveColor(
+        light: 0xC7E1FA,
+        dark: 0xC7E1FA
+    )
+    public static let dashboardHeroOver = adaptiveColor(
+        light: 0xFF7399,
+        dark: 0xFF7399
+    )
+    public static let dashboardHeroCaution = adaptiveColor(
+        light: 0xF4C36A,
+        dark: 0xE2AE55
+    )
+    public static let dashboardHeroLiability = adaptiveColor(
+        light: 0xFF9C7A,
+        dark: 0xFF9271
+    )
     // Surfaces
     public static let background       = Color(.systemGroupedBackground)
     public static let cardSurface      = Color(.secondarySystemGroupedBackground)

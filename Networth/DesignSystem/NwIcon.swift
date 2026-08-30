@@ -50,6 +50,9 @@ public enum NwIcon: String, Sendable {
     case chevron      = "chevron.right"
     case arrowUp      = "arrow.up.right"
     case arrowDown    = "arrow.down.right"
+    case cashIn       = "arrow.down.left.circle.fill"
+    case cashOut      = "arrow.up.right.circle.fill"
+    case awaiting     = "clock.badge.exclamationmark"
     case empty        = "tray"
 
     public var image: Image { Image(systemName: rawValue) }

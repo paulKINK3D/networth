@@ -117,6 +117,11 @@ cd PlaidWorker && npm test && npm run check
 - Prefer large, readable typography and high-clarity layout hierarchy.
 - Keep calls to action obvious and prominent. Use concise copy.
 - Minimize non-essential on-screen text and keep interfaces focused on primary tasks.
+- Avoid emojis and unfamiliar symbols as carriers of meaning. Do not rely on
+  icon-only status indicators: different users may interpret them differently.
+  Prefer concise visible language or self-evident visual relationships. Reserve
+  standalone icons for established system controls, and always provide an
+  accessibility label.
 - Do not add explanatory or instructional sentences to UI by default. Prefer
   self-explanatory labels and controls; if a choice needs prose to be
   understood, redesign the interaction. Ask before making an exception.
@@ -173,10 +178,12 @@ cd PlaidWorker && npm test && npm run check
   projected finishes are excluded, and Retained always remains actual income
   minus actual ordinary spending. Historical averages belong in Spending
   Trends, not the main monthly budget summary. Factual calendar pace may compare
-  percent used with percent of the current month elapsed: navy is on track,
-  amber is up to ten percentage points ahead, and rust is materially
-  ahead or over budget. Never extrapolate that comparison into a projected
-  finish.
+  percent used with percent of the current month elapsed, but the Spending
+  overview does not encode that pace with brown/amber or pale-yellow status
+  treatments. Under-budget progress is blue, overspending is a clear
+  Wada-family red, positive Retained is green, and negative Retained is red.
+  Pace remains available in the tapped detail. Never extrapolate that
+  comparison into a projected finish.
 
 ## Validation Checklist
 - App target builds.

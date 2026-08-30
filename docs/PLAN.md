@@ -148,6 +148,14 @@ When at least four complete monthly samples are available, Safe to Spend also sh
   liability/at-risk. Interactive semantic colors use explicit light/dark
   variants; fixed navy is not used as a dark-mode foreground. The BlueLava
   launch/lock gradient remains a separate shared cross-app brand treatment.
+- Daily dashboards lead with one bold adaptive Deep Slate hero, one large
+  whole-dollar answer, and a single supporting visual. Secondary numbers use
+  softly tinted surfaces and progressive disclosure rather than competing
+  card boundaries.
+- Spending overview colors follow familiar semantics: blue is informational
+  under-budget progress, green is positive Retained, and clear red is
+  overspending or negative Retained. Brown/amber and pale yellow are not used
+  to communicate budget status; factual calendar pace stays in drill-down.
 - Modeled on WorkoutApp's design-system patterns (`Lift*` token enums, card variants, modal scaffolds).
 - Design system **built first**, screens assembled from primitives.
 
@@ -189,6 +197,20 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-08-30** — Spending and Projections use a glance-first dashboard
+  hierarchy. Spending leads with the remaining or overspent budget amount and
+  a 270-degree progress arc, keeps the separate funding comparison as Funded
+  versus Retained, and shows three budget groups while preserving user order and
+  an out-of-range featured
+  group, and keeps Trends plus Transactions in a compact action strip.
+  Projections leads with the most actionable amount (Available, Buffer gap,
+  Transfer needed, or Projected balance), embeds a simplified scrub-capable
+  cash curve, and shows the first three upcoming events as a visual timeline.
+  Spending overview progress uses blue while under budget and red only when
+  overspent; positive Retained uses green. Calendar pace is available after
+  opening a budget rather than encoded with brown or pale-yellow treatments.
+  Financial calculations, detail sheets, event actions, and the four-tab
+  information architecture are unchanged.
 - **2026-08-30** — Projection timing corrections never rewrite imported Plaid
   dates. Weekly and biweekly paycheck detection uses the dominant recent
   weekday so an isolated holiday shift does not move the future schedule. A

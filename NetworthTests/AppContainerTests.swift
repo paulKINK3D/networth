@@ -3397,3 +3397,99 @@ struct AppContainerTests {
         }
     }
 }
+
+@Suite("Dashboard presentation")
+struct DashboardPresentationTests {
+    @Test func budgetDisclosurePreservesOrderAndIncludesFeaturedGroup() {
+        let budgets = (1...5).map { index in
+            SpendingGroupBudgetSnapshot(
+                groupIdentity: "group-\(index)",
+                groupName: "Group \(index)",
+                spent: Money.dollars(integer: index * 10),
+                target: Money.dollars(100)
+            )
+        }
+
+        #expect(
+            SpendingBudgetVisibility.visibleBudgets(
+                budgets,
+                featuredGroupID: nil,
+                expanded: false
+            ).map(\.groupIdentity) == ["group-1", "group-2", "group-3"]
+        )
+        #expect(
+            SpendingBudgetVisibility.visibleBudgets(
+                budgets,
+                featuredGroupID: "group-5",
+                expanded: false
+            ).map(\.groupIdentity) == ["group-1", "group-2", "group-5"]
+        )
+        #expect(
+            SpendingBudgetVisibility.visibleBudgets(
+                budgets,
+                featuredGroupID: "group-5",
+                expanded: true
+            ).map(\.groupIdentity) == budgets.map(\.groupIdentity)
+        )
+    }
+
+    @Test func projectionHeroUsesTheMostActionableMetric() {
+        let available = Money.dollars(6_823)
+        let gap = Money.dollars(700)
+
+        #expect(
+            ProjectionHeroMetric.resolve(
+                setupIncomplete: true,
+                canLeadWithSpendingRoom: true,
+                availableAmount: available,
+                showsPaymentFundingHeadline: false,
+                status: .covered,
+                headlineAmount: available
+            ) == ProjectionHeroMetric(
+                kind: .setup,
+                label: "Setup needed",
+                amount: nil
+            )
+        )
+        #expect(
+            ProjectionHeroMetric.resolve(
+                setupIncomplete: false,
+                canLeadWithSpendingRoom: true,
+                availableAmount: available,
+                showsPaymentFundingHeadline: false,
+                status: .covered,
+                headlineAmount: gap
+            ).kind == .available
+        )
+        #expect(
+            ProjectionHeroMetric.resolve(
+                setupIncomplete: false,
+                canLeadWithSpendingRoom: false,
+                availableAmount: nil,
+                showsPaymentFundingHeadline: true,
+                status: .covered,
+                headlineAmount: gap
+            ).kind == .transferNeeded
+        )
+        #expect(
+            ProjectionHeroMetric.resolve(
+                setupIncomplete: false,
+                canLeadWithSpendingRoom: false,
+                availableAmount: nil,
+                showsPaymentFundingHeadline: false,
+                status: .tight,
+                headlineAmount: gap
+            ).kind == .bufferGap
+        )
+        #expect(
+            ProjectionHeroMetric.resolve(
+                setupIncomplete: false,
+                canLeadWithSpendingRoom: false,
+                availableAmount: nil,
+                showsPaymentFundingHeadline: false,
+                status: .shortfall,
+                headlineAmount: -gap
+            ).kind == .projectedBalance
+        )
+    }
+}

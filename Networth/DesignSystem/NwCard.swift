@@ -86,3 +86,34 @@ public struct NwCard<Content: View>: View {
             .nwCardStyle(style, padding: padding)
     }
 }
+
+/// Shared high-contrast summary surface for the app's daily-use dashboards.
+/// Screen-specific graphics stay with their owning feature while the surface,
+/// spacing, and adaptive foreground treatment remain consistent.
+public struct NwDashboardHero<Content: View>: View {
+    @ViewBuilder public var content: () -> Content
+
+    public init(@ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    public var body: some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(NwSpacing.cardPadding)
+            .background(
+                RoundedRectangle(
+                    cornerRadius: NwCornerRadius.card,
+                    style: .continuous
+                )
+                .fill(NwAppColors.dashboardHeroSurface)
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: NwCornerRadius.card,
+                    style: .continuous
+                )
+            )
+            .nwShadow(NwShadow.card)
+    }
+}

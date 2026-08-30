@@ -1,30 +1,34 @@
 # WORKING
 
-## Current handoff — projection timing refinements (2026-08-30)
+## Current handoff — daily dashboard visual refresh (2026-08-30)
 
-- Active branch: `feature/projection-refinements`.
-- Weekly and biweekly paycheck detection now keeps the dominant recent
-  weekday when one deposit arrives up to two days early or late. A
-  holiday-shifted Thursday can fulfill a Friday schedule without moving every
-  future payday to Thursday; a consistently Thursday history remains Thursday.
-- Detected paycheck rows are labeled in Next Cash Activity and open an editor
-  for cadence plus next payday. The durable override changes dates only;
-  detected amounts and receiving accounts remain automatic. Recurring-income
-  rows open their existing editor from the same timeline.
-- An unconfirmed paycheck expected on the current day appears as `Expected
-  today · Awaiting confirmation` but is not counted in projected cash until a
-  confirmed deposit arrives.
-- Closed card-payment detail lists eligible purchases and merchant credits
-  within three days of the statement close, including a differing authorized
-  date. A transaction can be assigned to the closing statement or the next
-  statement, or restored to its posted-date behavior. The imported dates are
-  never edited.
-- `DurableCardStatementAssignment` is an additive private-CloudKit model with
-  defaulted fields. `DurableIncomePatternOverride` gained defaulted opt-in
-  schedule fields; legacy rows remain inert. No legacy cleanup is required.
-- Validation: 242 NetworthCore tests, generic-device Debug and Release builds,
-  and generic-device app-test compilation pass. Simulator execution was not
-  requested.
+- Active branch: `feature/ux-ui-improvements`.
+- Spending now leads with a bold monthly-budget hero: one large remaining or
+  overspent amount and a 270-degree progress arc. White means remaining, clear
+  red means overspent, and the redundant status, symbol, and
+  spent-versus-target text are removed.
+- The one-month-ahead funding comparison is a separate Funded/Retained strip.
+  Its arithmetic is unchanged. Budget details use compact neutral tiles with
+  blue progress while under budget and red progress only when overspent. They
+  show three by default, preserve user order, and keep the featured group
+  visible. Positive Retained is green; negative Retained is red.
+- Compact full-width rows and half-width cards intentionally coexist on the
+  Spending screen for on-device comparison. Both open the same details and
+  neither layout is selected for removal yet.
+- Status meaning does not rely on emojis or ambiguous symbols. The overview
+  uses spatial progress plus familiar blue, green, and red semantics; detailed
+  pace remains available after opening a budget.
+- Spending Trends and Transactions remain one tap away in a compact shared
+  action strip.
+- Projections now leads with the most actionable amount and a simplified cash
+  curve inside the shared dashboard hero. Tight, transfer-needed, shortfall,
+  and setup states retain distinct semantic emphasis and their explanations.
+- Next Cash Activity is a three-item visual timeline. Credit-card, detected
+  paycheck, and recurring-income edit actions remain intact; expected income
+  awaiting confirmation remains visible but outside the projection math.
+- No schema, persistence, domain-math, or navigation changes were made.
+- Validation: generic-device Debug app/test compilation and the Release build
+  pass. Simulator execution was not requested.
 
 ## YNAB retirement (2026-08-20, physical validation complete)
 
