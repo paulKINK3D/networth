@@ -3289,6 +3289,142 @@ struct AppContainerTests {
         #expect(!month.groups.contains { $0.id == importedGroup.groupIdentity })
     }
 
+    @Test func savingsBucketCombinesTransfersChoicesAndPriorMonthAssignment() async throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let surplusID = "networth:spending:user:surplus"
+        let savingsID = "networth:spending:user:savings"
+        context.insert(DurableCategoryGroup(
+            groupIdentity: surplusID,
+            name: "Surplus",
+            displayOrder: 0
+        ))
+        context.insert(DurableCategoryGroup(
+            groupIdentity: savingsID,
+            name: "Savings",
+            displayOrder: 1,
+            isSavingsBucket: true
+        ))
+        context.insert(DurableSpendingGroupBudgetRule(
+            groupIdentity: surplusID,
+            effectiveYear: 2026,
+            effectiveMonth: 8,
+            targetMilliunits: Money.dollars(integer: 3_000).milliunits,
+            enabled: true
+        ))
+        context.insert(DurableSpendingGroupBudgetRule(
+            groupIdentity: savingsID,
+            effectiveYear: 2026,
+            effectiveMonth: 8,
+            targetMilliunits: Money.dollars(integer: 1_000).milliunits,
+            enabled: true
+        ))
+        context.insert(DurableSavingsBudgetChoice(
+            budgetYear: 2026,
+            budgetMonth: 8,
+            sourceGroupIdentity: surplusID,
+            savingsGroupIdentity: savingsID,
+            amountMilliunits: Money.dollars(integer: 200).milliunits,
+            note: "Skipped takeout"
+        ))
+        context.insert(CachedFinancialAccount(
+            canonicalAccountId: "savings-account",
+            externalId: "plaid-savings",
+            itemId: "item",
+            source: .plaid,
+            institutionName: "Bank",
+            name: "Savings",
+            officialName: nil,
+            mask: "1234",
+            type: .savings,
+            subtype: "savings",
+            currentBalanceMilliunits: 450_000,
+            availableBalanceMilliunits: 450_000,
+            creditLimitMilliunits: nil,
+            isoCurrencyCode: "USD"
+        ))
+        let postedDate = try #require(Calendar.current.date(
+            from: DateComponents(year: 2026, month: 9, day: 1, hour: 12)
+        ))
+        let summary = FinancialTransactionSummary(
+            id: "september-transfer",
+            externalId: "september-transfer",
+            source: .plaid,
+            accountId: "savings-account",
+            postedDate: postedDate,
+            authorizedDate: nil,
+            amount: Money.dollars(integer: 450),
+            pending: false,
+            pendingTransactionId: nil,
+            rawDescription: "Transfer",
+            originalDescription: nil,
+            providerMerchantName: nil,
+            merchantEntityId: nil,
+            counterpartyName: nil,
+            counterpartyType: nil,
+            counterpartyEntityId: nil,
+            counterpartyConfidence: nil,
+            paymentChannel: nil,
+            providerCategoryPrimary: nil,
+            providerCategoryDetailed: nil,
+            providerCategoryConfidence: nil,
+            transactionCode: nil
+        )
+        context.insert(CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassification(
+                displayName: "Transfer to Savings",
+                categoryName: nil,
+                treatment: .internalTransfer,
+                confidence: .high,
+                provenance: .user,
+                requiresReview: false
+            ),
+            requiresNameReview: false
+        ))
+        context.insert(DurableSavingsTransferAssignment(
+            transactionId: summary.id,
+            savingsGroupIdentity: savingsID,
+            assignedYear: 2026,
+            assignedMonth: 8
+        ))
+        try context.save()
+
+        let now = try #require(Calendar.current.date(
+            from: DateComponents(year: 2026, month: 9, day: 5, hour: 12)
+        ))
+        let actor = SpendingHistoryBuildActor(modelContainer: modelContainer)
+        let model = try await actor.build(now: now, monthsBack: 2)
+        let august = try #require(model.months.first {
+            BudgetMonth(containing: $0.month)
+                == BudgetMonth(year: 2026, month: 8)
+        })
+        let september = try #require(model.months.first {
+            BudgetMonth(containing: $0.month)
+                == BudgetMonth(year: 2026, month: 9)
+        })
+        let augustBudget = model.budgetSummary(for: august)
+        let savings = try #require(augustBudget.groups.first {
+            $0.groupIdentity == savingsID
+        })
+        let surplus = try #require(augustBudget.groups.first {
+            $0.groupIdentity == surplusID
+        })
+
+        #expect(savings.spent == Money.dollars(integer: 450))
+        #expect(savings.baseTarget == Money.dollars(integer: 1_000))
+        #expect(savings.additionalTarget == Money.dollars(integer: 200))
+        #expect(savings.target == Money.dollars(integer: 1_200))
+        #expect(surplus.target == Money.dollars(integer: 2_800))
+        #expect(
+            model.budgetSummary(for: september).groups.first {
+                $0.groupIdentity == savingsID
+            }?.spent == .zero
+        )
+    }
+
     @Test func confirmRejectsIncompatibleTypeCategoryCombination() throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let ctx = modelContainer.mainContext
@@ -3400,39 +3536,6 @@ struct AppContainerTests {
 
 @Suite("Dashboard presentation")
 struct DashboardPresentationTests {
-    @Test func budgetDisclosurePreservesOrderAndIncludesFeaturedGroup() {
-        let budgets = (1...5).map { index in
-            SpendingGroupBudgetSnapshot(
-                groupIdentity: "group-\(index)",
-                groupName: "Group \(index)",
-                spent: Money.dollars(integer: index * 10),
-                target: Money.dollars(100)
-            )
-        }
-
-        #expect(
-            SpendingBudgetVisibility.visibleBudgets(
-                budgets,
-                featuredGroupID: nil,
-                expanded: false
-            ).map(\.groupIdentity) == ["group-1", "group-2", "group-3"]
-        )
-        #expect(
-            SpendingBudgetVisibility.visibleBudgets(
-                budgets,
-                featuredGroupID: "group-5",
-                expanded: false
-            ).map(\.groupIdentity) == ["group-1", "group-2", "group-5"]
-        )
-        #expect(
-            SpendingBudgetVisibility.visibleBudgets(
-                budgets,
-                featuredGroupID: "group-5",
-                expanded: true
-            ).map(\.groupIdentity) == budgets.map(\.groupIdentity)
-        )
-    }
-
     @Test func projectionHeroUsesTheMostActionableMetric() {
         let available = Money.dollars(6_823)
         let gap = Money.dollars(700)

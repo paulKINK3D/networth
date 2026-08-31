@@ -541,6 +541,9 @@ public final class DurableCategoryGroup {
     /// At most one user group should be featured on the Spending screen.
     /// Stored on the durable group so the choice follows the user across devices.
     public var isBudgetFocus: Bool = false
+    /// At most one budgeted user group receives savings transfers and
+    /// one-month savings-choice reallocations.
+    public var isSavingsBucket: Bool = false
     public var createdAt: Date = Date.now
     public var updatedAt: Date = Date.now
 
@@ -553,6 +556,7 @@ public final class DurableCategoryGroup {
         reportingRole: CategoryReportingRole = .spending,
         hidden: Bool = false,
         isBudgetFocus: Bool = false,
+        isSavingsBucket: Bool = false,
         createdAt: Date = .now,
         updatedAt: Date = .now
     ) {
@@ -564,6 +568,7 @@ public final class DurableCategoryGroup {
         self.reportingRoleRaw = reportingRole.rawValue
         self.hidden = hidden
         self.isBudgetFocus = isBudgetFocus
+        self.isSavingsBucket = isSavingsBucket
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -618,6 +623,94 @@ public final class DurableSpendingGroupBudgetRule {
             enabled: enabled,
             updatedAt: updatedAt
         )
+    }
+}
+
+/// A one-month allocation moved from an ordinary budget group into the
+/// designated Savings group. This is user-authored private-CloudKit data and
+/// never creates or modifies a financial transaction. Every field has a
+/// default for additive CloudKit schema compatibility.
+@Model
+public final class DurableSavingsBudgetChoice {
+    public var id: UUID = UUID()
+    public var budgetYear: Int = 2000
+    public var budgetMonth: Int = 1
+    public var sourceGroupIdentity: String = ""
+    public var savingsGroupIdentity: String = ""
+    public var amountMilliunits: Int64 = 0
+    public var note: String = ""
+    public var occurredAt: Date = Date.now
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        budgetYear: Int = 2000,
+        budgetMonth: Int = 1,
+        sourceGroupIdentity: String = "",
+        savingsGroupIdentity: String = "",
+        amountMilliunits: Int64 = 0,
+        note: String = "",
+        occurredAt: Date = .now,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.budgetYear = budgetYear
+        self.budgetMonth = budgetMonth
+        self.sourceGroupIdentity = sourceGroupIdentity
+        self.savingsGroupIdentity = savingsGroupIdentity
+        self.amountMilliunits = amountMilliunits
+        self.note = note
+        self.occurredAt = occurredAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var coreChoice: SavingsBudgetChoice {
+        SavingsBudgetChoice(
+            id: id.uuidString,
+            month: BudgetMonth(year: budgetYear, month: budgetMonth),
+            sourceGroupIdentity: sourceGroupIdentity,
+            savingsGroupIdentity: savingsGroupIdentity,
+            amount: Money(milliunits: amountMilliunits),
+            note: note,
+            occurredAt: occurredAt,
+            updatedAt: updatedAt
+        )
+    }
+}
+
+/// Presentation-only month attribution for a posted savings transfer. The
+/// transaction keeps its real posted date everywhere else. Defaulted fields
+/// keep the additive private-CloudKit model safe for existing stores.
+@Model
+public final class DurableSavingsTransferAssignment {
+    public var id: UUID = UUID()
+    public var transactionId: String = ""
+    public var savingsGroupIdentity: String = ""
+    public var assignedYear: Int = 2000
+    public var assignedMonth: Int = 1
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        transactionId: String = "",
+        savingsGroupIdentity: String = "",
+        assignedYear: Int = 2000,
+        assignedMonth: Int = 1,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.transactionId = transactionId
+        self.savingsGroupIdentity = savingsGroupIdentity
+        self.assignedYear = assignedYear
+        self.assignedMonth = assignedMonth
+        self.updatedAt = updatedAt
+    }
+
+    public var assignedBudgetMonth: BudgetMonth {
+        BudgetMonth(year: assignedYear, month: assignedMonth)
     }
 }
 

@@ -197,12 +197,24 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-08-30** — One user-designated Spending budget may act as the Savings
+  bucket. It contains no ordinary categories, its base target continues to
+  repeat normally, and actual progress is
+  the net savings-account side of confirmed internal transfers; Goal reserve
+  accounts remain separate. A manually logged savings choice moves allocation
+  from another active budget (Surplus by default) into a visually separate
+  monthly Savings addition, so the total budget remains unchanged. Choices do
+  not create transactions or alter balances. A transfer posted in the next
+  month may be explicitly credited to the preceding Savings budget; this is a
+  private-CloudKit presentation assignment only and never changes its posted
+  date in account history, balances, Net Worth, or Projections. A matching
+  next-month transfer is suggested for confirmation rather than assigned
+  automatically.
 - **2026-08-30** — Spending and Projections use a glance-first dashboard
   hierarchy. Spending leads with the remaining or overspent budget amount and
   a 270-degree progress arc, keeps the separate funding comparison as Funded
-  versus Retained, and shows three budget groups while preserving user order and
-  an out-of-range featured
-  group, and keeps Trends plus Transactions in a compact action strip.
+  versus Retained, always shows every active budget group in user order, and
+  keeps Trends plus Transactions in a compact action strip.
   Projections leads with the most actionable amount (Available, Buffer gap,
   Transfer needed, or Projected balance), embeds a simplified scrub-capable
   cash curve, and shows the first three upcoming events as a visual timeline.

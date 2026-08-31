@@ -137,6 +137,15 @@ struct CanonicalDirectoryService {
             for group in scan.groups {
                 context.delete(group)
             }
+            for rule in scan.budgetRules {
+                context.delete(rule)
+            }
+            for choice in scan.savingsChoices {
+                context.delete(choice)
+            }
+            for assignment in scan.savingsTransferAssignments {
+                context.delete(assignment)
+            }
             guard context.safeSave(source: "canonicalGroups.delete") else {
                 throw Failure.saveFailed
             }
@@ -255,6 +264,9 @@ struct CanonicalDirectoryService {
     private struct GroupScan {
         let groups: [DurableCategoryGroup]
         let categories: [DurableCanonicalCategory]
+        let budgetRules: [DurableSpendingGroupBudgetRule]
+        let savingsChoices: [DurableSavingsBudgetChoice]
+        let savingsTransferAssignments: [DurableSavingsTransferAssignment]
         let impact: CanonicalGroupDeletionImpact
     }
 
@@ -271,10 +283,25 @@ struct CanonicalDirectoryService {
         let categories = try context.fetch(
             FetchDescriptor<DurableCanonicalCategory>()
         ).filter { $0.categoryGroupIdentity == groupIdentity }
+        let budgetRules = try context.fetch(
+            FetchDescriptor<DurableSpendingGroupBudgetRule>()
+        ).filter { $0.groupIdentity == groupIdentity }
+        let savingsChoices = try context.fetch(
+            FetchDescriptor<DurableSavingsBudgetChoice>()
+        ).filter {
+            $0.sourceGroupIdentity == groupIdentity
+                || $0.savingsGroupIdentity == groupIdentity
+        }
+        let savingsTransferAssignments = try context.fetch(
+            FetchDescriptor<DurableSavingsTransferAssignment>()
+        ).filter { $0.savingsGroupIdentity == groupIdentity }
 
         return GroupScan(
             groups: groups,
             categories: categories,
+            budgetRules: budgetRules,
+            savingsChoices: savingsChoices,
+            savingsTransferAssignments: savingsTransferAssignments,
             impact: CanonicalGroupDeletionImpact(
                 groupRecordCount: groups.count,
                 categoryCount: Set(categories.map(\.canonicalId)).count,

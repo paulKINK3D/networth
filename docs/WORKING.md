@@ -1,5 +1,36 @@
 # WORKING
 
+## Completed — Savings budget bucket (2026-08-30)
+
+- Feature implementation is complete and ready on `main` after merging the
+  `saving-bucket` branch.
+- A budgeted user group can be designated as the single Savings bucket from
+  Groups & Budgets. Its card keeps the compact budget-card layouts while
+  showing actual savings transfers beside a separate green extension for
+  additional savings choices. Every active budget card is always visible.
+- Savings choices are one-month private-CloudKit records. Each moves its amount
+  out of a selected active budget group (Surplus is the default) and into
+  Savings without changing the total budget or creating a financial
+  transaction. The source budget's progress bar shows the reallocation in a
+  lighter blue segment, and its detail includes a Savings Choices drill-down.
+  Entries support amount, note, date, edit, and swipe-to-delete.
+- Confirmed internal transfers contribute only from the savings-account side,
+  preventing paired checking/savings rows from double-counting. Active Goal
+  reserve accounts remain excluded. Savings transfers stay outside ordinary
+  Spending and Retained.
+- Savings detail reconciles transferred, monthly budget, additional choices,
+  and remaining to move. A matching transfer posted in the following month is
+  offered for explicit prior-month assignment. The assignment changes only the
+  Savings budget month; the posted date remains authoritative everywhere else.
+- `DurableSavingsBudgetChoice` and `DurableSavingsTransferAssignment` are
+  additive private-CloudKit models with defaulted fields. `isSavingsBucket` is
+  an additive default-false field on `DurableCategoryGroup`; no legacy cleanup
+  is required.
+- Validation: all 244 NetworthCore tests and the latest generic-device Debug
+  build pass. Generic-device Release and Debug app/test compilation also passed
+  after the schema work; the final follow-up changes were UI-only. Simulator
+  execution was not requested.
+
 ## Current handoff — daily dashboard visual refresh (2026-08-30)
 
 - Active branch: `feature/ux-ui-improvements`.

@@ -176,6 +176,102 @@ struct SpendingBudgetsTests {
         #expect(summary.remaining == Money.dollars(integer: 100))
     }
 
+    @Test("A savings choice reallocates one month without changing total budget")
+    func savingsChoiceReallocatesSelectedMonth() {
+        let rules = [
+            rule(id: "surplus", group: "surplus", year: 2026, month: 8,
+                 target: 3_000),
+            rule(id: "savings", group: "savings", year: 2026, month: 8,
+                 target: 1_000),
+        ]
+        let choice = SavingsBudgetChoice(
+            id: "takeout",
+            month: BudgetMonth(year: 2026, month: 8),
+            sourceGroupIdentity: "surplus",
+            savingsGroupIdentity: "savings",
+            amount: Money.dollars(integer: 200),
+            note: "Skipped takeout",
+            occurredAt: date(2026, 8, 20),
+            updatedAt: date(2026, 8, 20)
+        )
+        let august = resolver.summary(
+            for: BudgetMonth(year: 2026, month: 8),
+            groups: [
+                group(id: "surplus", name: "Surplus", spent: 2_000_000),
+                group(
+                    id: "savings", name: "Savings", spent: 750_000,
+                    role: .transfer
+                ),
+            ],
+            rules: rules,
+            savingsChoices: [choice]
+        )
+
+        #expect(august.target == Money.dollars(integer: 4_000))
+        #expect(
+            august.groups.first { $0.groupIdentity == "surplus" }?.target
+                == Money.dollars(integer: 2_800)
+        )
+        let savings = august.groups.first { $0.groupIdentity == "savings" }
+        #expect(savings?.baseTarget == Money.dollars(integer: 1_000))
+        #expect(savings?.additionalTarget == Money.dollars(integer: 200))
+        #expect(savings?.target == Money.dollars(integer: 1_200))
+        #expect(savings?.spent == Money.dollars(integer: 750))
+
+        let september = resolver.summary(
+            for: BudgetMonth(year: 2026, month: 9),
+            groups: [
+                group(id: "surplus", name: "Surplus", spent: 0),
+                group(id: "savings", name: "Savings", spent: 0),
+            ],
+            rules: rules,
+            savingsChoices: [choice]
+        )
+        #expect(
+            september.groups.first { $0.groupIdentity == "surplus" }?.target
+                == Money.dollars(integer: 3_000)
+        )
+        #expect(
+            september.groups.first { $0.groupIdentity == "savings" }?.target
+                == Money.dollars(integer: 1_000)
+        )
+    }
+
+    @Test("Savings choices use the source budget's unspent balance")
+    func savingsChoiceAvailabilityUsesRemainingBudget() {
+        let month = BudgetMonth(year: 2026, month: 8)
+        let source = SpendingGroupBudgetSnapshot(
+            groupIdentity: "surplus",
+            groupName: "Surplus",
+            spent: Money.dollars(integer: 2_665),
+            target: Money.dollars(integer: 2_940),
+            baseTarget: Money.dollars(integer: 3_000),
+            reallocatedOut: Money.dollars(integer: 60)
+        )
+        let choice = SavingsBudgetChoice(
+            id: "coffee",
+            month: month,
+            sourceGroupIdentity: "surplus",
+            savingsGroupIdentity: "savings",
+            amount: Money.dollars(integer: 60),
+            note: "Made coffee",
+            occurredAt: date(2026, 8, 20),
+            updatedAt: date(2026, 8, 20)
+        )
+
+        #expect(resolver.availableForSavingsChoice(
+            from: source,
+            month: month,
+            choices: [choice]
+        ) == Money.dollars(integer: 275))
+        #expect(resolver.availableForSavingsChoice(
+            from: source,
+            month: month,
+            choices: [choice],
+            excludingChoiceID: choice.id
+        ) == Money.dollars(integer: 335))
+    }
+
     @Test("Budget pace compares usage with elapsed calendar time")
     func currentMonthPaceBands() {
         let month = BudgetMonth(year: 2026, month: 8)

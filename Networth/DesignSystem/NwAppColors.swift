@@ -41,6 +41,10 @@ public enum NwAppColors {
         light: 0xD50C42,
         dark: 0xFF7399
     )
+    public static let budgetReallocated = adaptiveColor(
+        light: 0x6FA4D9,
+        dark: 0xA9CCF0
+    )
     public static let info = adaptiveColor(
         light: 0x4C8AEA,
         dark: 0x78A8FF

@@ -15,11 +15,17 @@ enum SpendingEntryPipeline {
         let groupByIdentity: [String: DurableCategoryGroup]
         let accountTypeByIdentity: [String: FinancialAccountType]
         let categoryByCanonicalID: [String: DurableCanonicalCategory]
+        let savingsGroup: (identity: String, name: String)?
+        let savingsTransferMonthByTransactionID: [String: BudgetMonth]
+        let excludedSavingsAccountIDs: Set<String>
 
         init(
             groups: [DurableCategoryGroup],
             categories: [DurableCanonicalCategory],
-            accounts: [CachedFinancialAccount]
+            accounts: [CachedFinancialAccount],
+            savingsGroup: (identity: String, name: String)? = nil,
+            savingsTransferMonthByTransactionID: [String: BudgetMonth] = [:],
+            excludedSavingsAccountIDs: Set<String> = []
         ) {
             groupByIdentity = Dictionary(
                 groups.sorted { $0.updatedAt > $1.updatedAt }
@@ -34,6 +40,10 @@ enum SpendingEntryPipeline {
                 categories.map { ($0.canonicalId, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
+            self.savingsGroup = savingsGroup
+            self.savingsTransferMonthByTransactionID =
+                savingsTransferMonthByTransactionID
+            self.excludedSavingsAccountIDs = excludedSavingsAccountIDs
         }
 
         func resolvedGroup(
@@ -85,9 +95,32 @@ enum SpendingEntryPipeline {
                 continue
             }
             if row.forecastTreatment == .internalTransfer {
-                // Moving money between owned accounts is not spending or
-                // savings activity. Goal funding comes from explicit reserve
-                // account selection and allocations, never transfer rows.
+                // Only the savings-account side contributes to the explicitly
+                // designated Savings budget. The checking side is omitted so
+                // one transfer cannot count twice, and goal reserve accounts
+                // retain their separate ledger semantics.
+                guard let savingsGroup = context.savingsGroup,
+                      context.accountTypeByIdentity[row.canonicalAccountId]
+                        == .savings,
+                      !context.excludedSavingsAccountIDs.contains(
+                        row.canonicalAccountId
+                      ),
+                      row.amountMilliunits != 0 else {
+                    continue
+                }
+                let date = context.savingsTransferMonthByTransactionID[row.id]?
+                    .startDate() ?? row.postedDate
+                entries.append(SpendingHistoryEntry(
+                    transactionId: row.id,
+                    date: date,
+                    amountMilliunits: row.amountMilliunits,
+                    treatment: .internalTransfer,
+                    reportingRole: .transfer,
+                    groupIdentity: savingsGroup.identity,
+                    groupName: savingsGroup.name,
+                    categoryKey: "networth:savings-transfers",
+                    categoryName: "Savings Transfers"
+                ))
                 continue
             }
             if row.forecastTreatment == .investmentContribution {

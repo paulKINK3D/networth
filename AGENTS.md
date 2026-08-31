@@ -184,6 +184,16 @@ cd PlaidWorker && npm test && npm run check
   Wada-family red, positive Retained is green, and negative Retained is red.
   Pace remains available in the tapped detail. Never extrapolate that
   comparison into a projected finish.
+- **Savings is a designated budget group, not ordinary spending.** Its
+  repeating target behaves like every other group target, it contains no
+  ordinary categories, and actual
+  progress comes only from the savings-account side of confirmed internal
+  transfers; transfers involving active Goal reserve accounts remain excluded.
+  A savings-choice entry reallocates the selected month only from another
+  budget group into Savings, preserving the total budget and never creating a
+  bank transaction. A posted savings transfer may be assigned to the preceding
+  budget month for presentation, but its real transaction date, balances, and
+  projection timing never change.
 
 ## Validation Checklist
 - App target builds.

@@ -34,6 +34,12 @@ public struct SpendingGroupBudgetSnapshot: Identifiable, Hashable, Sendable {
     public let groupIdentity: String
     public let groupName: String
     public let spent: Money
+    /// The repeating target before one-month savings reallocations.
+    public let baseTarget: Money
+    /// Amount moved into this group from another budget for this month only.
+    public let additionalTarget: Money
+    /// Amount moved out of this group for this month only.
+    public let reallocatedOut: Money
     public let target: Money
 
     public var id: String { groupIdentity }
@@ -48,12 +54,52 @@ public struct SpendingGroupBudgetSnapshot: Identifiable, Hashable, Sendable {
         groupIdentity: String,
         groupName: String,
         spent: Money,
-        target: Money
+        target: Money,
+        baseTarget: Money? = nil,
+        additionalTarget: Money = .zero,
+        reallocatedOut: Money = .zero
     ) {
         self.groupIdentity = groupIdentity
         self.groupName = groupName
         self.spent = spent
+        self.baseTarget = baseTarget ?? target
+        self.additionalTarget = additionalTarget
+        self.reallocatedOut = reallocatedOut
         self.target = target
+    }
+}
+
+/// One user-recorded decision to move this month's budget from an ordinary
+/// group into the designated Savings group. It changes allocation only; no
+/// bank balance or transaction is created.
+public struct SavingsBudgetChoice: Identifiable, Hashable, Sendable {
+    public let id: String
+    public let month: BudgetMonth
+    public let sourceGroupIdentity: String
+    public let savingsGroupIdentity: String
+    public let amount: Money
+    public let note: String
+    public let occurredAt: Date
+    public let updatedAt: Date
+
+    public init(
+        id: String,
+        month: BudgetMonth,
+        sourceGroupIdentity: String,
+        savingsGroupIdentity: String,
+        amount: Money,
+        note: String,
+        occurredAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.month = month
+        self.sourceGroupIdentity = sourceGroupIdentity
+        self.savingsGroupIdentity = savingsGroupIdentity
+        self.amount = amount
+        self.note = note
+        self.occurredAt = occurredAt
+        self.updatedAt = updatedAt
     }
 }
 
@@ -137,8 +183,19 @@ public struct SpendingGroupBudgetResolver: Sendable {
         for month: BudgetMonth,
         groups: [SpendingHistoryGroupTotal],
         rules: [SpendingGroupBudgetRule],
+        savingsChoices: [SavingsBudgetChoice] = [],
         orderIndex: (String) -> Int = { _ in Int.max }
     ) -> SpendingBudgetSummary {
+        let choices = savingsChoices.filter {
+            $0.month == month && $0.amount > .zero
+        }
+        let incomingByGroup = Dictionary(grouping: choices) {
+            $0.savingsGroupIdentity
+        }.mapValues { $0.map(\.amount).sum() }
+        let outgoingByGroup = Dictionary(grouping: choices) {
+            $0.sourceGroupIdentity
+        }.mapValues { $0.map(\.amount).sum() }
+
         let snapshots: [SpendingGroupBudgetSnapshot] = groups.compactMap { group in
             guard let rule = activeRule(
                 for: group.id,
@@ -150,11 +207,19 @@ public struct SpendingGroupBudgetResolver: Sendable {
             // A net refund restores the full monthly target. It never creates
             // extra budget or offsets another group's spending.
             let spent = Money(milliunits: max(0, group.spentMilliunits))
+            let additional = incomingByGroup[group.id] ?? .zero
+            let reallocatedOut = outgoingByGroup[group.id] ?? .zero
+            let effectiveTarget = rule.target + additional - reallocatedOut
             return SpendingGroupBudgetSnapshot(
                 groupIdentity: group.id,
                 groupName: group.name,
                 spent: spent,
-                target: rule.target
+                target: Money(
+                    milliunits: max(0, effectiveTarget.milliunits)
+                ),
+                baseTarget: rule.target,
+                additionalTarget: additional,
+                reallocatedOut: reallocatedOut
             )
         }
         .sorted {
@@ -165,6 +230,24 @@ public struct SpendingGroupBudgetResolver: Sendable {
                 == .orderedAscending
         }
         return SpendingBudgetSummary(groups: snapshots)
+    }
+
+    /// The amount that can still be reallocated from an ordinary budget into
+    /// Savings after this month's actual spending and existing choices.
+    public func availableForSavingsChoice(
+        from source: SpendingGroupBudgetSnapshot,
+        month: BudgetMonth,
+        choices: [SavingsBudgetChoice],
+        excludingChoiceID: String? = nil
+    ) -> Money {
+        let alreadyMoved = choices.filter {
+            $0.month == month
+                && $0.sourceGroupIdentity == source.groupIdentity
+                && $0.id != excludingChoiceID
+                && $0.amount > .zero
+        }.map(\.amount).sum()
+        let available = source.baseTarget - source.spent - alreadyMoved
+        return available > .zero ? available : .zero
     }
 
     private func rulePrecedes(

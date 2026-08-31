@@ -42,6 +42,54 @@ struct SpendingEntryPipelineTests {
         #expect(!entries.contains { $0.reportingRole == .transfer })
     }
 
+    @Test func designatedSavingsBucketUsesOnlySavingsAccountSide() {
+        let accounts = [
+            account(id: "checking", type: .checking),
+            account(id: "savings", type: .savings),
+            account(id: "goal-savings", type: .savings)
+        ]
+        let assignedMonth = BudgetMonth(year: 2026, month: 8)
+        let context = SpendingEntryPipeline.Context(
+            groups: [],
+            categories: [],
+            accounts: accounts,
+            savingsGroup: ("savings-group", "Savings"),
+            savingsTransferMonthByTransactionID: [
+                "savings-transfer": assignedMonth
+            ],
+            excludedSavingsAccountIDs: ["goal-savings"]
+        )
+        let rows = [
+            transaction(
+                id: "checking-transfer",
+                accountID: "checking",
+                treatment: .internalTransfer
+            ),
+            transaction(
+                id: "savings-transfer",
+                accountID: "savings",
+                treatment: .internalTransfer
+            ),
+            transaction(
+                id: "goal-transfer",
+                accountID: "goal-savings",
+                treatment: .internalTransfer
+            ),
+        ]
+
+        let entries = SpendingEntryPipeline.assembleEntries(
+            rows: rows,
+            context: context
+        )
+
+        #expect(entries.map(\.transactionId) == ["savings-transfer"])
+        #expect(entries.first?.reportingRole == .transfer)
+        #expect(entries.first?.groupIdentity == "savings-group")
+        #expect(
+            BudgetMonth(containing: entries.first!.date) == assignedMonth
+        )
+    }
+
     @Test func investmentContributionsUseOnlyTheCashAccountSide() {
         let context = SpendingEntryPipeline.Context(
             groups: [],
