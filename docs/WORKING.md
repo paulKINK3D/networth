@@ -1,5 +1,25 @@
 # WORKING
 
+## Current handoff — Spending account cards (2026-08-30)
+
+- Active branch: `favorite-accounts`.
+- Eligible checking, savings, cash, and credit-card detail screens include an
+  explicit `Show on Spending` toggle. No favorite symbol is used.
+- Spending shows up to four selected accounts in a compact two-column section
+  below Funded/Retained. Cash-like cards prefer available balance and otherwise
+  show current balance; credit cards show amount owed. Tapping opens the
+  existing account detail.
+- `DurableSpendingAccountPin` stores only the canonical account ID, visibility,
+  presentation order, and update time in private CloudKit. Balance data remains
+  in the disposable local Plaid cache. Duplicate rows resolve newest-first and
+  unavailable accounts do not consume the four-card limit.
+- Validation: generic-device Debug and Release builds pass, and generic-device
+  Debug build-for-testing compiles the account-pin persistence tests. Simulator
+  execution was not requested.
+- Future follow-up: account management is fragmented across Net Worth,
+  Settings, Projections, Goals, Investments, and individual account details.
+  `docs/PLAN.md` now records consolidation as explicit future work.
+
 ## Completed — Savings budget bucket (2026-08-30)
 
 - Feature implementation is complete and ready on `main` after merging the

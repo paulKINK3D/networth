@@ -1052,6 +1052,102 @@ public final class DurableAccountNickname {
     }
 }
 
+/// User decision to keep one cash-flow account visible on Spending. This is a
+/// durable presentation preference; account balances remain disposable Plaid
+/// cache data and are never copied into CloudKit.
+@Model
+public final class DurableSpendingAccountPin {
+    public var id: UUID = UUID()
+    public var canonicalAccountId: String = ""
+    public var isVisible: Bool = false
+    public var displayOrder: Int = 0
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        canonicalAccountId: String = "",
+        isVisible: Bool = false,
+        displayOrder: Int = 0,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.canonicalAccountId = canonicalAccountId
+        self.isVisible = isVisible
+        self.displayOrder = displayOrder
+        self.updatedAt = updatedAt
+    }
+}
+
+struct SpendingAccountPinResolver {
+    static let maximumVisibleAccounts = 4
+
+    private let latestByAccountID: [String: DurableSpendingAccountPin]
+
+    init(rows: [DurableSpendingAccountPin]) {
+        let validRows = rows.filter {
+            !$0.canonicalAccountId.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty
+        }
+        latestByAccountID = Dictionary(grouping: validRows) {
+            $0.canonicalAccountId.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+        }.compactMapValues { matches in
+            matches.max {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt < $1.updatedAt
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+        }
+    }
+
+    func isVisible(_ canonicalAccountID: String) -> Bool {
+        latestByAccountID[canonicalAccountID]?.isVisible == true
+    }
+
+    func visibleAccountIDs(
+        availableAccountIDs: Set<String>
+    ) -> [String] {
+        latestByAccountID.values
+            .filter {
+                $0.isVisible
+                    && availableAccountIDs.contains($0.canonicalAccountId)
+            }
+            .sorted {
+                if $0.displayOrder != $1.displayOrder {
+                    return $0.displayOrder < $1.displayOrder
+                }
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt < $1.updatedAt
+                }
+                return $0.canonicalAccountId
+                    .localizedCaseInsensitiveCompare($1.canonicalAccountId)
+                    == .orderedAscending
+            }
+            .prefix(Self.maximumVisibleAccounts)
+            .map(\.canonicalAccountId)
+    }
+
+    var nextDisplayOrder: Int {
+        (latestByAccountID.values.filter(\.isVisible)
+            .map(\.displayOrder).max() ?? -1) + 1
+    }
+}
+
+enum SpendingAccountPinEligibility {
+    static func canShow(_ account: CachedFinancialAccount) -> Bool {
+        guard !account.deleted else { return false }
+        switch account.type {
+        case .checking, .savings, .creditCard, .cash:
+            return true
+        case .investment, .loan, .other:
+            return false
+        }
+    }
+}
+
 /// Read-only lookup used by views and services so the durable nickname policy
 /// is identical everywhere. Duplicate legacy rows resolve deterministically
 /// to the most recently updated non-empty value.

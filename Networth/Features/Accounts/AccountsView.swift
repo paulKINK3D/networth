@@ -987,9 +987,12 @@ struct FinancialAccountDetailView: View {
     let account: CachedFinancialAccount
     @Query private var recentTransactions: [CachedFinancialTransaction]
     @Query private var accountNicknames: [DurableAccountNickname]
+    @Query private var spendingAccountPins: [DurableSpendingAccountPin]
+    @Query private var availableFinancialAccounts: [CachedFinancialAccount]
     @State private var showingRename = false
     @State private var activityTotals: AccountActivityTotals?
     @State private var activityLoadFailed = false
+    @State private var spendingVisibilityError: String?
 
     init(account: CachedFinancialAccount) {
         self.account = account
@@ -1047,6 +1050,19 @@ struct FinancialAccountDetailView: View {
                         Text("Updated \(account.updatedAt.formatted(.relative(presentation: .named)))")
                             .font(NwTypography.caption)
                             .foregroundStyle(.secondary)
+                        if SpendingAccountPinEligibility.canShow(account) {
+                            Divider()
+                            Toggle(
+                                "Show on Spending",
+                                isOn: Binding(
+                                    get: { isShownOnSpending },
+                                    set: { proposedValue in
+                                        setShownOnSpending(proposedValue)
+                                    }
+                                )
+                            )
+                            .tint(NwAppColors.primary)
+                        }
                     }
                 }
 
@@ -1157,6 +1173,19 @@ struct FinancialAccountDetailView: View {
                 currentName: displayName
             )
         }
+        .alert(
+            "Spending Accounts",
+            isPresented: Binding(
+                get: { spendingVisibilityError != nil },
+                set: { if !$0 { spendingVisibilityError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {
+                spendingVisibilityError = nil
+            }
+        } message: {
+            Text(spendingVisibilityError ?? "Please try again.")
+        }
         .task(id: account.canonicalAccountId) {
             await loadActivityTotals()
         }
@@ -1165,6 +1194,63 @@ struct FinancialAccountDetailView: View {
     private var displayName: String {
         AccountDisplayNameResolver(nicknames: accountNicknames)
             .name(for: account)
+    }
+
+    private var pinResolver: SpendingAccountPinResolver {
+        SpendingAccountPinResolver(rows: spendingAccountPins)
+    }
+
+    private var isShownOnSpending: Bool {
+        pinResolver.isVisible(account.canonicalAccountId)
+    }
+
+    private var eligibleAccountIDs: Set<String> {
+        Set(availableFinancialAccounts.filter {
+            SpendingAccountPinEligibility.canShow($0)
+        }.map(\.canonicalAccountId))
+    }
+
+    private func setShownOnSpending(_ isVisible: Bool) {
+        guard isVisible != isShownOnSpending else { return }
+        let resolver = pinResolver
+        if isVisible,
+           resolver.visibleAccountIDs(
+            availableAccountIDs: eligibleAccountIDs
+           ).count >= SpendingAccountPinResolver.maximumVisibleAccounts {
+            spendingVisibilityError =
+                "You can show up to four accounts on Spending."
+            return
+        }
+
+        let context = container.modelContainer.mainContext
+        let matches = spendingAccountPins.filter {
+            $0.canonicalAccountId == account.canonicalAccountId
+        }
+        let now = Date.now
+        let order = isVisible
+            ? resolver.nextDisplayOrder
+            : matches.map(\.displayOrder).min() ?? 0
+        if matches.isEmpty {
+            context.insert(DurableSpendingAccountPin(
+                canonicalAccountId: account.canonicalAccountId,
+                isVisible: isVisible,
+                displayOrder: order,
+                updatedAt: now
+            ))
+        } else {
+            for row in matches {
+                row.isVisible = isVisible
+                row.displayOrder = order
+                row.updatedAt = now
+            }
+        }
+
+        guard context.safeSave(source: "account.spendingVisibility.save") else {
+            context.rollback()
+            spendingVisibilityError =
+                "This account’s Spending visibility wasn’t saved."
+            return
+        }
     }
 
     private func loadActivityTotals() async {

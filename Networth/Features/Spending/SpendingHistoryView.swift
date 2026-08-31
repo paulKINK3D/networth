@@ -171,6 +171,10 @@ private struct SpendingTrendChart: View {
 /// counts; the current month is month-to-date, completed months are final.
 struct SpendingHistoryView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query(sort: \CachedFinancialAccount.name)
+    private var financialAccounts: [CachedFinancialAccount]
+    @Query private var spendingAccountPins: [DurableSpendingAccountPin]
+    @Query private var accountNicknames: [DurableAccountNickname]
 
     private struct DisplayedPeriod {
         let months: [SpendingHistoryMonth]
@@ -201,6 +205,7 @@ struct SpendingHistoryView: View {
                     if let model {
                         if let period = displayedPeriod(model) {
                             monthOverviewCard(period, model: model)
+                            spendingAccountsSection
                             budgetBreakdown(period, model: model)
                         }
                         spendingDetailLinks(model)
@@ -676,6 +681,111 @@ struct SpendingHistoryView: View {
         if amount.isNegative { return NwAppColors.budgetOver }
         if amount > .zero { return NwAppColors.favorableText }
         return NwAppColors.textSecondary
+    }
+
+    @ViewBuilder
+    private var spendingAccountsSection: some View {
+        let accounts = visibleSpendingAccounts
+        if !accounts.isEmpty {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                Text("Accounts")
+                    .font(NwTypography.caption)
+                    .foregroundStyle(NwAppColors.textSecondary)
+                    .textCase(.uppercase)
+                    .padding(.horizontal, NwSpacing.xs)
+
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: NwSpacing.sm),
+                        GridItem(.flexible(), spacing: NwSpacing.sm)
+                    ],
+                    spacing: NwSpacing.sm
+                ) {
+                    ForEach(accounts) { account in
+                        NavigationLink {
+                            FinancialAccountDetailView(account: account)
+                        } label: {
+                            spendingAccountCard(account)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private func spendingAccountCard(
+        _ account: CachedFinancialAccount
+    ) -> some View {
+        let metric = spendingAccountMetric(account)
+        return NwCard(style: .primary, padding: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                Text(accountNameResolver.name(for: account))
+                    .font(NwTypography.footnoteEm)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                    .lineLimit(1)
+
+                Text(CurrencyFormatter.currency(
+                    metric.amount,
+                    showCents: false
+                ))
+                .font(NwTypography.headline)
+                .foregroundStyle(metric.color)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+            }
+            .frame(minHeight: 60, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "\(accountNameResolver.name(for: account)), "
+                + CurrencyFormatter.currency(metric.amount)
+        )
+        .accessibilityHint("Opens account details")
+    }
+
+    private var visibleSpendingAccounts: [CachedFinancialAccount] {
+        let eligible = financialAccounts.filter {
+            SpendingAccountPinEligibility.canShow($0)
+        }
+        let byID = Dictionary(
+            uniqueKeysWithValues: eligible.map {
+                ($0.canonicalAccountId, $0)
+            }
+        )
+        return SpendingAccountPinResolver(rows: spendingAccountPins)
+            .visibleAccountIDs(availableAccountIDs: Set(byID.keys))
+            .compactMap { byID[$0] }
+    }
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
+    }
+
+    private func spendingAccountMetric(
+        _ account: CachedFinancialAccount
+    ) -> (amount: Money, color: Color) {
+        if account.type == .creditCard {
+            return (
+                account.balance.absolute,
+                NwAppColors.liability
+            )
+        }
+        if let available = account.availableBalanceMilliunits {
+            let amount = Money(milliunits: available)
+            return (
+                amount,
+                amount.isNegative
+                    ? NwAppColors.liability : NwAppColors.primary
+            )
+        }
+        return (
+            account.balance,
+            account.balance.isNegative
+                ? NwAppColors.liability : NwAppColors.primary
+        )
     }
 
     private func moveDisplayedMonth(

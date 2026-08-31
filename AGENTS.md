@@ -110,6 +110,12 @@ cd PlaidWorker && npm test && npm run check
   account ID in the private CloudKit store; never overwrite the disposable
   provider cache name. User-facing account labels resolve the nickname first,
   while detail and reset flows preserve the imported name.
+- **Spending account pins are durable preferences, not balance records.** Store
+  only the canonical account ID, visibility decision, and display order in the
+  private CloudKit store; current and available balances remain in the local
+  Plaid cache. Spending may show at most four eligible cash or credit accounts.
+  Use the explicit `Show on Spending` toggle rather than a star or other
+  ambiguous favorite symbol.
 - **IBR history overrides are presentation-only.** With no override, linked-loan history begins on the earliest cached Plaid transaction date. A user-selected replacement date stays in local preferences. Before IBR's first dated balance, estimate backward from the earliest snapshot using $0 payments and IBR's shared weighted rate as simple daily interest on principal. Never persist the estimated balances or infer capitalization events.
 
 ## UX And Design Consistency Requirements

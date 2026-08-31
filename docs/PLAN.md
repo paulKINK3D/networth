@@ -196,7 +196,21 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
+## Future Work
+- **Consolidate account management.** Account controls are currently scattered
+  across Net Worth drill-downs, Settings → Accounts & Sync, Projection
+  settings, Goal reserve setup, investment review, and per-account Spending
+  visibility. Design one clear management entry point while preserving the
+  focused account-detail screens and the fixed four-tab structure.
+
 ## Key Decisions Log
+- **2026-08-30** — Up to four checking, savings, cash, or credit-card accounts
+  may be explicitly shown on Spending. Selection uses a text-labeled account
+  detail toggle rather than a favorite symbol and persists only canonical
+  account IDs plus presentation order in private CloudKit. Current and
+  available balances remain disposable Plaid cache data. Spending presents the
+  selected accounts as compact two-column cards: cash-like accounts prefer
+  available balance, while credit cards show amount owed.
 - **2026-08-30** — One user-designated Spending budget may act as the Savings
   bucket. It contains no ordinary categories, its base target continues to
   repeat normally, and actual progress is

@@ -276,6 +276,54 @@ struct AppContainerTests {
         #expect(providerAccount.name == "Imported Name")
     }
 
+    @Test func spendingAccountPinsResolveNewestRowsInDisplayOrder() {
+        let rows = (1...5).map { index in
+            DurableSpendingAccountPin(
+                canonicalAccountId: "account-\(index)",
+                isVisible: true,
+                displayOrder: index,
+                updatedAt: Date(timeIntervalSince1970: Double(index))
+            )
+        }
+        let newestFirstAccount = DurableSpendingAccountPin(
+            canonicalAccountId: "account-1",
+            isVisible: false,
+            displayOrder: 1,
+            updatedAt: Date(timeIntervalSince1970: 10)
+        )
+        let resolver = SpendingAccountPinResolver(
+            rows: rows + [newestFirstAccount]
+        )
+
+        #expect(!resolver.isVisible("account-1"))
+        #expect(resolver.visibleAccountIDs(
+            availableAccountIDs: Set((1...5).map { "account-\($0)" })
+        ) == ["account-2", "account-3", "account-4", "account-5"])
+        #expect(
+            SpendingAccountPinResolver.maximumVisibleAccounts == 4
+        )
+    }
+
+    @Test func spendingAccountPinPersistsInDurableSchema() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        context.insert(DurableSpendingAccountPin(
+            canonicalAccountId: "checking",
+            isVisible: true,
+            displayOrder: 2
+        ))
+        try context.save()
+
+        let saved = try #require(context.fetch(
+            FetchDescriptor<DurableSpendingAccountPin>()
+        ).first)
+        #expect(saved.canonicalAccountId == "checking")
+        #expect(saved.isVisible)
+        #expect(saved.displayOrder == 2)
+    }
+
     @Test func accountWarningUsesTheProjectedLowPointAmountAndDate() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
