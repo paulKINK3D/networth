@@ -626,6 +626,51 @@ public final class DurableSpendingGroupBudgetRule {
     }
 }
 
+/// Effective-dated selection of the one Spending group that receives the
+/// signed remainder after every other monthly target is assigned. Defaults
+/// keep this additive model compatible with existing private CloudKit stores.
+@Model
+public final class DurableSpendingRemainderRule {
+    public var id: UUID = UUID()
+    public var groupIdentity: String = ""
+    public var effectiveYear: Int = 2000
+    public var effectiveMonth: Int = 1
+    public var enabled: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        groupIdentity: String = "",
+        effectiveYear: Int = 2000,
+        effectiveMonth: Int = 1,
+        enabled: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.groupIdentity = groupIdentity
+        self.effectiveYear = effectiveYear
+        self.effectiveMonth = effectiveMonth
+        self.enabled = enabled
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var coreRule: SpendingRemainderRule {
+        SpendingRemainderRule(
+            id: id.uuidString,
+            groupIdentity: groupIdentity,
+            effectiveMonth: BudgetMonth(
+                year: effectiveYear,
+                month: effectiveMonth
+            ),
+            enabled: enabled,
+            updatedAt: updatedAt
+        )
+    }
+}
+
 /// A one-month allocation moved from an ordinary budget group into the
 /// designated Savings group. This is user-authored private-CloudKit data and
 /// never creates or modifies a financial transaction. Every field has a
@@ -711,6 +756,196 @@ public final class DurableSavingsTransferAssignment {
 
     public var assignedBudgetMonth: BudgetMonth {
         BudgetMonth(year: assignedYear, month: assignedMonth)
+    }
+}
+
+/// A carried Spending reserve for an irregular future expense. These records
+/// intentionally do not reuse the retired pre-goals sinking-fund schema.
+/// Every property has a default so the model remains additive and CloudKit-
+/// compatible for existing private stores.
+@Model
+public final class DurableSpendingSinkingFund {
+    public var id: UUID = UUID()
+    public var name: String = ""
+    public var modeRaw: String = SpendingSinkingFundMode.ongoingReserve.rawValue
+    public var targetMilliunits: Int64 = 0
+    public var targetDate: Date? = nil
+    /// Zero means no manual plan; a target with a date is calculated.
+    public var plannedMonthlyMilliunits: Int64 = 0
+    public var openingBalanceMilliunits: Int64 = 0
+    public var startYear: Int = 2000
+    public var startMonth: Int = 1
+    public var archived: Bool = false
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        name: String = "",
+        mode: SpendingSinkingFundMode = .ongoingReserve,
+        targetMilliunits: Int64 = 0,
+        targetDate: Date? = nil,
+        plannedMonthlyMilliunits: Int64 = 0,
+        openingBalanceMilliunits: Int64 = 0,
+        startYear: Int = 2000,
+        startMonth: Int = 1,
+        archived: Bool = false,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.name = name
+        self.modeRaw = mode.rawValue
+        self.targetMilliunits = targetMilliunits
+        self.targetDate = targetDate
+        self.plannedMonthlyMilliunits = plannedMonthlyMilliunits
+        self.openingBalanceMilliunits = openingBalanceMilliunits
+        self.startYear = startYear
+        self.startMonth = startMonth
+        self.archived = archived
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var mode: SpendingSinkingFundMode {
+        get {
+            SpendingSinkingFundMode(rawValue: modeRaw) ?? .ongoingReserve
+        }
+        set { modeRaw = newValue.rawValue }
+    }
+
+    public var coreFund: SpendingSinkingFund {
+        SpendingSinkingFund(
+            id: id.uuidString,
+            name: name,
+            mode: mode,
+            target: Money(milliunits: targetMilliunits),
+            targetDate: targetDate,
+            plannedMonthly: Money(milliunits: plannedMonthlyMilliunits),
+            openingBalance: Money(milliunits: openingBalanceMilliunits),
+            startMonth: BudgetMonth(year: startYear, month: startMonth),
+            archived: archived
+        )
+    }
+}
+
+public enum SpendingReserveAssignmentOrigin: String, Codable, Sendable {
+    case explicit
+    case legacyAutomatic
+}
+
+/// One durable, explicit assignment into a Spending reserve. Multiple rows may
+/// share a fund and month; CloudKit copies of the same logical row resolve by
+/// `id` and latest update. The declaration default intentionally marks rows
+/// produced by the pre-release automatic trial as legacy; new initializers
+/// write `explicit`.
+@Model
+public final class DurableSpendingSinkingFundContribution {
+    public var id: UUID = UUID()
+    public var fundId: UUID = UUID()
+    public var budgetYear: Int = 2000
+    public var budgetMonth: Int = 1
+    public var sourceGroupIdentity: String = ""
+    public var amountMilliunits: Int64 = 0
+    public var active: Bool = true
+    public var originRaw: String =
+        SpendingReserveAssignmentOrigin.legacyAutomatic.rawValue
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        fundId: UUID = UUID(),
+        budgetYear: Int = 2000,
+        budgetMonth: Int = 1,
+        sourceGroupIdentity: String = "",
+        amountMilliunits: Int64 = 0,
+        active: Bool = true,
+        origin: SpendingReserveAssignmentOrigin = .explicit,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.fundId = fundId
+        self.budgetYear = budgetYear
+        self.budgetMonth = budgetMonth
+        self.sourceGroupIdentity = sourceGroupIdentity
+        self.amountMilliunits = amountMilliunits
+        self.active = active
+        self.originRaw = origin.rawValue
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var origin: SpendingReserveAssignmentOrigin {
+        get {
+            SpendingReserveAssignmentOrigin(rawValue: originRaw)
+                ?? .legacyAutomatic
+        }
+        set { originRaw = newValue.rawValue }
+    }
+
+    public var coreContribution: SpendingSinkingFundContribution {
+        SpendingSinkingFundContribution(
+            id: id.uuidString,
+            fundID: fundId.uuidString,
+            month: BudgetMonth(year: budgetYear, month: budgetMonth),
+            sourceGroupIdentity: sourceGroupIdentity,
+            amount: Money(milliunits: amountMilliunits),
+            active: active && origin == .explicit,
+            updatedAt: updatedAt
+        )
+    }
+}
+
+/// The user's explicit decision to use a reserve for one imported
+/// transaction or split line. Inactive records preserve reversible intent
+/// across CloudKit merges without rewriting the imported transaction.
+@Model
+public final class DurableSpendingSinkingFundExpense {
+    public var id: UUID = UUID()
+    public var fundId: UUID = UUID()
+    public var transactionId: String = ""
+    public var subtransactionId: String? = nil
+    public var transactionDate: Date = Date.now
+    public var amountMilliunits: Int64 = 0
+    public var active: Bool = true
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        fundId: UUID = UUID(),
+        transactionId: String = "",
+        subtransactionId: String? = nil,
+        transactionDate: Date = .now,
+        amountMilliunits: Int64 = 0,
+        active: Bool = true,
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.fundId = fundId
+        self.transactionId = transactionId
+        self.subtransactionId = subtransactionId
+        self.transactionDate = transactionDate
+        self.amountMilliunits = amountMilliunits
+        self.active = active
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var coreExpense: SpendingSinkingFundExpense {
+        SpendingSinkingFundExpense(
+            id: id.uuidString,
+            fundID: fundId.uuidString,
+            transactionID: transactionId,
+            subtransactionID: subtransactionId,
+            date: transactionDate,
+            amount: Money(milliunits: amountMilliunits),
+            active: active,
+            updatedAt: updatedAt
+        )
     }
 }
 

@@ -1,5 +1,74 @@
 # WORKING
 
+## Current handoff — Spending Reserves (2026-09-02)
+
+- Active branch: `feature/sinking-funds`; the current implementation is ready
+  for handoff.
+- The user-facing term is Reserves. A reserve requires only a name; target,
+  due date, monthly plan, and opening balance are optional. A target plus date
+  calculates a suggested monthly plan, and a manual plan may replace it.
+- Plans never move money. The user explicitly assigns what is affordable each
+  month. A reserve can receive multiple assignments in the same month, each
+  with its own source budget. Every entry is independently editable or
+  removable and is capped by that source's currently unspent amount. Source
+  budget progress includes the assignments as a lighter-blue reallocation
+  segment.
+- One budgeted Spending group may be designated as the automatic remainder.
+  The choice is effective-dated from the current month so historical budgets
+  remain stable. Its target is confirmed funding minus every other repeating
+  target, and it remains signed: a negative remainder exposes reliance on
+  prior checking cash or a real savings transfer rather than hiding it.
+- The main Spending page shows one aggregate Reserves card rather than every
+  individual reserve. It reports the total carried balance and shows this
+  month's assigned amount against the optional combined plan in a matching
+  progress bar. With no plan, the track remains neutral and empty.
+- Reserve details provide the always-visible assignment action, optional plan
+  details, purchase selection, and activity. Tapping an assignment edits that
+  entry; swiping removes only that entry and returns its money to its source.
+- A budget group's detail shows its Reserve assignments as a separate total
+  and drill-down list alongside Savings Choices; assignments do not pretend to
+  belong to an ordinary spending category.
+- A recent imported purchase or individual split line moves to a reserve only
+  after explicit confirmation. The decision is reversible and does not alter
+  the imported transaction, posted date, account balance, Retained cash-flow
+  total, or Projections. It changes only the regular-budget attribution and
+  the carried reserve balance.
+- Confirmed on device for whole expenses: an outgoing Expense keeps its
+  ordinary category and adds a separate `Source` choice. Monthly
+  budget is the default; an active Reserve or Goal may be selected explicitly.
+  Split review now applies the same choice independently to every ordinary
+  outgoing line and awaits device review. A Reserve assignment already reduces
+  its selected source budget and Retained in the assignment month. The later
+  funded purchase drains only the selected earmark, remains visible in
+  transaction and Reserve/Goal activity, and stays outside monthly budgets and
+  Retained. Changing a whole transaction or split line back to Monthly budget
+  deactivates its Reserve overlay. The funding strip derives Retained from the
+  reconciled remaining budget balances so the assignment is counted exactly
+  once. The flow reuses existing durable decisions and Reserve overlays and
+  adds no schema.
+- New reserve, remainder-rule, monthly-assignment, and purchase-assignment
+  records are additive
+  private-CloudKit models with defaulted fields. They intentionally do not
+  reuse the retired pre-goals sinking-fund records. The additive assignment
+  origin field defaults missing trial rows to legacy automatic, so those rows
+  are ignored until the user makes an explicit assignment.
+- Validation: 253 NetworthCore tests pass. Fresh generic-device Debug app,
+  Debug build-for-testing, and Release builds pass. App tests compile but
+  simulator tests were not requested.
+
+### Leftover Reserve work
+
+- Verify one saved mixed split on the physical device: one Monthly budget line
+  and one Reserve or Goal line. Confirm the earmark falls only by its funded
+  line and reopening the transaction preserves each Source selection.
+- Reserve assignments currently apply to the current calendar month. Adding or
+  editing an explicit assignment for a selected past month remains future work.
+- The two-card section containing Savings and Reserves still uses the heading
+  `Setting Aside`. Choose and apply the previously requested one-word heading
+  before treating the Spending-page terminology as final.
+- Consolidating scattered account management remains a separate planned task
+  under `docs/PLAN.md`; it is not part of the Reserve implementation.
+
 ## Current handoff — Spending account cards (2026-08-30)
 
 - Active branch: `favorite-accounts`.
@@ -63,9 +132,16 @@
   blue progress while under budget and red progress only when overspent. They
   show three by default, preserve user order, and keep the featured group
   visible. Positive Retained is green; negative Retained is red.
-- Compact full-width rows and half-width cards intentionally coexist on the
-  Spending screen for on-device comparison. Both open the same details and
-  neither layout is selected for removal yet.
+- Spending budgets now use only the compact two-column card grid. The former
+  full-width comparison rows and temporary comparison label are removed; each
+  card still opens the same detail flow. Monthly spending groups sit under
+  Budgets, while Savings and Reserves sit under Setting Aside so their
+  different number meanings are not presented as equivalent metrics.
+- Regular Budget cards pair their remaining-dollar number with a slim vertical
+  draining column: dark blue remaining value is anchored at the bottom and
+  falls as spending occurs, while lighter blue preserves visibility for money
+  reassigned to Savings or Reserves. Setting Aside cards retain horizontal
+  accumulation bars.
 - Status meaning does not rely on emojis or ambiguous symbols. The overview
   uses spatial progress plus familiar blue, green, and red semantics; detailed
   pace remains available after opening a budget.

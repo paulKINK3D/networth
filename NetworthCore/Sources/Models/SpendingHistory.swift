@@ -192,14 +192,14 @@ public struct SpendingHistoryMonth: Sendable, Hashable, Identifiable {
         }
         return SpendingHistoryFundingDisplay(
             fundedHeadline: fundedHeadline,
-            ordinaryHeadline: spendingDisplay.ordinaryHeadline,
+            usedHeadline: spendingDisplay.ordinaryHeadline,
             remainingHeadline: fundedHeadline.map {
                 $0 - spendingDisplay.ordinaryHeadline
             }
         )
     }
 
-    private static func roundedWholeDollar(_ milliunits: Int64) -> Int64 {
+    static func roundedWholeDollar(_ milliunits: Int64) -> Int64 {
         let whole = milliunits / 1_000
         let remainder = milliunits % 1_000
         if remainder >= 500 { return (whole + 1) * 1_000 }
@@ -215,8 +215,18 @@ public struct SpendingHistoryWholeDollarDisplay: Sendable, Hashable {
 
 public struct SpendingHistoryFundingDisplay: Sendable, Hashable {
     public let fundedHeadline: Money?
-    public let ordinaryHeadline: Money
+    public let usedHeadline: Money
     public let remainingHeadline: Money?
+
+    public init(
+        fundedHeadline: Money?,
+        usedHeadline: Money,
+        remainingHeadline: Money?
+    ) {
+        self.fundedHeadline = fundedHeadline
+        self.usedHeadline = usedHeadline
+        self.remainingHeadline = remainingHeadline
+    }
 }
 
 /// Builds the Spending History months from approved activity.

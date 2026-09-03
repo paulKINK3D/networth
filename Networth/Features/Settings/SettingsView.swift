@@ -1762,6 +1762,7 @@ private struct PlaidSplitDraft: Identifiable {
     var categoryName: String
     var treatment: ForecastTreatment?
     var goalId: UUID?
+    var expenseFunding: ExpenseFundingChoice
     var amountText: String
 
     init(
@@ -1771,6 +1772,7 @@ private struct PlaidSplitDraft: Identifiable {
         categoryName: String = "",
         treatment: ForecastTreatment? = nil,
         goalId: UUID? = nil,
+        expenseFunding: ExpenseFundingChoice = .monthlyBudget,
         amountText: String = ""
     ) {
         self.id = id
@@ -1779,6 +1781,7 @@ private struct PlaidSplitDraft: Identifiable {
         self.categoryName = categoryName
         self.treatment = treatment
         self.goalId = goalId
+        self.expenseFunding = expenseFunding
         self.amountText = amountText
     }
 }
@@ -2740,6 +2743,12 @@ struct ClusterBatchEditSheet: View {
     }
 }
 
+private enum ExpenseFundingChoice: Hashable {
+    case monthlyBudget
+    case reserve(UUID)
+    case goal(UUID)
+}
+
 struct PlaidTransactionReviewEditor: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
@@ -2753,6 +2762,10 @@ struct PlaidTransactionReviewEditor: View {
     @Query private var accountNicknames: [DurableAccountNickname]
     @Query(sort: \DurableGoal.name)
     private var goalRows: [DurableGoal]
+    @Query(sort: \DurableSpendingSinkingFund.name)
+    private var reserveFundRows: [DurableSpendingSinkingFund]
+    @Query private var reserveExpenseRows:
+        [DurableSpendingSinkingFundExpense]
     let transaction: CachedFinancialTransaction
     let dismissAfterSave: Bool
     let canMovePrevious: Bool
@@ -2767,6 +2780,7 @@ struct PlaidTransactionReviewEditor: View {
     @State private var categoryCanonicalId: String?
     @State private var treatment: ForecastTreatment
     @State private var goalId: UUID?
+    @State private var expenseFunding: ExpenseFundingChoice
     @State private var cachedCategoryGroups: [PlaidCategoryGroup] = []
     @State private var payeeNameByID: [String: String] = [:]
     @State private var categoryNameByID: [String: String] = [:]
@@ -2803,8 +2817,20 @@ struct PlaidTransactionReviewEditor: View {
         _categoryCanonicalId = State(
             initialValue: transaction.categoryCanonicalId
         )
-        _treatment = State(initialValue: transaction.forecastTreatment)
+        let storedTreatment = transaction.forecastTreatment
+        _treatment = State(
+            initialValue: storedTreatment == .goalSpend
+                ? .ordinarySpending : storedTreatment
+        )
         _goalId = State(initialValue: transaction.goalId)
+        let initialExpenseFunding: ExpenseFundingChoice
+        if storedTreatment == .goalSpend,
+           let goalId = transaction.goalId {
+            initialExpenseFunding = .goal(goalId)
+        } else {
+            initialExpenseFunding = .monthlyBudget
+        }
+        _expenseFunding = State(initialValue: initialExpenseFunding)
         let existingDrafts = transaction.subtransactions.map {
             // Show exactly what's stored. A part with no explicit choice and
             // no recognizable name stays UNSET — silently prefilling it as
@@ -2815,13 +2841,23 @@ struct PlaidTransactionReviewEditor: View {
             let splitTreatment: TransactionType? =
                 LegacyReimbursementRepresentation.matches($0)
                     ? .reimbursement
-                    : $0.forecastTreatment
+                    : $0.forecastTreatment == .goalSpend
+                        ? .ordinarySpending
+                        : $0.forecastTreatment
+            let splitFunding: ExpenseFundingChoice
+            if $0.forecastTreatment == .goalSpend,
+               let goalId = $0.goalId {
+                splitFunding = .goal(goalId)
+            } else {
+                splitFunding = .monthlyBudget
+            }
             return PlaidSplitDraft(
                 persistedID: $0.id,
                 categoryID: $0.categoryId,
                 categoryName: $0.categoryName ?? "",
                 treatment: splitTreatment,
                 goalId: $0.goalId,
+                expenseFunding: splitFunding,
                 amountText: CurrencyInputFormatter.text(
                     for: $0.amount.absolute
                 )
@@ -2868,6 +2904,7 @@ struct PlaidTransactionReviewEditor: View {
         .onAppear {
             prepareDirectoryIndexes()
             resolveDisplayedSelections()
+            resolveExistingExpenseFunding()
         }
         .onChange(of: canonicalPayees.count) {
             prepareDirectoryIndexes()
@@ -2987,6 +3024,10 @@ struct PlaidTransactionReviewEditor: View {
                 }
             }
 
+            if showsExpenseFunding {
+                expenseFundingControls
+            }
+
             splitControls
                 .frame(height: isSplit ? nil : 0, alignment: .top)
                 .clipped()
@@ -3099,6 +3140,7 @@ struct PlaidTransactionReviewEditor: View {
                         $0,
                         amountMilliunits: transaction.amountMilliunits
                     )
+                    && $0 != .goalSpend
                 }, id: \.self) {
                     Text($0.displayName).tag($0)
                 }
@@ -3122,6 +3164,45 @@ struct PlaidTransactionReviewEditor: View {
             }
             if !TransactionTypeRules.requiresGoal(treatment) {
                 goalId = nil
+            }
+            if treatment != .ordinarySpending {
+                expenseFunding = .monthlyBudget
+            }
+        }
+    }
+
+    private var showsExpenseFunding: Bool {
+        !isSplit && transaction.amountMilliunits < 0
+            && treatment == .ordinarySpending
+    }
+
+    private var expenseFundingControls: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            reviewSectionTitle("Source")
+            NwCard(style: .primary, padding: 0) {
+                Picker("Source", selection: $expenseFunding) {
+                    Text("Monthly budget")
+                        .tag(ExpenseFundingChoice.monthlyBudget)
+                    if !activeReserveFunds.isEmpty {
+                        Section("Reserves") {
+                            ForEach(activeReserveFunds) { fund in
+                                Text(fund.name)
+                                    .tag(ExpenseFundingChoice.reserve(fund.id))
+                            }
+                        }
+                    }
+                    if !activeGoals.isEmpty {
+                        Section("Goals") {
+                            ForEach(activeGoals) { goal in
+                                Text(goal.name)
+                                    .tag(ExpenseFundingChoice.goal(goal.id))
+                            }
+                        }
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(NwAppColors.textSecondary)
+                .padding(NwSpacing.md)
             }
         }
     }
@@ -3214,6 +3295,66 @@ struct PlaidTransactionReviewEditor: View {
         goalRows.filter { !$0.archived && $0.completedAt == nil }
     }
 
+    private var activeReserveFunds: [DurableSpendingSinkingFund] {
+        reserveFundRows.filter { !$0.archived }
+    }
+
+    private func resolveExistingExpenseFunding() {
+        if isSplit {
+            resolveExistingSplitExpenseFunding()
+            return
+        }
+        guard transaction.forecastTreatment != .goalSpend,
+              treatment == .ordinarySpending,
+              !isSplit else { return }
+        let activeFundIDs = Set(activeReserveFunds.map(\.id))
+        let matchingAssignments = reserveExpenseRows.filter { assignment in
+            assignment.transactionId == transaction.id
+                && assignment.subtransactionId == nil
+                && assignment.active
+                && activeFundIDs.contains(assignment.fundId)
+        }
+        guard let assignment = matchingAssignments.max(by: {
+            $0.updatedAt < $1.updatedAt
+        }) else { return }
+        expenseFunding = .reserve(assignment.fundId)
+    }
+
+    private func resolveExistingSplitExpenseFunding() {
+        let activeFundIDs = Set(activeReserveFunds.map(\.id))
+        let latest = Dictionary(
+            grouping: reserveExpenseRows.filter {
+                $0.transactionId == transaction.id
+                    && $0.subtransactionId != nil
+            },
+            by: { $0.subtransactionId ?? "" }
+        ).compactMapValues { rows in
+            rows.max(by: { $0.updatedAt < $1.updatedAt })
+        }
+        for index in splitDrafts.indices {
+            guard splitDrafts[index].treatment == .ordinarySpending,
+                  let persistedID = splitDrafts[index].persistedID,
+                  let assignment = latest[persistedID],
+                  assignment.active,
+                  activeFundIDs.contains(assignment.fundId) else {
+                continue
+            }
+            splitDrafts[index].expenseFunding = .reserve(assignment.fundId)
+        }
+    }
+
+    private var expenseFundingIsValid: Bool {
+        guard showsExpenseFunding else { return true }
+        return switch expenseFunding {
+        case .monthlyBudget:
+            true
+        case .reserve(let id):
+            activeReserveFunds.contains { $0.id == id }
+        case .goal(let id):
+            activeGoals.contains { $0.id == id }
+        }
+    }
+
     private var reviewNavigationControls: some View {
         HStack(spacing: NwSpacing.md) {
             Button {
@@ -3278,6 +3419,11 @@ struct PlaidTransactionReviewEditor: View {
                             .labelsHidden()
                             .pickerStyle(.menu)
                             .tint(NwAppColors.textSecondary)
+                            .onChange(of: draft.treatment) {
+                                if draft.treatment != .ordinarySpending {
+                                    draft.expenseFunding = .monthlyBudget
+                                }
+                            }
                         }
                         .padding(NwSpacing.md)
 
@@ -3328,6 +3474,48 @@ struct PlaidTransactionReviewEditor: View {
                                     ) ?? "Select type"
                                 )
                                 .foregroundStyle(.secondary)
+                            }
+                            .padding(NwSpacing.md)
+                        }
+
+                        if !isIncomingSplit,
+                           draft.treatment == .ordinarySpending {
+                            Divider()
+                            HStack {
+                                Text("Source")
+                                Spacer()
+                                Picker(
+                                    "",
+                                    selection: $draft.expenseFunding
+                                ) {
+                                    Text("Monthly budget")
+                                        .tag(ExpenseFundingChoice.monthlyBudget)
+                                    if !activeReserveFunds.isEmpty {
+                                        Section("Reserves") {
+                                            ForEach(activeReserveFunds) { fund in
+                                                Text(fund.name).tag(
+                                                    ExpenseFundingChoice.reserve(
+                                                        fund.id
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if !activeGoals.isEmpty {
+                                        Section("Goals") {
+                                            ForEach(activeGoals) { goal in
+                                                Text(goal.name).tag(
+                                                    ExpenseFundingChoice.goal(
+                                                        goal.id
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .tint(NwAppColors.textSecondary)
                             }
                             .padding(NwSpacing.md)
                         }
@@ -3428,7 +3616,7 @@ struct PlaidTransactionReviewEditor: View {
         if isIncomingSplit {
             [.income, .refund, .reimbursement, .goalRefund]
         } else {
-            [.ordinarySpending, .reimbursement, .goalSpend]
+            [.ordinarySpending, .reimbursement]
         }
     }
 
@@ -3491,25 +3679,45 @@ struct PlaidTransactionReviewEditor: View {
             } else {
                 category = nil
             }
+            let storedTreatment: ForecastTreatment
             let resolvedGoalId: UUID?
-            if TransactionTypeRules.requiresGoal(treatment) {
+            if !isIncomingSplit, treatment == .ordinarySpending {
+                switch draft.expenseFunding {
+                case .monthlyBudget:
+                    storedTreatment = .ordinarySpending
+                    resolvedGoalId = nil
+                case .reserve(let id):
+                    guard activeReserveFunds.contains(where: {
+                        $0.id == id
+                    }) else { return nil }
+                    storedTreatment = .ordinarySpending
+                    resolvedGoalId = nil
+                case .goal(let id):
+                    guard activeGoals.contains(where: {
+                        $0.id == id
+                    }) else { return nil }
+                    storedTreatment = .goalSpend
+                    resolvedGoalId = id
+                }
+            } else if TransactionTypeRules.requiresGoal(treatment) {
                 guard let goalId = draft.goalId,
                       activeGoals.contains(where: { $0.id == goalId }) else {
                     return nil
                 }
+                storedTreatment = treatment
                 resolvedGoalId = goalId
             } else {
+                storedTreatment = treatment
                 resolvedGoalId = nil
             }
             result.append(SubTransactionSummary(
-                id: draft.persistedID
-                    ?? "plaid-split:\(selected.externalId):\(draft.id.uuidString)",
+                id: splitPersistedID(for: draft),
                 amount: Money(milliunits: amount.milliunits * sign),
                 categoryId: category?.id,
                 categoryName: category?.name,
                 categoryCanonicalId: category?.id,
                 goalId: resolvedGoalId,
-                forecastTreatment: treatment,
+                forecastTreatment: storedTreatment,
                 payeeName: nil,
                 memo: nil,
                 deleted: false
@@ -3522,6 +3730,21 @@ struct PlaidTransactionReviewEditor: View {
         return result
     }
 
+    private var reviewedSplitReserveFundIDs: [String: UUID] {
+        splitDrafts.reduce(into: [:]) { result, draft in
+            guard draft.treatment == .ordinarySpending,
+                  case .reserve(let fundID) = draft.expenseFunding else {
+                return
+            }
+            result[splitPersistedID(for: draft)] = fundID
+        }
+    }
+
+    private func splitPersistedID(for draft: PlaidSplitDraft) -> String {
+        draft.persistedID
+            ?? "plaid-split:\(selectedSplitTransaction.externalId):\(draft.id.uuidString)"
+    }
+
     private var canSaveReview: Bool {
         if isSplit {
             return payeeCanonicalId != nil
@@ -3529,6 +3752,7 @@ struct PlaidTransactionReviewEditor: View {
         }
         return payeeCanonicalId != nil
             && treatment != .unknown
+            && expenseFundingIsValid
             && (!TransactionTypeRules.requiresGoal(treatment)
                 || goalId != nil)
             && (!treatment.requiresCategory
@@ -3590,7 +3814,7 @@ struct PlaidTransactionReviewEditor: View {
         if isSplit {
             guard let splitTransactions = reviewedSplitTransactions else {
                 splitSaveError = "Complete every split with an amount and "
-                    + "type, select a category or goal when required, and "
+                    + "type, select its category and funding when required, and "
                     + "make sure the amounts equal the transaction total."
                 return
             }
@@ -3598,13 +3822,39 @@ struct PlaidTransactionReviewEditor: View {
                 id: selectedSplitTransaction.id,
                 displayName: cleanedName,
                 payeeCanonicalId: payeeCanonicalId,
-                subtransactions: splitTransactions
+                subtransactions: splitTransactions,
+                reserveFundIdBySubtransactionId:
+                    reviewedSplitReserveFundIDs
             )
             if case .failure(let failure) = result {
                 splitSaveError = failure.localizedDescription
                 return
             }
         } else {
+            let storedTreatment: ForecastTreatment
+            let storedGoalId: UUID?
+            let reserveFundId: UUID?
+            if treatment == .ordinarySpending {
+                switch expenseFunding {
+                case .monthlyBudget:
+                    storedTreatment = .ordinarySpending
+                    storedGoalId = nil
+                    reserveFundId = nil
+                case .reserve(let id):
+                    storedTreatment = .ordinarySpending
+                    storedGoalId = nil
+                    reserveFundId = id
+                case .goal(let id):
+                    storedTreatment = .goalSpend
+                    storedGoalId = id
+                    reserveFundId = nil
+                }
+            } else {
+                storedTreatment = treatment
+                storedGoalId = TransactionTypeRules.requiresGoal(treatment)
+                    ? goalId : nil
+                reserveFundId = nil
+            }
             guard container.confirmPlaidTransaction(
                 id: transaction.id,
                 displayName: cleanedName,
@@ -3612,13 +3862,12 @@ struct PlaidTransactionReviewEditor: View {
                 categoryName: treatment.requiresCategory
                     ? categoryName.trimmed
                     : nil,
-                treatment: treatment,
+                treatment: storedTreatment,
                 categoryCanonicalId: treatment.requiresCategory
                     ? categoryCanonicalId
                     : nil,
-                goalId: TransactionTypeRules.requiresGoal(treatment)
-                    ? goalId
-                    : nil
+                goalId: storedGoalId,
+                reserveFundId: reserveFundId
             ) else {
                 splitSaveError =
                     "The transaction could not be saved. Check its classification, then try again."

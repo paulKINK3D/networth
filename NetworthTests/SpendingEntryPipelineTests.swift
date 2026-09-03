@@ -124,13 +124,12 @@ struct SpendingEntryPipelineTests {
         )
     }
 
-    @Test func reimbursementsStayOutsideSpending() {
+    @Test func reimbursementsAndGoalRefundsStayOutsideSpending() {
         let context = SpendingEntryPipeline.Context(
             groups: [],
             categories: [],
             accounts: [account(id: "checking", type: .checking)]
         )
-
         let entries = SpendingEntryPipeline.assembleEntries(
             rows: [
                 transaction(
@@ -266,6 +265,100 @@ struct SpendingEntryPipelineTests {
             rows: [unknown, corrupt],
             context: context
         ).isEmpty)
+    }
+
+    @Test func confirmedSinkingFundPurchaseStaysOutsideMonthlySpending() {
+        let context = SpendingEntryPipeline.Context(
+            groups: [],
+            categories: [],
+            accounts: [account(id: "checking", type: .checking)],
+            sinkingFundByLine: [
+                SpendingSinkingFundLineKey(
+                    transactionID: "repair",
+                    subtransactionID: nil
+                ): SpendingSinkingFundAttribution(
+                    fundID: "home",
+                    fundName: "Home repair"
+                )
+            ]
+        )
+        let row = transaction(
+            id: "repair",
+            accountID: "checking",
+            treatment: .ordinarySpending
+        )
+
+        let entries = SpendingEntryPipeline.assembleEntries(
+            rows: [row],
+            context: context
+        )
+        let months = SpendingHistoryBuilder.build(
+            entries: entries,
+            monthsBack: 1,
+            now: row.postedDate,
+            calendar: Calendar.current
+        )
+
+        #expect(entries.isEmpty)
+        #expect(months.first?.ordinaryTotalMilliunits == 0)
+        #expect(months.first?.groups.isEmpty == true)
+    }
+
+    @Test func sinkingFundAssignmentMovesOnlyTheConfirmedSplitLine() throws {
+        let context = SpendingEntryPipeline.Context(
+            groups: [],
+            categories: [],
+            accounts: [account(id: "checking", type: .checking)],
+            sinkingFundByLine: [
+                SpendingSinkingFundLineKey(
+                    transactionID: "split",
+                    subtransactionID: "repair"
+                ): SpendingSinkingFundAttribution(
+                    fundID: "home",
+                    fundName: "Home repair"
+                )
+            ]
+        )
+        let row = transaction(
+            id: "split",
+            accountID: "checking",
+            treatment: .ordinarySpending
+        )
+        row.amountMilliunits = -100_000
+        row.subtransactionsData = try JSONEncoder().encode([
+            SubTransactionSummary(
+                id: "repair",
+                amount: Money(milliunits: -60_000),
+                categoryId: "repairs",
+                categoryName: "Repairs",
+                forecastTreatment: .ordinarySpending,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+            SubTransactionSummary(
+                id: "regular",
+                amount: Money(milliunits: -40_000),
+                categoryId: "household",
+                categoryName: "Household",
+                forecastTreatment: .ordinarySpending,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            )
+        ])
+
+        let entries = SpendingEntryPipeline.assembleEntries(
+            rows: [row],
+            context: context
+        )
+
+        #expect(entries.count == 1)
+        #expect(entries.first?.categoryName == "Household")
+        #expect(
+            entries.first?.groupIdentity
+                == SpendingGroupSetup.unassignedIdentity
+        )
     }
 
     private func account(

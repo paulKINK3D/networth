@@ -2,6 +2,16 @@ import Foundation
 import SwiftData
 import NetworthCore
 
+struct SpendingSinkingFundLineKey: Hashable, Sendable {
+    let transactionID: String
+    let subtransactionID: String?
+}
+
+struct SpendingSinkingFundAttribution: Hashable, Sendable {
+    let fundID: String
+    let fundName: String
+}
+
 /// The one shared spending pipeline: raw approved rows → entries →
 /// goal-assignment resolution → purchase/refund adjustment. Both
 /// `SpendingHistoryBuildActor` and `GoalsBuildActor` consume
@@ -18,6 +28,9 @@ enum SpendingEntryPipeline {
         let savingsGroup: (identity: String, name: String)?
         let savingsTransferMonthByTransactionID: [String: BudgetMonth]
         let excludedSavingsAccountIDs: Set<String>
+        let sinkingFundByLine: [
+            SpendingSinkingFundLineKey: SpendingSinkingFundAttribution
+        ]
 
         init(
             groups: [DurableCategoryGroup],
@@ -25,7 +38,10 @@ enum SpendingEntryPipeline {
             accounts: [CachedFinancialAccount],
             savingsGroup: (identity: String, name: String)? = nil,
             savingsTransferMonthByTransactionID: [String: BudgetMonth] = [:],
-            excludedSavingsAccountIDs: Set<String> = []
+            excludedSavingsAccountIDs: Set<String> = [],
+            sinkingFundByLine: [
+                SpendingSinkingFundLineKey: SpendingSinkingFundAttribution
+            ] = [:]
         ) {
             groupByIdentity = Dictionary(
                 groups.sorted { $0.updatedAt > $1.updatedAt }
@@ -44,6 +60,21 @@ enum SpendingEntryPipeline {
             self.savingsTransferMonthByTransactionID =
                 savingsTransferMonthByTransactionID
             self.excludedSavingsAccountIDs = excludedSavingsAccountIDs
+            self.sinkingFundByLine = sinkingFundByLine
+        }
+
+
+        func sinkingFund(
+            transactionID: String,
+            subtransactionID: String?
+        ) -> SpendingSinkingFundAttribution? {
+            sinkingFundByLine[SpendingSinkingFundLineKey(
+                transactionID: transactionID,
+                subtransactionID: subtransactionID
+            )] ?? sinkingFundByLine[SpendingSinkingFundLineKey(
+                transactionID: transactionID,
+                subtransactionID: nil
+            )]
         }
 
         func resolvedGroup(
@@ -146,6 +177,15 @@ enum SpendingEntryPipeline {
             }
             let legs = row.subtransactions
             if legs.isEmpty {
+                let fund = context.sinkingFund(
+                    transactionID: row.id,
+                    subtransactionID: nil
+                )
+                // The source budget was charged when this money was assigned
+                // to the Reserve. The later purchase drains only that carried
+                // balance and must not reduce monthly Spending or Retained a
+                // second time.
+                guard fund == nil else { continue }
                 let group = context.resolvedGroup(
                     categoryCanonicalId: row.categoryCanonicalId
                 )
@@ -168,9 +208,11 @@ enum SpendingEntryPipeline {
                     // `categoryCanonicalId`. Accept either.
                     let legCanonicalId = leg.categoryCanonicalId
                         ?? leg.categoryId
-                    let group = context.resolvedGroup(
-                        categoryCanonicalId: legCanonicalId
+                    let fund = context.sinkingFund(
+                        transactionID: row.id,
+                        subtransactionID: leg.id
                     )
+                    guard fund == nil else { continue }
                     let treatment = LegacyReimbursementRepresentation
                         .matches(leg)
                         ? TransactionType.reimbursement
@@ -178,6 +220,13 @@ enum SpendingEntryPipeline {
                             ?? (row.amountMilliunits < 0
                                 ? row.forecastTreatment
                                 : nil)
+                    if treatment == .goalSpend
+                        || treatment == .goalRefund {
+                        continue
+                    }
+                    let group = context.resolvedGroup(
+                        categoryCanonicalId: legCanonicalId
+                    )
                     entries.append(SpendingHistoryEntry(
                         transactionId: row.id,
                         date: row.postedDate,
@@ -200,4 +249,115 @@ enum SpendingEntryPipeline {
         return entries
     }
 
+}
+
+/// Main-context writer for explicit monthly reserve assignments and reversible
+/// purchase confirmations. Imported transaction rows remain untouched.
+@MainActor
+struct SpendingSinkingFundLedgerService {
+    let context: ModelContext
+
+    @discardableResult
+    func saveAssignment(
+        id: UUID? = nil,
+        fundID: UUID,
+        month: BudgetMonth,
+        sourceGroupIdentity: String,
+        amount: Money,
+        maximum: Money
+    ) -> Bool {
+        guard amount > .zero,
+              amount <= maximum,
+              !sourceGroupIdentity.isEmpty else {
+            return false
+        }
+        let rows = (try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundContribution>()
+        )) ?? []
+        let matches = id.map { id in rows.filter { $0.id == id } } ?? []
+        if id == nil {
+            context.insert(DurableSpendingSinkingFundContribution(
+                fundId: fundID,
+                budgetYear: month.year,
+                budgetMonth: month.month,
+                sourceGroupIdentity: sourceGroupIdentity,
+                amountMilliunits: amount.milliunits,
+                active: amount > .zero
+            ))
+        } else {
+            guard !matches.isEmpty else { return false }
+            for row in matches {
+                row.fundId = fundID
+                row.budgetYear = month.year
+                row.budgetMonth = month.month
+                row.sourceGroupIdentity = sourceGroupIdentity
+                row.amountMilliunits = amount.milliunits
+                row.active = true
+                row.origin = .explicit
+                row.updatedAt = .now
+            }
+        }
+        return context.safeSave(
+            source: "spending.reserve.saveAssignment"
+        )
+    }
+
+    @discardableResult
+    func removeAssignment(
+        _ assignment: DurableSpendingSinkingFundContribution
+    ) -> Bool {
+        assignment.active = false
+        assignment.updatedAt = .now
+        return context.safeSave(
+            source: "spending.reserve.removeAssignment"
+        )
+    }
+
+    @discardableResult
+    func assign(
+        fundID: UUID,
+        transactionID: String,
+        subtransactionID: String?,
+        date: Date,
+        amount: Money
+    ) -> Bool {
+        let rows = (try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        )) ?? []
+        let matches = rows.filter {
+            $0.transactionId == transactionID
+                && $0.subtransactionId == subtransactionID
+        }
+        if matches.isEmpty {
+            context.insert(DurableSpendingSinkingFundExpense(
+                fundId: fundID,
+                transactionId: transactionID,
+                subtransactionId: subtransactionID,
+                transactionDate: date,
+                amountMilliunits: amount.absolute.milliunits
+            ))
+        } else {
+            for row in matches {
+                row.fundId = fundID
+                row.transactionDate = date
+                row.amountMilliunits = amount.absolute.milliunits
+                row.active = true
+                row.updatedAt = .now
+            }
+        }
+        return context.safeSave(source: "spending.reserve.assignExpense")
+    }
+
+    @discardableResult
+    func release(_ assignment: DurableSpendingSinkingFundExpense) -> Bool {
+        let rows = (try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        )) ?? []
+        for row in rows where row.transactionId == assignment.transactionId
+            && row.subtransactionId == assignment.subtransactionId {
+            row.active = false
+            row.updatedAt = .now
+        }
+        return context.safeSave(source: "spending.reserve.releaseExpense")
+    }
 }

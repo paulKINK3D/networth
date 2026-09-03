@@ -3526,6 +3526,330 @@ struct AppContainerTests {
         ))
     }
 
+    @Test func expenseFundingChoiceUsesExistingGoalAndReserveRecords() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let group = DurableCategoryGroup(
+            groupIdentity: "group:necessities",
+            name: "Necessities",
+            reportingRole: .spending
+        )
+        let category = DurableCanonicalCategory(
+            canonicalId: "category:insurance",
+            name: "Insurance",
+            groupName: group.name,
+            categoryGroupIdentity: group.groupIdentity
+        )
+        let payee = DurableCanonicalPayee(
+            canonicalId: "payee:insurer",
+            name: "Insurer",
+            sourceName: "Insurer"
+        )
+        let goal = DurableGoal(name: "House")
+        let month = BudgetMonth(containing: .now)
+        let reserve = DurableSpendingSinkingFund(
+            name: "Annual insurance",
+            startYear: month.year,
+            startMonth: month.month
+        )
+        let summary = try #require(
+            PlaidTransactionDTO(
+                id: "funded-expense",
+                accountId: "checking-1",
+                date: "2026-08-24",
+                amount: 80,
+                name: "INSURER",
+                merchantName: "Insurer"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        let transaction = CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassifier().classify(
+                summary, rules: []
+            )
+        )
+        context.insert(group)
+        context.insert(category)
+        context.insert(payee)
+        context.insert(goal)
+        context.insert(reserve)
+        context.insert(transaction)
+        try context.save()
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(),
+            mainContext: context
+        )
+
+        #expect(coordinator.confirmTransaction(
+            id: transaction.id,
+            displayName: payee.name,
+            categoryName: category.name,
+            treatment: .goalSpend,
+            categoryCanonicalId: category.canonicalId,
+            goalId: goal.id
+        ))
+        #expect(transaction.forecastTreatment == .goalSpend)
+        #expect(transaction.categoryCanonicalId == category.canonicalId)
+        #expect(transaction.goalId == goal.id)
+        let goalRequest = try #require(context.fetch(
+            FetchDescriptor<DurableGoalTransferRequest>()
+        ).first)
+        #expect(goalRequest.active)
+        #expect(goalRequest.goalId == goal.id)
+
+        #expect(coordinator.confirmTransaction(
+            id: transaction.id,
+            displayName: payee.name,
+            categoryName: category.name,
+            treatment: .ordinarySpending,
+            categoryCanonicalId: category.canonicalId,
+            reserveFundId: reserve.id
+        ))
+        #expect(transaction.forecastTreatment == .ordinarySpending)
+        #expect(transaction.goalId == nil)
+        #expect(!goalRequest.active)
+        let reserveExpense = try #require(context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        ).first)
+        #expect(reserveExpense.active)
+        #expect(reserveExpense.fundId == reserve.id)
+        #expect(
+            reserveExpense.amountMilliunits
+                == Money.dollars(integer: 80).milliunits
+        )
+
+        #expect(coordinator.confirmTransaction(
+            id: transaction.id,
+            displayName: payee.name,
+            categoryName: category.name,
+            treatment: .ordinarySpending,
+            categoryCanonicalId: category.canonicalId
+        ))
+        #expect(!reserveExpense.active)
+    }
+
+    @Test func splitExpenseFundingTracksEachPartIndependently() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let group = DurableCategoryGroup(
+            groupIdentity: "group:necessities",
+            name: "Necessities",
+            reportingRole: .spending
+        )
+        let category = DurableCanonicalCategory(
+            canonicalId: "category:household",
+            name: "Household",
+            groupName: group.name,
+            categoryGroupIdentity: group.groupIdentity
+        )
+        let goal = DurableGoal(name: "House")
+        let month = BudgetMonth(containing: .now)
+        let reserve = DurableSpendingSinkingFund(
+            name: "Home repair",
+            startYear: month.year,
+            startMonth: month.month
+        )
+        let summary = try #require(
+            PlaidTransactionDTO(
+                id: "split-funded-expense",
+                accountId: "checking-1",
+                date: "2026-09-02",
+                amount: 100,
+                name: "HOME STORE"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        let transaction = CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassifier().classify(
+                summary, rules: []
+            )
+        )
+        context.insert(group)
+        context.insert(category)
+        context.insert(goal)
+        context.insert(reserve)
+        context.insert(transaction)
+        try context.save()
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(),
+            mainContext: context
+        )
+        let fundedSplits = [
+            SubTransactionSummary(
+                id: "reserve-part",
+                amount: Money.dollars(-60),
+                categoryId: category.canonicalId,
+                categoryName: category.name,
+                categoryCanonicalId: category.canonicalId,
+                forecastTreatment: .ordinarySpending,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+            SubTransactionSummary(
+                id: "goal-part",
+                amount: Money.dollars(-40),
+                categoryId: category.canonicalId,
+                categoryName: category.name,
+                categoryCanonicalId: category.canonicalId,
+                goalId: goal.id,
+                forecastTreatment: .goalSpend,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+        ]
+
+        #expect(coordinator.reviewSplitTransaction(
+            id: transaction.id,
+            displayName: "Home Store",
+            subtransactions: fundedSplits,
+            reserveFundIdBySubtransactionId: [
+                "reserve-part": reserve.id
+            ]
+        ))
+        #expect(transaction.subtransactions.map(\.forecastTreatment)
+            == [.ordinarySpending, .goalSpend])
+        #expect(transaction.subtransactions.allSatisfy {
+            $0.categoryCanonicalId == category.canonicalId
+        })
+        let reserveExpense = try #require(context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        ).first)
+        #expect(reserveExpense.active)
+        #expect(reserveExpense.fundId == reserve.id)
+        #expect(reserveExpense.subtransactionId == "reserve-part")
+        #expect(
+            reserveExpense.amountMilliunits
+                == Money.dollars(integer: 60).milliunits
+        )
+
+        let monthlySplits = fundedSplits.map {
+            SubTransactionSummary(
+                id: $0.id,
+                amount: $0.amount,
+                categoryId: category.canonicalId,
+                categoryName: category.name,
+                categoryCanonicalId: category.canonicalId,
+                forecastTreatment: .ordinarySpending,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            )
+        }
+        #expect(coordinator.reviewSplitTransaction(
+            id: transaction.id,
+            displayName: "Home Store",
+            subtransactions: monthlySplits
+        ))
+        #expect(!reserveExpense.active)
+        #expect(transaction.subtransactions.allSatisfy {
+            $0.forecastTreatment == .ordinarySpending
+        })
+    }
+
+    @Test func reserveLedgerAssignmentsAreExplicitAndPurchasesAreReversible() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let month = BudgetMonth(containing: .now)
+        let fund = DurableSpendingSinkingFund(
+            name: "Home repair",
+            mode: .ongoingReserve,
+            plannedMonthlyMilliunits: Money.dollars(integer: 150).milliunits,
+            openingBalanceMilliunits: Money.dollars(integer: 300).milliunits,
+            startYear: month.year,
+            startMonth: month.month
+        )
+        context.insert(fund)
+        let legacyAutomatic = DurableSpendingSinkingFundContribution(
+            fundId: fund.id,
+            budgetYear: month.year,
+            budgetMonth: month.month,
+            amountMilliunits: Money.dollars(integer: 150).milliunits,
+            origin: .legacyAutomatic
+        )
+        context.insert(legacyAutomatic)
+        try context.save()
+        let service = SpendingSinkingFundLedgerService(context: context)
+
+        #expect(!legacyAutomatic.coreContribution.active)
+
+        #expect(service.saveAssignment(
+            fundID: fund.id,
+            month: month,
+            sourceGroupIdentity: "necessities",
+            amount: Money.dollars(integer: 125),
+            maximum: Money.dollars(integer: 500)
+        ))
+        var contributions = try context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundContribution>()
+        )
+        let first = try #require(contributions.first {
+            $0.origin == .explicit
+        })
+        #expect(service.saveAssignment(
+            id: first.id,
+            fundID: fund.id,
+            month: month,
+            sourceGroupIdentity: "necessities",
+            amount: Money.dollars(integer: 150),
+            maximum: Money.dollars(integer: 500)
+        ))
+        #expect(service.saveAssignment(
+            fundID: fund.id,
+            month: month,
+            sourceGroupIdentity: "surplus",
+            amount: Money.dollars(integer: 25),
+            maximum: Money.dollars(integer: 300)
+        ))
+        contributions = try context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundContribution>()
+        )
+        #expect(contributions.count == 3)
+        #expect(
+            contributions.filter { $0.coreContribution.active }
+                .map { Money(milliunits: $0.amountMilliunits) }.sum()
+                == Money.dollars(integer: 175)
+        )
+        #expect(first.amountMilliunits == Money.dollars(integer: 150).milliunits)
+        #expect(first.sourceGroupIdentity == "necessities")
+        let second = try #require(contributions.first {
+            $0.coreContribution.active && $0.id != first.id
+        })
+        #expect(second.sourceGroupIdentity == "surplus")
+        #expect(service.removeAssignment(second))
+        #expect(!second.active)
+        #expect(!service.saveAssignment(
+            fundID: fund.id,
+            month: month,
+            sourceGroupIdentity: "necessities",
+            amount: Money.dollars(integer: 501),
+            maximum: Money.dollars(integer: 500)
+        ))
+
+        #expect(service.assign(
+            fundID: fund.id,
+            transactionID: "repair",
+            subtransactionID: nil,
+            date: .now,
+            amount: Money.dollars(integer: 80)
+        ))
+        let assigned = try #require(context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        ).first)
+        #expect(assigned.active)
+        #expect(service.release(assigned))
+        #expect(!assigned.active)
+    }
+
     // MARK: - Helpers
 
     private func linkedLoanSnapshot(

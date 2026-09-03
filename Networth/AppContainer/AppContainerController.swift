@@ -344,7 +344,8 @@ public final class AppContainerController {
         categoryName: String?,
         treatment: ForecastTreatment,
         categoryCanonicalId: String? = nil,
-        goalId: UUID? = nil
+        goalId: UUID? = nil,
+        reserveFundId: UUID? = nil
     ) -> Bool {
         plaidTransactionSyncCoordinator.confirmTransaction(
             id: id,
@@ -353,7 +354,8 @@ public final class AppContainerController {
             categoryName: categoryName,
             treatment: treatment,
             categoryCanonicalId: categoryCanonicalId,
-            goalId: goalId
+            goalId: goalId,
+            reserveFundId: reserveFundId
         )
     }
 
@@ -362,13 +364,16 @@ public final class AppContainerController {
         id: String,
         displayName: String,
         payeeCanonicalId: String? = nil,
-        subtransactions: [SubTransactionSummary]
+        subtransactions: [SubTransactionSummary],
+        reserveFundIdBySubtransactionId: [String: UUID] = [:]
     ) -> Bool {
         plaidTransactionSyncCoordinator.reviewSplitTransaction(
             id: id,
             displayName: displayName,
             payeeCanonicalId: payeeCanonicalId,
-            subtransactions: subtransactions
+            subtransactions: subtransactions,
+            reserveFundIdBySubtransactionId:
+                reserveFundIdBySubtransactionId
         )
     }
 
@@ -376,13 +381,16 @@ public final class AppContainerController {
         id: String,
         displayName: String,
         payeeCanonicalId: String? = nil,
-        subtransactions: [SubTransactionSummary]
+        subtransactions: [SubTransactionSummary],
+        reserveFundIdBySubtransactionId: [String: UUID] = [:]
     ) -> Result<Void, PlaidTransactionSyncCoordinator.SplitReviewFailure> {
         plaidTransactionSyncCoordinator.reviewSplitTransactionResult(
             id: id,
             displayName: displayName,
             payeeCanonicalId: payeeCanonicalId,
-            subtransactions: subtransactions
+            subtransactions: subtransactions,
+            reserveFundIdBySubtransactionId:
+                reserveFundIdBySubtransactionId
         )
     }
 

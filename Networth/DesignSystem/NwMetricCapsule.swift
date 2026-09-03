@@ -89,58 +89,61 @@ public struct NwBudgetProgress: View {
     }
 }
 
-/// Ordinary budget progress with a distinct second segment for money moved
-/// into Savings. Spending and reallocation remain visually separate because
-/// a savings choice is not a transaction.
-public struct NwReallocatedBudgetProgress: View {
-    public let spentShare: Double
+/// A compact draining-budget indicator. Remaining money is anchored at the
+/// bottom so its level falls as spending occurs. Money explicitly moved to
+/// Savings or Reserves remains a separate lighter segment.
+public struct NwDrainingBudgetColumn: View {
+    public let remainingShare: Double
     public let reallocatedShare: Double
     public let isOver: Bool
+    public let width: CGFloat
     public let height: CGFloat
     public let accessibilityValue: String
 
     public init(
-        spentShare: Double,
+        remainingShare: Double,
         reallocatedShare: Double,
         isOver: Bool,
-        height: CGFloat = 6,
+        width: CGFloat = 16,
+        height: CGFloat = 56,
         accessibilityValue: String
     ) {
-        self.spentShare = spentShare
+        self.remainingShare = remainingShare
         self.reallocatedShare = reallocatedShare
         self.isOver = isOver
+        self.width = width
         self.height = height
         self.accessibilityValue = accessibilityValue
     }
 
     public var body: some View {
         GeometryReader { geometry in
-            let spent = min(max(spentShare, 0), 1)
+            let remaining = min(max(remainingShare, 0), 1)
             let reallocated = min(
                 max(reallocatedShare, 0),
-                max(0, 1 - spent)
+                max(0, 1 - remaining)
             )
-            ZStack(alignment: .leading) {
-                Capsule().fill(NwAppColors.strokeSubtle)
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(
-                            isOver
-                                ? NwAppColors.budgetOver
-                                : NwAppColors.budgetOnTrack
-                        )
-                        .frame(width: geometry.size.width * spent)
+            ZStack(alignment: .bottom) {
+                Capsule().fill(
+                    isOver
+                        ? NwAppColors.budgetOver.opacity(0.18)
+                        : NwAppColors.strokeSubtle
+                )
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
                     Rectangle()
                         .fill(NwAppColors.budgetReallocated)
-                        .frame(width: geometry.size.width * reallocated)
-                    Spacer(minLength: 0)
+                        .frame(height: geometry.size.height * reallocated)
+                    Rectangle()
+                        .fill(NwAppColors.budgetOnTrack)
+                        .frame(height: geometry.size.height * remaining)
                 }
                 .clipShape(Capsule())
             }
         }
-        .frame(height: height)
+        .frame(width: width, height: height)
         .accessibilityElement()
-        .accessibilityLabel("Budget progress")
+        .accessibilityLabel("Budget remaining")
         .accessibilityValue(accessibilityValue)
     }
 }

@@ -246,7 +246,7 @@ struct SpendingBudgetsTests {
             spent: Money.dollars(integer: 2_665),
             target: Money.dollars(integer: 2_940),
             baseTarget: Money.dollars(integer: 3_000),
-            reallocatedOut: Money.dollars(integer: 60)
+            reallocatedToSavings: Money.dollars(integer: 60)
         )
         let choice = SavingsBudgetChoice(
             id: "coffee",
@@ -324,5 +324,285 @@ struct SpendingBudgetsTests {
             now: now,
             calendar: utc
         ) == .atRisk)
+    }
+
+    @Test("Due-date reserves calculate an inclusive monthly plan")
+    func sinkingFundDueDatePlan() {
+        let plan = SpendingSinkingFundMath
+            .calculatedMonthlyPlan(
+                target: Money.dollars(integer: 1_200),
+                balance: Money.dollars(integer: 200),
+                targetDate: date(2027, 5, 20),
+                asOf: date(2026, 8, 2),
+                calendar: utc
+            )
+
+        #expect(
+            SpendingSinkingFundMath.contributionMonths(
+                from: date(2026, 8, 2),
+                through: date(2027, 5, 20),
+                calendar: utc
+            ) == 10
+        )
+        #expect(plan == Money.dollars(integer: 100))
+    }
+
+    @Test("Target funds stop contributing when fully reserved")
+    func sinkingFundTargetCapsContribution() {
+        let fund = SpendingSinkingFund(
+            id: "insurance",
+            name: "Insurance",
+            mode: .buildToAmount,
+            target: Money.dollars(integer: 1_000),
+            plannedMonthly: Money.dollars(integer: 200),
+            startMonth: BudgetMonth(year: 2026, month: 8)
+        )
+
+        #expect(SpendingSinkingFundMath.monthlyPlan(
+            for: fund,
+            balance: Money.dollars(integer: 900),
+            asOf: date(2026, 8, 2),
+            calendar: utc
+        ) == Money.dollars(integer: 100))
+        #expect(SpendingSinkingFundMath.monthlyPlan(
+            for: fund,
+            balance: Money.dollars(integer: 1_000),
+            asOf: date(2026, 8, 2),
+            calendar: utc
+        ) == .zero)
+    }
+
+    @Test("Sinking fund balances carry contributions and confirmed expenses")
+    func sinkingFundSnapshotCarriesBalance() {
+        let fund = SpendingSinkingFund(
+            id: "home",
+            name: "Home repair",
+            mode: .ongoingReserve,
+            plannedMonthly: Money.dollars(integer: 100),
+            openingBalance: Money.dollars(integer: 300),
+            startMonth: BudgetMonth(year: 2026, month: 7)
+        )
+        let contributions = [
+            SpendingSinkingFundContribution(
+                id: "july",
+                fundID: fund.id,
+                month: BudgetMonth(year: 2026, month: 7),
+                amount: Money.dollars(integer: 100),
+                updatedAt: date(2026, 7, 1)
+            ),
+            SpendingSinkingFundContribution(
+                id: "august",
+                fundID: fund.id,
+                month: BudgetMonth(year: 2026, month: 8),
+                amount: Money.dollars(integer: 100),
+                updatedAt: date(2026, 8, 1)
+            ),
+        ]
+        let expenses = [
+            SpendingSinkingFundExpense(
+                id: "repair",
+                fundID: fund.id,
+                transactionID: "trx",
+                date: date(2026, 8, 15),
+                amount: Money.dollars(integer: 175),
+                updatedAt: date(2026, 8, 15)
+            )
+        ]
+
+        let snapshot = SpendingSinkingFundMath.snapshot(
+            fund: fund,
+            contributions: contributions,
+            expenses: expenses,
+            through: BudgetMonth(year: 2026, month: 8),
+            calendar: utc
+        )
+
+        #expect(snapshot.contributed == Money.dollars(integer: 200))
+        #expect(snapshot.spent == Money.dollars(integer: 175))
+        #expect(snapshot.balance == Money.dollars(integer: 325))
+    }
+
+    @Test("Remainder selection is effective dated")
+    func remainderSelectionPreservesHistory() {
+        let rules = [
+            SpendingRemainderRule(
+                id: "august",
+                groupIdentity: "surplus",
+                effectiveMonth: BudgetMonth(year: 2026, month: 8),
+                enabled: true,
+                updatedAt: date(2026, 8, 1)
+            ),
+            SpendingRemainderRule(
+                id: "october",
+                groupIdentity: "flexible",
+                effectiveMonth: BudgetMonth(year: 2026, month: 10),
+                enabled: true,
+                updatedAt: date(2026, 10, 1)
+            ),
+        ]
+
+        #expect(resolver.activeRemainderGroupIdentity(
+            for: BudgetMonth(year: 2026, month: 9),
+            rules: rules
+        ) == "surplus")
+        #expect(resolver.activeRemainderGroupIdentity(
+            for: BudgetMonth(year: 2026, month: 10),
+            rules: rules
+        ) == "flexible")
+    }
+
+    @Test("Automatic remainder assigns every funded dollar and stays signed")
+    func automaticRemainderCanBeNegative() {
+        let rules = [
+            rule(id: "fixed", group: "fixed", year: 2026, month: 9,
+                 target: 1_100),
+            rule(id: "surplus", group: "surplus", year: 2026, month: 9,
+                 target: 1),
+        ]
+        let summary = resolver.summary(
+            for: BudgetMonth(year: 2026, month: 9),
+            groups: [
+                group(id: "fixed", name: "Fixed", spent: 0),
+                group(id: "surplus", name: "Surplus", spent: 0),
+            ],
+            rules: rules,
+            funded: Money.dollars(integer: 1_000),
+            remainderGroupIdentity: "surplus"
+        )
+
+        #expect(summary.target == Money.dollars(integer: 1_000))
+        #expect(summary.groups.first {
+            $0.groupIdentity == "surplus"
+        }?.target == Money.dollars(integer: -100))
+    }
+
+    @Test("A Reserve assignment comes from its selected budget")
+    func reserveAssignmentReallocatesSelectedBudget() {
+        let month = BudgetMonth(year: 2026, month: 9)
+        let assignment = SpendingSinkingFundContribution(
+            id: "insurance-september",
+            fundID: "insurance",
+            month: month,
+            sourceGroupIdentity: "necessities",
+            amount: Money.dollars(integer: 100),
+            updatedAt: date(2026, 9, 1)
+        )
+        let summary = resolver.summary(
+            for: month,
+            groups: [
+                group(id: "necessities", name: "Necessities", spent: 200_000),
+                group(id: "surplus", name: "Surplus", spent: 0),
+            ],
+            rules: [
+                rule(id: "needs", group: "necessities", year: 2026,
+                     month: 9, target: 600),
+                rule(id: "surplus", group: "surplus", year: 2026,
+                     month: 9, target: 1),
+            ],
+            reserveAssignments: [assignment],
+            funded: Money.dollars(integer: 1_000),
+            remainderGroupIdentity: "surplus"
+        )
+
+        let necessities = summary.groups.first {
+            $0.groupIdentity == "necessities"
+        }
+        #expect(necessities?.target == Money.dollars(integer: 500))
+        #expect(
+            necessities?.reallocatedToReserves
+                == Money.dollars(integer: 100)
+        )
+        #expect(summary.target + assignment.amount
+            == Money.dollars(integer: 1_000))
+        #expect(summary.remaining == Money.dollars(integer: 700))
+        let display = summary.fundingDisplay(
+            fundedBy: Money.dollars(integer: 1_000)
+        )
+        #expect(display.usedHeadline == Money.dollars(integer: 300))
+        #expect(display.remainingHeadline == Money.dollars(integer: 700))
+    }
+
+    @Test("Reserve availability restores the assignment being edited")
+    func reserveAvailabilityUsesSourceBudget() {
+        let month = BudgetMonth(year: 2026, month: 9)
+        let source = SpendingGroupBudgetSnapshot(
+            groupIdentity: "necessities",
+            groupName: "Necessities",
+            spent: Money.dollars(integer: 400),
+            target: Money.dollars(integer: 500),
+            baseTarget: Money.dollars(integer: 600),
+            reallocatedToReserves: Money.dollars(integer: 100)
+        )
+        let assignment = SpendingSinkingFundContribution(
+            id: "insurance",
+            fundID: "insurance",
+            month: month,
+            sourceGroupIdentity: "necessities",
+            amount: Money.dollars(integer: 100),
+            updatedAt: date(2026, 9, 1)
+        )
+
+        #expect(resolver.availableForReserveAssignment(
+            from: source,
+            month: month,
+            assignments: [assignment],
+            excludingAssignmentID: "insurance"
+        ) == Money.dollars(integer: 200))
+    }
+
+    @Test("A Reserve can receive multiple assignments in one month")
+    func reserveAssignmentsAccumulate() {
+        let month = BudgetMonth(year: 2026, month: 9)
+        let assignments = [
+            SpendingSinkingFundContribution(
+                id: "first",
+                fundID: "insurance",
+                month: month,
+                sourceGroupIdentity: "necessities",
+                amount: Money.dollars(integer: 100),
+                updatedAt: date(2026, 9, 1)
+            ),
+            SpendingSinkingFundContribution(
+                id: "second",
+                fundID: "insurance",
+                month: month,
+                sourceGroupIdentity: "surplus",
+                amount: Money.dollars(integer: 50),
+                updatedAt: date(2026, 9, 2)
+            ),
+        ]
+        let summary = resolver.summary(
+            for: month,
+            groups: [
+                group(id: "necessities", name: "Necessities", spent: 0),
+                group(id: "surplus", name: "Surplus", spent: 0),
+            ],
+            rules: [
+                rule(id: "needs", group: "necessities", year: 2026,
+                     month: 9, target: 600),
+                rule(id: "surplus", group: "surplus", year: 2026,
+                     month: 9, target: 400),
+            ],
+            reserveAssignments: assignments
+        )
+
+        #expect(summary.groups.first {
+            $0.groupIdentity == "necessities"
+        }?.target == Money.dollars(integer: 500))
+        #expect(summary.groups.first {
+            $0.groupIdentity == "surplus"
+        }?.target == Money.dollars(integer: 350))
+        let fund = SpendingSinkingFund(
+            id: "insurance",
+            name: "Insurance",
+            mode: .ongoingReserve,
+            startMonth: month
+        )
+        #expect(SpendingSinkingFundMath.snapshot(
+            fund: fund,
+            contributions: assignments,
+            expenses: [],
+            through: month
+        ).balance == Money.dollars(integer: 150))
     }
 }

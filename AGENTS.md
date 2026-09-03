@@ -181,9 +181,16 @@ cd PlaidWorker && npm test && npm run check
 - **Spending budgets are group-level guidance only.** A user may opt any
   existing Spending group into a repeating monthly target and explicitly
   feature one group. Months never carry over, category-level budgets and
-  projected finishes are excluded, and Retained always remains actual income
-  minus actual ordinary spending. Historical averages belong in Spending
-  Trends, not the main monthly budget summary. Factual calendar pace may compare
+  projected finishes are excluded. Once all funded money is assigned through
+  the automatic-remainder group, Retained is derived from the reconciled
+  remaining monthly budget balances rather than calculated independently from
+  raw transactions. Each Reserve assignment reduces its selected source budget
+  and therefore Retained exactly once; a Reserve may receive multiple
+  independently editable assignments in one month, including from different
+  groups. A later Reserve- or Goal-funded purchase drains only that earmark and
+  stays outside monthly budgets and Retained.
+  Historical averages belong in Spending Trends, not the main monthly budget
+  summary. Factual calendar pace may compare
   percent used with percent of the current month elapsed, but the Spending
   overview does not encode that pace with brown/amber or pale-yellow status
   treatments. Under-budget progress is blue, overspending is a clear

@@ -111,6 +111,28 @@ struct SpendingHistoryTests {
         #expect(months[0].totalMilliunits == Money.dollars(50).milliunits)
     }
 
+    @Test func goalFundedPurchasesStayOutsideMonthlySpending() {
+        let months = SpendingHistoryBuilder.build(
+            entries: [
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(-200),
+                    treatment: .goalSpend,
+                    reportingRole: .spending,
+                    group: ("networth:goal-purchases", "Goals"),
+                    category: ("c:furniture", "Furniture")
+                )
+            ],
+            monthsBack: 1,
+            now: day(2026, 8, 4),
+            calendar: calendar
+        )
+
+        #expect(months[0].totalMilliunits == 0)
+        #expect(months[0].ordinaryTotalMilliunits == 0)
+        #expect(months[0].groups.isEmpty)
+    }
+
     @Test func countsOnlyPositiveExplicitIncome() {
         let months = SpendingHistoryBuilder.build(
             entries: [
@@ -585,7 +607,7 @@ struct SpendingHistoryTests {
             )
         )
         #expect(display.fundedHeadline == Money.dollars(101))
-        #expect(display.ordinaryHeadline == Money.dollars(40))
+        #expect(display.usedHeadline == Money.dollars(40))
         #expect(display.remainingHeadline == Money.dollars(61))
         #expect(
             SpendingHistoryBuilder.fundingIncome(

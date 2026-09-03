@@ -224,10 +224,42 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   date in account history, balances, Net Worth, or Projections. A matching
   next-month transfer is suggested for confirmation rather than assigned
   automatically.
+- **2026-09-02** — Reserves are distinct from Goals and ordinary monthly
+  budgets. Spending presents one aggregate Reserves card; individual reserves
+  carry their balances forward and require only a name. Target, due date,
+  monthly plan, and opening balance are optional. A target plus date calculates
+  a suggested monthly plan, but plans never allocate money automatically. The
+  user explicitly assigns affordable amounts from selected active Spending
+  budgets. A reserve may receive multiple assignments in one month, including
+  from different source groups; each entry remains independently editable and
+  removable. Assignments cannot exceed their source groups' currently unspent
+  amounts, and each source card includes them in its lighter-blue reallocation
+  segment.
+  The aggregate card's progress compares this month's explicit assignments
+  with the optional combined monthly plan; without a plan, its track remains
+  neutral. One budget group may be the effective-dated automatic remainder;
+  its target is confirmed funding minus every other repeating target, so all
+  funding is assigned without rewriting historical months. The remainder is
+  signed rather than clamped: a shortfall remains visible and can be covered
+  by residual checking cash or a real savings transfer. Retained derives from
+  the reconciled remaining monthly budget balances, so assigning money to a
+  reserve reduces the selected source budget and Retained exactly once in that
+  month. A transaction or split line draws from a reserve only after explicit
+  user confirmation; that later purchase drains the carried reserve without
+  reducing a monthly budget or Retained again, and without rewriting imported
+  activity, cash balances, or Projections. Transaction review calls the
+  independent funding choice `Source`; every ordinary outgoing split line has
+  its own Source. New records use an additive private-CloudKit schema and do
+  not revive the retired pre-goals sinking-fund models. An additive assignment-
+  origin field treats rows from the pre-release automatic trial as inactive
+  legacy data until the user makes an explicit assignment.
 - **2026-08-30** — Spending and Projections use a glance-first dashboard
   hierarchy. Spending leads with the remaining or overspent budget amount and
   a 270-degree progress arc, keeps the separate funding comparison as Funded
-  versus Retained, always shows every active budget group in user order, and
+  versus Retained, shows every active budget group in a compact two-column
+  card grid in user order, separates monthly spending under Budgets from
+  Savings and Reserves under Setting Aside, represents ordinary budgets with
+  a vertical draining column aligned to the displayed remaining amount, and
   keeps Trends plus Transactions in a compact action strip.
   Projections leads with the most actionable amount (Available, Buffer gap,
   Transfer needed, or Projected balance), embeds a simplified scrub-capable
