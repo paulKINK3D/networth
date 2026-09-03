@@ -12,6 +12,17 @@ struct SpendingSinkingFundAttribution: Hashable, Sendable {
     let fundName: String
 }
 
+struct SpendingSavingsLineKey: Hashable, Sendable {
+    let transactionID: String
+    let subtransactionID: String?
+}
+
+struct SpendingSavingsAttribution: Hashable, Sendable {
+    let groupIdentity: String
+    let groupName: String
+    let month: BudgetMonth
+}
+
 /// The one shared spending pipeline: raw approved rows → entries →
 /// goal-assignment resolution → purchase/refund adjustment. Both
 /// `SpendingHistoryBuildActor` and `GoalsBuildActor` consume
@@ -26,7 +37,9 @@ enum SpendingEntryPipeline {
         let accountTypeByIdentity: [String: FinancialAccountType]
         let categoryByCanonicalID: [String: DurableCanonicalCategory]
         let savingsGroup: (identity: String, name: String)?
-        let savingsTransferMonthByTransactionID: [String: BudgetMonth]
+        let savingsAttributionByLine: [
+            SpendingSavingsLineKey: SpendingSavingsAttribution
+        ]
         let excludedSavingsAccountIDs: Set<String>
         let sinkingFundByLine: [
             SpendingSinkingFundLineKey: SpendingSinkingFundAttribution
@@ -38,6 +51,9 @@ enum SpendingEntryPipeline {
             accounts: [CachedFinancialAccount],
             savingsGroup: (identity: String, name: String)? = nil,
             savingsTransferMonthByTransactionID: [String: BudgetMonth] = [:],
+            savingsAttributionByLine: [
+                SpendingSavingsLineKey: SpendingSavingsAttribution
+            ] = [:],
             excludedSavingsAccountIDs: Set<String> = [],
             sinkingFundByLine: [
                 SpendingSinkingFundLineKey: SpendingSinkingFundAttribution
@@ -57,8 +73,21 @@ enum SpendingEntryPipeline {
                 uniquingKeysWith: { first, _ in first }
             )
             self.savingsGroup = savingsGroup
-            self.savingsTransferMonthByTransactionID =
-                savingsTransferMonthByTransactionID
+            var attributions = savingsAttributionByLine
+            if let savingsGroup {
+                for (transactionID, month) in
+                    savingsTransferMonthByTransactionID {
+                    attributions[SpendingSavingsLineKey(
+                        transactionID: transactionID,
+                        subtransactionID: nil
+                    )] = SpendingSavingsAttribution(
+                        groupIdentity: savingsGroup.identity,
+                        groupName: savingsGroup.name,
+                        month: month
+                    )
+                }
+            }
+            self.savingsAttributionByLine = attributions
             self.excludedSavingsAccountIDs = excludedSavingsAccountIDs
             self.sinkingFundByLine = sinkingFundByLine
         }
@@ -74,6 +103,16 @@ enum SpendingEntryPipeline {
             )] ?? sinkingFundByLine[SpendingSinkingFundLineKey(
                 transactionID: transactionID,
                 subtransactionID: nil
+            )]
+        }
+
+        func savings(
+            transactionID: String,
+            subtransactionID: String?
+        ) -> SpendingSavingsAttribution? {
+            savingsAttributionByLine[SpendingSavingsLineKey(
+                transactionID: transactionID,
+                subtransactionID: subtransactionID
             )]
         }
 
@@ -126,11 +165,12 @@ enum SpendingEntryPipeline {
                 continue
             }
             if row.forecastTreatment == .internalTransfer {
-                // Only the savings-account side contributes to the explicitly
-                // designated Savings budget. The checking side is omitted so
-                // one transfer cannot count twice, and goal reserve accounts
-                // retain their separate ledger semantics.
-                guard let savingsGroup = context.savingsGroup,
+                // Only explicitly month-assigned legacy deposits remain.
+                // Broad account-type inference is intentionally retired.
+                guard let savings = context.savings(
+                    transactionID: row.id,
+                    subtransactionID: nil
+                ),
                       context.accountTypeByIdentity[row.canonicalAccountId]
                         == .savings,
                       !context.excludedSavingsAccountIDs.contains(
@@ -139,16 +179,32 @@ enum SpendingEntryPipeline {
                       row.amountMilliunits != 0 else {
                     continue
                 }
-                let date = context.savingsTransferMonthByTransactionID[row.id]?
-                    .startDate() ?? row.postedDate
                 entries.append(SpendingHistoryEntry(
                     transactionId: row.id,
-                    date: date,
+                    date: savings.month.startDate(),
                     amountMilliunits: row.amountMilliunits,
                     treatment: .internalTransfer,
                     reportingRole: .transfer,
-                    groupIdentity: savingsGroup.identity,
-                    groupName: savingsGroup.name,
+                    groupIdentity: savings.groupIdentity,
+                    groupName: savings.groupName,
+                    categoryKey: "networth:savings-transfers",
+                    categoryName: "Savings Transfers"
+                ))
+                continue
+            }
+            if !row.isSplit, row.forecastTreatment == .savings {
+                guard let savings = context.savings(
+                    transactionID: row.id,
+                    subtransactionID: nil
+                ), row.amountMilliunits < 0 else { continue }
+                entries.append(SpendingHistoryEntry(
+                    transactionId: row.id,
+                    date: savings.month.startDate(),
+                    amountMilliunits: row.amountMilliunits,
+                    treatment: .savings,
+                    reportingRole: .transfer,
+                    groupIdentity: savings.groupIdentity,
+                    groupName: savings.groupName,
                     categoryKey: "networth:savings-transfers",
                     categoryName: "Savings Transfers"
                 ))
@@ -222,6 +278,24 @@ enum SpendingEntryPipeline {
                                 : nil)
                     if treatment == .goalSpend
                         || treatment == .goalRefund {
+                        continue
+                    }
+                    if treatment == .savings {
+                        guard let savings = context.savings(
+                            transactionID: row.id,
+                            subtransactionID: leg.id
+                        ), leg.amount < .zero else { continue }
+                        entries.append(SpendingHistoryEntry(
+                            transactionId: row.id,
+                            date: savings.month.startDate(),
+                            amountMilliunits: leg.amount.milliunits,
+                            treatment: .savings,
+                            reportingRole: .transfer,
+                            groupIdentity: savings.groupIdentity,
+                            groupName: savings.groupName,
+                            categoryKey: "networth:savings-transfers",
+                            categoryName: "Savings Transfers"
+                        ))
                         continue
                     }
                     let group = context.resolvedGroup(

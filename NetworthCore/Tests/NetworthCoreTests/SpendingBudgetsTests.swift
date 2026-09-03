@@ -605,4 +605,39 @@ struct SpendingBudgetsTests {
             through: month
         ).balance == Money.dollars(integer: 150))
     }
+
+    @Test("Closed Savings months remain independent until fulfilled")
+    func savingsMonthStatusesDoNotRollForward() {
+        let august = BudgetMonth(year: 2026, month: 8)
+        let september = august.next
+        let choice = SavingsBudgetChoice(
+            id: "extra",
+            month: august,
+            sourceGroupIdentity: "surplus",
+            savingsGroupIdentity: "savings",
+            amount: Money.dollars(integer: 200),
+            note: "Forgone spending",
+            occurredAt: date(2026, 8, 20),
+            updatedAt: date(2026, 8, 20)
+        )
+
+        let statuses = SavingsMonthStatusResolver().statuses(
+            groupIdentity: "savings",
+            rules: [
+                rule(id: "base", group: "savings", year: 2026,
+                     month: 8, target: 1_000)
+            ],
+            choices: [choice],
+            savedByMonth: [
+                august: Money.dollars(integer: 600),
+                september: Money.dollars(integer: 1_000),
+            ],
+            through: september
+        )
+
+        #expect(statuses.map(\.outstanding) == [
+            Money.dollars(integer: 600),
+            .zero,
+        ])
+    }
 }

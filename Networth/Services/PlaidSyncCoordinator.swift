@@ -1351,6 +1351,7 @@ public final class PlaidTransactionSyncCoordinator {
         case categoryIncompatible(String)
         case goalUnavailable
         case reserveUnavailable
+        case savingsUnavailable
         case encodingFailed
         case saveFailed
 
@@ -1382,6 +1383,8 @@ public final class PlaidTransactionSyncCoordinator {
                 "The selected goal is no longer active."
             case .reserveUnavailable:
                 "The selected reserve is no longer active."
+            case .savingsUnavailable:
+                "Choose a Savings month for every Savings split."
             case .encodingFailed:
                 "The split details could not be prepared for saving."
             case .saveFailed:
@@ -2650,7 +2653,8 @@ public final class PlaidTransactionSyncCoordinator {
         treatment: ForecastTreatment,
         categoryCanonicalId: String?,
         goalId: UUID?,
-        reserveFundId: UUID?
+        reserveFundId: UUID?,
+        savingsMonth: BudgetMonth?
     ) -> Bool {
         var descriptor = FetchDescriptor<CachedFinancialTransaction>(
             predicate: #Predicate { $0.id == id }
@@ -2668,6 +2672,17 @@ public final class PlaidTransactionSyncCoordinator {
             in: .whitespacesAndNewlines
         )
         guard !cleanedName.isEmpty else { return false }
+        let previousTreatment = row.forecastTreatment
+        let savingsGroupIdentity: String?
+        if treatment == .savings {
+            guard savingsMonth != nil,
+                  let identity = activeSavingsGroupIdentity() else {
+                return false
+            }
+            savingsGroupIdentity = identity
+        } else {
+            savingsGroupIdentity = nil
+        }
         // Validate the category BEFORE creating/renaming the payee so a
         // rejected save leaves no pending directory mutation behind.
         let category: DurableCanonicalCategory?
@@ -2783,6 +2798,12 @@ public final class PlaidTransactionSyncCoordinator {
             for: row,
             reserveFund: resolvedReserveFund
         )
+        stageSavingsFunding(
+            for: row,
+            previousTreatment: previousTreatment,
+            month: savingsMonth,
+            savingsGroupIdentity: savingsGroupIdentity
+        )
         advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
         applyCurrentCanonicalState()
@@ -2896,12 +2917,122 @@ public final class PlaidTransactionSyncCoordinator {
         }
     }
 
+    private func activeSavingsGroupIdentity() -> String? {
+        let groups = (try? mainContext.fetch(
+            FetchDescriptor<DurableCategoryGroup>()
+        )) ?? []
+        let latest = Dictionary(grouping: groups, by: \.groupIdentity)
+            .compactMapValues { rows in
+                rows.max(by: { $0.updatedAt < $1.updatedAt })
+            }
+        return latest.values
+            .filter {
+                $0.isSavingsBucket && SpendingGroupSetup.isUserGroup($0)
+            }
+            .max(by: { $0.updatedAt < $1.updatedAt })?
+            .groupIdentity
+    }
+
+    /// Month attribution is durable user data and is staged in the same save
+    /// as the canonical classification. Old receiving-side assignments remain
+    /// untouched unless they were themselves explicit Savings classifications.
+    private func stageSavingsFunding(
+        for row: CachedFinancialTransaction,
+        previousTreatment: TransactionType,
+        month: BudgetMonth?,
+        savingsGroupIdentity: String?
+    ) {
+        let assignments = (try? mainContext.fetch(
+            FetchDescriptor<DurableSavingsTransferAssignment>()
+        )) ?? []
+        let matches = assignments.filter { $0.transactionId == row.id }
+        let whole = matches.filter { $0.subtransactionId.isEmpty }
+        let now = Date.now
+        for assignment in matches where !assignment.subtransactionId.isEmpty {
+            assignment.active = false
+            assignment.updatedAt = now
+        }
+        guard row.forecastTreatment == .savings,
+              let month,
+              let savingsGroupIdentity else {
+            if previousTreatment == .savings {
+                for assignment in whole {
+                    assignment.active = false
+                    assignment.updatedAt = now
+                }
+            }
+            return
+        }
+        if whole.isEmpty {
+            mainContext.insert(DurableSavingsTransferAssignment(
+                transactionId: row.id,
+                savingsGroupIdentity: savingsGroupIdentity,
+                assignedYear: month.year,
+                assignedMonth: month.month
+            ))
+        } else {
+            for assignment in whole {
+                assignment.savingsGroupIdentity = savingsGroupIdentity
+                assignment.assignedYear = month.year
+                assignment.assignedMonth = month.month
+                assignment.active = true
+                assignment.updatedAt = now
+            }
+        }
+    }
+
+    private func stageSplitSavingsFunding(
+        for row: CachedFinancialTransaction,
+        previousTreatment: TransactionType,
+        monthsBySplitID: [String: BudgetMonth],
+        savingsGroupIdentity: String?
+    ) {
+        let assignments = (try? mainContext.fetch(
+            FetchDescriptor<DurableSavingsTransferAssignment>()
+        )) ?? []
+        let matches = assignments.filter { $0.transactionId == row.id }
+        let now = Date.now
+        for assignment in matches {
+            if assignment.subtransactionId.isEmpty {
+                if previousTreatment == .savings {
+                    assignment.active = false
+                    assignment.updatedAt = now
+                }
+                continue
+            }
+            guard let month = monthsBySplitID[assignment.subtransactionId],
+                  let savingsGroupIdentity else {
+                assignment.active = false
+                assignment.updatedAt = now
+                continue
+            }
+            assignment.savingsGroupIdentity = savingsGroupIdentity
+            assignment.assignedYear = month.year
+            assignment.assignedMonth = month.month
+            assignment.active = true
+            assignment.updatedAt = now
+        }
+        let existingIDs = Set(matches.map(\.subtransactionId))
+        guard let savingsGroupIdentity else { return }
+        for (splitID, month) in monthsBySplitID
+            where !existingIDs.contains(splitID) {
+            mainContext.insert(DurableSavingsTransferAssignment(
+                transactionId: row.id,
+                subtransactionId: splitID,
+                savingsGroupIdentity: savingsGroupIdentity,
+                assignedYear: month.year,
+                assignedMonth: month.month
+            ))
+        }
+    }
+
     private func confirmCanonicalSplitTransaction(
         id: String,
         displayName: String,
         payeeCanonicalId: String?,
         subtransactions: [SubTransactionSummary],
-        reserveFundIdBySubtransactionId: [String: UUID]
+        reserveFundIdBySubtransactionId: [String: UUID],
+        savingsMonthBySubtransactionId: [String: BudgetMonth]
     ) -> Result<Void, SplitReviewFailure> {
         var descriptor = FetchDescriptor<CachedFinancialTransaction>(
             predicate: #Predicate { $0.id == id }
@@ -2952,9 +3083,24 @@ public final class PlaidTransactionSyncCoordinator {
             .isSubset(of: splitIDs) else {
             return .failure(.reserveUnavailable)
         }
+        guard Set(savingsMonthBySubtransactionId.keys)
+            .isSubset(of: splitIDs) else {
+            return .failure(.savingsUnavailable)
+        }
         let allowedTypes: Set<TransactionType> = isIncoming
             ? [.income, .refund, .reimbursement, .goalRefund]
-            : [.ordinarySpending, .reimbursement, .goalSpend]
+            : [.ordinarySpending, .reimbursement, .goalSpend, .savings]
+        let savingsSplitIDs = Set(subtransactions.compactMap {
+            $0.forecastTreatment == .savings ? $0.id : nil
+        })
+        guard savingsSplitIDs == Set(savingsMonthBySubtransactionId.keys)
+        else { return .failure(.savingsUnavailable) }
+        let savingsGroupIdentity = savingsSplitIDs.isEmpty
+            ? nil : activeSavingsGroupIdentity()
+        guard savingsSplitIDs.isEmpty || savingsGroupIdentity != nil else {
+            return .failure(.savingsUnavailable)
+        }
+        let previousTreatment = row.forecastTreatment
         var canonicalSplits: [SubTransactionSummary] = []
         for split in subtransactions {
             guard let treatment = split.forecastTreatment,
@@ -3071,6 +3217,12 @@ public final class PlaidTransactionSyncCoordinator {
             reserveFundIdBySubtransactionId:
                 reserveFundIdBySubtransactionId,
             activeReservesByID: activeReservesByID
+        )
+        stageSplitSavingsFunding(
+            for: row,
+            previousTreatment: previousTreatment,
+            monthsBySplitID: savingsMonthBySubtransactionId,
+            savingsGroupIdentity: savingsGroupIdentity
         )
         advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
@@ -3838,6 +3990,82 @@ public final class PlaidTransactionSyncCoordinator {
         reviewCanonicalPayeeNames(ids: ids, displayName: displayName)
     }
 
+    /// One-time bridge from retired receiving-account inference. A candidate
+    /// is only requeued when one unassigned savings deposit has exactly one
+    /// equal-and-opposite cash-account transfer in a four-day window and that
+    /// outflow is not claimed by another deposit. Nothing is auto-classified.
+    @discardableResult
+    public func stageLegacySavingsCandidatesForReview() -> Int {
+        let accounts = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialAccount>()
+        )) ?? []
+        let accountTypeByID = Dictionary(
+            uniqueKeysWithValues: accounts.map {
+                ($0.canonicalAccountId, $0.type)
+            }
+        )
+        let goalReserveIDs = Set(((try? mainContext.fetch(
+            FetchDescriptor<DurableGoalReserveAccount>()
+        )) ?? []).filter(\.active).map(\.canonicalAccountId))
+        let assignedTransactionIDs = Set(((try? mainContext.fetch(
+            FetchDescriptor<DurableSavingsTransferAssignment>()
+        )) ?? []).filter {
+            $0.active && $0.subtransactionId.isEmpty
+        }.map(\.transactionId))
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )) ?? []
+        let deposits = rows.filter {
+            !$0.deleted && !$0.pending
+                && $0.forecastTreatment == .internalTransfer
+                && $0.amountMilliunits > 0
+                && accountTypeByID[$0.canonicalAccountId] == .savings
+                && !goalReserveIDs.contains($0.canonicalAccountId)
+                && !assignedTransactionIDs.contains($0.id)
+        }
+        let outflows = rows.filter {
+            !$0.deleted && !$0.pending
+                && $0.forecastTreatment == .internalTransfer
+                && $0.amountMilliunits < 0
+                && accountTypeByID[$0.canonicalAccountId]?.isCashLike == true
+                && accountTypeByID[$0.canonicalAccountId] != .savings
+        }
+        let proposedPairs = deposits.compactMap {
+            deposit -> (depositID: String, outflow: CachedFinancialTransaction)? in
+            let matches = outflows.filter {
+                $0.amountMilliunits == -deposit.amountMilliunits
+                    && abs($0.postedDate.timeIntervalSince(deposit.postedDate))
+                        <= 4 * 86_400
+            }
+            guard matches.count == 1, let match = matches.first else {
+                return nil
+            }
+            return (deposit.id, match)
+        }
+        let countsByOutflowID = Dictionary(grouping: proposedPairs) {
+            $0.outflow.id
+        }.mapValues(\.count)
+        let candidates = proposedPairs.compactMap {
+            countsByOutflowID[$0.outflow.id] == 1 ? $0.outflow : nil
+        }
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        let decisionByExternalID = latestCanonicalDecisionsByTransactionID(
+            decisions
+        )
+        let now = Date.now
+        for row in candidates {
+            row.requiresReview = true
+            row.updatedAt = now
+            if let decision = decisionByExternalID[row.externalId] {
+                decision.reviewed = false
+                decision.updatedAt = now
+            }
+        }
+        return candidates.count
+    }
+
     @discardableResult
     public func confirmTransaction(
         id: String,
@@ -3847,7 +4075,8 @@ public final class PlaidTransactionSyncCoordinator {
         treatment: ForecastTreatment,
         categoryCanonicalId: String? = nil,
         goalId: UUID? = nil,
-        reserveFundId: UUID? = nil
+        reserveFundId: UUID? = nil,
+        savingsMonth: BudgetMonth? = nil
     ) -> Bool {
         return confirmCanonicalTransaction(
             id: id,
@@ -3857,7 +4086,8 @@ public final class PlaidTransactionSyncCoordinator {
             treatment: treatment,
             categoryCanonicalId: categoryCanonicalId,
             goalId: goalId,
-            reserveFundId: reserveFundId
+            reserveFundId: reserveFundId,
+            savingsMonth: savingsMonth
         )
     }
 
@@ -3867,7 +4097,8 @@ public final class PlaidTransactionSyncCoordinator {
         displayName: String,
         payeeCanonicalId: String? = nil,
         subtransactions: [SubTransactionSummary],
-        reserveFundIdBySubtransactionId: [String: UUID] = [:]
+        reserveFundIdBySubtransactionId: [String: UUID] = [:],
+        savingsMonthBySubtransactionId: [String: BudgetMonth] = [:]
     ) -> Bool {
         switch reviewSplitTransactionResult(
             id: id,
@@ -3875,7 +4106,9 @@ public final class PlaidTransactionSyncCoordinator {
             payeeCanonicalId: payeeCanonicalId,
             subtransactions: subtransactions,
             reserveFundIdBySubtransactionId:
-                reserveFundIdBySubtransactionId
+                reserveFundIdBySubtransactionId,
+            savingsMonthBySubtransactionId:
+                savingsMonthBySubtransactionId
         ) {
         case .success: true
         case .failure: false
@@ -3887,7 +4120,8 @@ public final class PlaidTransactionSyncCoordinator {
         displayName: String,
         payeeCanonicalId: String? = nil,
         subtransactions: [SubTransactionSummary],
-        reserveFundIdBySubtransactionId: [String: UUID] = [:]
+        reserveFundIdBySubtransactionId: [String: UUID] = [:],
+        savingsMonthBySubtransactionId: [String: BudgetMonth] = [:]
     ) -> Result<Void, SplitReviewFailure> {
         confirmCanonicalSplitTransaction(
             id: id,
@@ -3895,7 +4129,9 @@ public final class PlaidTransactionSyncCoordinator {
             payeeCanonicalId: payeeCanonicalId,
             subtransactions: subtransactions,
             reserveFundIdBySubtransactionId:
-                reserveFundIdBySubtransactionId
+                reserveFundIdBySubtransactionId,
+            savingsMonthBySubtransactionId:
+                savingsMonthBySubtransactionId
         )
     }
 

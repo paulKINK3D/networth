@@ -199,14 +199,18 @@ cd PlaidWorker && npm test && npm run check
   comparison into a projected finish.
 - **Savings is a designated budget group, not ordinary spending.** Its
   repeating target behaves like every other group target, it contains no
-  ordinary categories, and actual
-  progress comes only from the savings-account side of confirmed internal
-  transfers; transfers involving active Goal reserve accounts remain excluded.
-  A savings-choice entry reallocates the selected month only from another
-  budget group into Savings, preserving the total budget and never creating a
-  bank transaction. A posted savings transfer may be assigned to the preceding
-  budget month for presentation, but its real transaction date, balances, and
-  projection timing never change.
+  ordinary categories, and new actual progress comes only from an explicit
+  `Savings` type on the outgoing budgeted-cash transaction or split line. The
+  receiving deposit remains an Internal transfer. Savings requires a budget
+  month, reduces that month's Savings remaining and Retained, and stays outside
+  ordinary-spending totals, trends, and historical projection-spending
+  estimates. A savings-choice entry reallocates the selected month only from
+  another budget group into Savings, preserving the total budget and never
+  creating a bank transaction. A posted transfer may be assigned to any still-
+  outstanding prior month or its posted month for presentation, but its real
+  transaction date, balances, and projection timing never change. Previously
+  month-assigned receiving deposits remain grandfathered; do not revive broad
+  savings-account inference.
 
 ## Validation Checklist
 - App target builds.

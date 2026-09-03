@@ -187,6 +187,8 @@ struct SpendingHistoryView: View {
     @State private var selectedMonth: Date?
     @State private var detailSelection: SpendingGroupDetailSelection?
     @State private var savingsBucketSelection: SavingsBucketSelection?
+    @State private var savingsTransferPromptSelection:
+        SavingsTransferPromptSelection?
     @State private var showingSinkingFunds = false
     @State private var showingGroupedReview = false
     @State private var showingIndividualReview = false
@@ -278,6 +280,9 @@ struct SpendingHistoryView: View {
         .sheet(item: $savingsBucketSelection) { selection in
             SavingsBucketDetailSheet(selection: selection)
                 .environment(container)
+        }
+        .sheet(item: $savingsTransferPromptSelection) { selection in
+            SavingsTransferPromptDetailSheet(selection: selection)
         }
         .sheet(isPresented: $showingGroupedReview) {
             GroupedHistoricalReviewSheet().environment(container)
@@ -847,6 +852,8 @@ struct SpendingHistoryView: View {
         let savingsBudget = budgets.first {
             $0.groupIdentity == model.savingsGroupIdentity
         }
+        let closedSavingsStatuses = closedSavingsStatuses(for: model)
+        let savingsTransferStatus = closedSavingsStatuses.first
         let hasSinkingFunds = model.sinkingFunds.contains { !$0.archived }
         if !budgets.isEmpty || hasSinkingFunds {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
@@ -873,35 +880,49 @@ struct SpendingHistoryView: View {
                 }
 
                 if savingsBudget != nil || hasSinkingFunds {
-                    Text("Setting Aside")
+                    Text("Future")
                         .font(NwTypography.caption)
                         .foregroundStyle(NwAppColors.textSecondary)
                         .textCase(.uppercase)
                         .padding(.horizontal, NwSpacing.xs)
 
-                    LazyVGrid(
-                        columns: budgetGridColumns,
-                        spacing: NwSpacing.sm
-                    ) {
-                        if let savingsBudget {
-                            halfWidthBudgetCard(
-                                savingsBudget,
-                                month: month,
-                                periodStartMonth: period.startMonth,
-                                model: model
-                            )
+                    VStack(spacing: NwSpacing.sm) {
+                        LazyVGrid(
+                            columns: budgetGridColumns,
+                            spacing: NwSpacing.sm
+                        ) {
+                            if let savingsBudget {
+                                halfWidthBudgetCard(
+                                    savingsBudget,
+                                    month: month,
+                                    periodStartMonth: period.startMonth,
+                                    model: model
+                                )
+                            }
+                            if hasSinkingFunds {
+                                let reserveMonth = BudgetMonth(
+                                    containing: month.month
+                                )
+                                sinkingFundsHalfWidthCard(
+                                    balance: model.sinkingFundBalance(
+                                        through: reserveMonth
+                                    ),
+                                    assigned: model.reserveAssigned(in: reserveMonth),
+                                    plan: model.reservePlan(for: reserveMonth)
+                                )
+                            }
                         }
-                        if hasSinkingFunds {
-                            let reserveMonth = BudgetMonth(
-                                containing: month.month
-                            )
-                            sinkingFundsHalfWidthCard(
-                                balance: model.sinkingFundBalance(
-                                    through: reserveMonth
-                                ),
-                                assigned: model.reserveAssigned(in: reserveMonth),
-                                plan: model.reservePlan(for: reserveMonth)
-                            )
+
+                        if let savingsBudget, let savingsTransferStatus {
+                            savingsTransferPromptCard(
+                                status: savingsTransferStatus
+                            ) {
+                                selectSavingsTransferPrompt(
+                                    savingsBudget,
+                                    model: model,
+                                    status: savingsTransferStatus
+                                )
+                            }
                         }
                     }
                 }
@@ -914,6 +935,85 @@ struct SpendingHistoryView: View {
             GridItem(.flexible(), spacing: NwSpacing.sm),
             GridItem(.flexible(), spacing: NwSpacing.sm)
         ]
+    }
+
+    private func closedSavingsStatuses(
+        for model: SpendingHistoryModel
+    ) -> [SavingsMonthStatus] {
+        model.savingsStatuses(
+            through: BudgetMonth(containing: Date.now).previous
+        ).filter { $0.outstanding > .zero }
+    }
+
+    private func selectSavingsBucket(
+        _ budget: SpendingGroupBudgetSnapshot,
+        month: SpendingHistoryMonth,
+        model: SpendingHistoryModel,
+        outstandingMonths: [SavingsMonthStatus]
+    ) {
+        savingsBucketSelection = SavingsBucketSelection(
+            month: month.month,
+            groupIdentity: budget.groupIdentity,
+            groupName: budget.groupName,
+            transfers: model.savingsTransfers,
+            budgetSnapshots: model.budgetSummary(for: month).groups,
+            outstandingMonths: outstandingMonths
+        )
+    }
+
+    private func selectSavingsTransferPrompt(
+        _ budget: SpendingGroupBudgetSnapshot,
+        model: SpendingHistoryModel,
+        status: SavingsMonthStatus
+    ) {
+        savingsTransferPromptSelection = SavingsTransferPromptSelection(
+            status: status,
+            transfers: model.savingsTransfers.filter {
+                $0.groupIdentity == budget.groupIdentity
+                    && $0.effectiveMonth == status.month
+            }
+        )
+    }
+
+    private func savingsTransferPromptCard(
+        status: SavingsMonthStatus,
+        action: @escaping () -> Void
+    ) -> some View {
+        let monthLabel = status.month.startDate().formatted(
+            .dateTime.month(.wide).year()
+        )
+        return Button(action: action) {
+            NwCard(style: .primary) {
+                HStack(spacing: NwSpacing.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Savings transfer")
+                            .font(NwTypography.footnoteEm)
+                            .foregroundStyle(NwAppColors.textPrimary)
+                        Text(
+                            "\(CurrencyFormatter.currency(status.outstanding, showCents: false)) to transfer"
+                        )
+                        .font(NwTypography.headline)
+                        .foregroundStyle(NwAppColors.primary)
+                        .monospacedDigit()
+                    }
+                    Spacer(minLength: 0)
+                    HStack(spacing: NwSpacing.xs) {
+                        Text(monthLabel)
+                            .font(NwTypography.caption)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                        NwIcon.chevron.image
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            "Savings transfer for \(monthLabel), \(CurrencyFormatter.currency(status.outstanding, showCents: false)) remaining"
+        )
+        .accessibilityHint("Shows this month's Savings transfer progress")
     }
 
     private func sinkingFundsHalfWidthCard(
@@ -1007,12 +1107,11 @@ struct SpendingHistoryView: View {
         )
         Button {
             if budget.groupIdentity == model.savingsGroupIdentity {
-                savingsBucketSelection = SavingsBucketSelection(
-                    month: month.month,
-                    groupIdentity: budget.groupIdentity,
-                    groupName: budget.groupName,
-                    transfers: model.savingsTransfers,
-                    budgetSnapshots: model.budgetSummary(for: month).groups
+                selectSavingsBucket(
+                    budget,
+                    month: month,
+                    model: model,
+                    outstandingMonths: closedSavingsStatuses(for: model)
                 )
                 return
             }
@@ -2746,15 +2845,38 @@ struct SpendingHistoryModel: Sendable {
         }.sum()
     }
 
+    func savingsStatuses(through month: BudgetMonth) -> [SavingsMonthStatus] {
+        guard let savingsGroupIdentity else { return [] }
+        let savedByMonth = Dictionary(
+            grouping: savingsTransfers.filter {
+                $0.groupIdentity == savingsGroupIdentity
+            },
+            by: \.effectiveMonth
+        ).mapValues { $0.map(\.amount).sum() }
+        return SavingsMonthStatusResolver().statuses(
+            groupIdentity: savingsGroupIdentity,
+            rules: budgetRules,
+            choices: savingsChoices,
+            savedByMonth: savedByMonth,
+            through: month
+        )
+    }
+
 }
 
 struct SavingsTransferActivity: Identifiable, Hashable, Sendable {
-    let id: String
+    let transactionID: String
+    let subtransactionID: String?
+    let groupIdentity: String
     let postedDate: Date
     let effectiveMonth: BudgetMonth
     let amount: Money
     let title: String
     let accountName: String
+
+    var id: String {
+        subtransactionID.map { "\(transactionID)|\($0)" } ?? transactionID
+    }
 }
 
 struct SpendingReserveAssignmentActivity: Identifiable, Hashable, Sendable {
@@ -2813,10 +2935,18 @@ struct SavingsBucketSelection: Identifiable {
     let groupName: String
     let transfers: [SavingsTransferActivity]
     let budgetSnapshots: [SpendingGroupBudgetSnapshot]
+    let outstandingMonths: [SavingsMonthStatus]
 
     var id: String {
         "\(groupIdentity):\(BudgetMonth(containing: month).id)"
     }
+}
+
+struct SavingsTransferPromptSelection: Identifiable {
+    let status: SavingsMonthStatus
+    let transfers: [SavingsTransferActivity]
+
+    var id: String { status.id }
 }
 
 /// Off-main aggregation: maps approved cached transactions plus the
@@ -2876,20 +3006,30 @@ actor SpendingHistoryBuildActor {
             .max(by: { $0.updatedAt < $1.updatedAt })
         let latestAssignments = Dictionary(
             grouping: savingsAssignmentRows,
-            by: { $0.transactionId }
+            by: {
+                SpendingSavingsLineKey(
+                    transactionID: $0.transactionId,
+                    subtransactionID: $0.subtransactionId.isEmpty
+                        ? nil : $0.subtransactionId
+                )
+            }
         ).compactMapValues { rows in
             rows.max(by: { $0.updatedAt < $1.updatedAt })
         }
-        let assignedMonthByTransactionID: [String: BudgetMonth] =
-            latestAssignments.reduce(into: [:]) { result, pair in
-                let assignment = pair.value
-                guard savingsGroup == nil
-                        || assignment.savingsGroupIdentity
-                            == savingsGroup?.groupIdentity else {
-                    return
-                }
-                result[pair.key] = assignment.assignedBudgetMonth
-            }
+        let savingsAttributionByLine = latestAssignments.reduce(into: [
+            SpendingSavingsLineKey: SpendingSavingsAttribution
+        ]()) { result, pair in
+            let assignment = pair.value
+            guard assignment.active else { return }
+            let groupName = latestGroups[
+                assignment.savingsGroupIdentity
+            ]?.name ?? savingsGroup?.name ?? "Savings"
+            result[pair.key] = SpendingSavingsAttribution(
+                groupIdentity: assignment.savingsGroupIdentity,
+                groupName: groupName,
+                month: assignment.assignedBudgetMonth
+            )
+        }
         let excludedSavingsAccountIDs = Set(
             goalReserveRows.filter { $0.active }
                 .map { $0.canonicalAccountId }
@@ -2933,8 +3073,7 @@ actor SpendingHistoryBuildActor {
             savingsGroup: savingsGroup.map {
                 ($0.groupIdentity, $0.name)
             },
-            savingsTransferMonthByTransactionID:
-                assignedMonthByTransactionID,
+            savingsAttributionByLine: savingsAttributionByLine,
             excludedSavingsAccountIDs: excludedSavingsAccountIDs,
             sinkingFundByLine: sinkingFundByLine
         )
@@ -3010,31 +3149,71 @@ actor SpendingHistoryBuildActor {
             }
         )
         let savingsTransfers: [SavingsTransferActivity]
-        if let savingsGroup {
-            savingsTransfers = rows.compactMap { row in
-                guard row.forecastTreatment == .internalTransfer,
-                      accountByID[row.canonicalAccountId]?.type == .savings,
-                      !excludedSavingsAccountIDs.contains(
-                        row.canonicalAccountId
-                      ),
-                      row.amountMilliunits != 0 else {
-                    return nil
+        if savingsGroup != nil {
+            savingsTransfers = rows.flatMap { row -> [SavingsTransferActivity] in
+                let accountName = accountByID[row.canonicalAccountId]?.name
+                    ?? "Account"
+                if row.forecastTreatment == .internalTransfer,
+                   accountByID[row.canonicalAccountId]?.type == .savings,
+                   !excludedSavingsAccountIDs.contains(row.canonicalAccountId),
+                   row.amountMilliunits != 0,
+                   let assignment = latestAssignments[
+                    SpendingSavingsLineKey(
+                        transactionID: row.id,
+                        subtransactionID: nil
+                    )
+                   ], assignment.active {
+                    return [SavingsTransferActivity(
+                        transactionID: row.id,
+                        subtransactionID: nil,
+                        groupIdentity: assignment.savingsGroupIdentity,
+                        postedDate: row.postedDate,
+                        effectiveMonth: assignment.assignedBudgetMonth,
+                        amount: Money(milliunits: row.amountMilliunits),
+                        title: row.displayName,
+                        accountName: accountName
+                    )]
                 }
-                let assignment = latestAssignments[row.id]
-                let assignedMonth = assignment.flatMap {
-                    $0.savingsGroupIdentity == savingsGroup.groupIdentity
-                        ? $0.assignedBudgetMonth : nil
+                if !row.isSplit, row.forecastTreatment == .savings,
+                   row.amountMilliunits < 0,
+                   let assignment = latestAssignments[
+                    SpendingSavingsLineKey(
+                        transactionID: row.id,
+                        subtransactionID: nil
+                    )
+                   ], assignment.active {
+                    return [SavingsTransferActivity(
+                        transactionID: row.id,
+                        subtransactionID: nil,
+                        groupIdentity: assignment.savingsGroupIdentity,
+                        postedDate: row.postedDate,
+                        effectiveMonth: assignment.assignedBudgetMonth,
+                        amount: Money(milliunits: -row.amountMilliunits),
+                        title: row.displayName,
+                        accountName: accountName
+                    )]
                 }
-                return SavingsTransferActivity(
-                    id: row.id,
-                    postedDate: row.postedDate,
-                    effectiveMonth: assignedMonth
-                        ?? BudgetMonth(containing: row.postedDate),
-                    amount: Money(milliunits: row.amountMilliunits),
-                    title: row.displayName,
-                    accountName: accountByID[row.canonicalAccountId]?.name
-                        ?? "Savings"
-                )
+                return row.subtransactions.compactMap { leg in
+                    guard !leg.deleted,
+                          leg.forecastTreatment == .savings,
+                          leg.amount < .zero,
+                          let assignment = latestAssignments[
+                            SpendingSavingsLineKey(
+                                transactionID: row.id,
+                                subtransactionID: leg.id
+                            )
+                          ], assignment.active else { return nil }
+                    return SavingsTransferActivity(
+                        transactionID: row.id,
+                        subtransactionID: leg.id,
+                        groupIdentity: assignment.savingsGroupIdentity,
+                        postedDate: row.postedDate,
+                        effectiveMonth: assignment.assignedBudgetMonth,
+                        amount: leg.amount.absolute,
+                        title: row.displayName,
+                        accountName: accountName
+                    )
+                }
             }
             .sorted { lhs, rhs in
                 if lhs.postedDate != rhs.postedDate {
@@ -3085,8 +3264,93 @@ private struct SavingsTransferAssignmentTarget: Identifiable {
     let transfer: SavingsTransferActivity
     let proposedMonth: BudgetMonth
     let savingsGroupIdentity: String
+    let monthOptions: [BudgetMonth]
 
     var id: String { transfer.id }
+}
+
+private struct SavingsTransferPromptDetailSheet: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+
+    let selection: SavingsTransferPromptSelection
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    LabeledContent("Total to transfer") {
+                        NwAmountText(selection.status.target, variant: .body)
+                    }
+                } header: {
+                    Text(monthLabel)
+                }
+
+                Section("Transfers made") {
+                    if selection.transfers.isEmpty {
+                        Text("No transfers yet")
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    } else {
+                        ForEach(selection.transfers) { transfer in
+                            HStack(spacing: NwSpacing.md) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Transfer")
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                    Text(transferDate(transfer))
+                                        .font(NwTypography.footnote)
+                                        .foregroundStyle(
+                                            NwAppColors.textSecondary
+                                        )
+                                }
+                                Spacer(minLength: 0)
+                                NwAmountText(
+                                    transfer.amount,
+                                    variant: .body,
+                                    color: NwAppColors.favorableText
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    LabeledContent("Remaining") {
+                        NwAmountText(
+                            selection.status.outstanding,
+                            variant: .body,
+                            color: selection.status.outstanding > .zero
+                                ? NwAppColors.primary
+                                : NwAppColors.favorableText
+                        )
+                    }
+                }
+            }
+            .navigationTitle("Savings transfer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+        }
+    }
+
+    private var monthLabel: String {
+        selection.status.month.startDate().formatted(
+            .dateTime.month(.wide).year()
+        )
+    }
+
+    private func transferDate(_ transfer: SavingsTransferActivity) -> String {
+        transfer.postedDate.formatted(
+            .dateTime.month(.abbreviated).day().year()
+        )
+    }
 }
 
 private struct SavingsBucketDetailSheet: View {
@@ -3149,29 +3413,6 @@ private struct SavingsBucketDetailSheet: View {
                     }
                     .buttonStyle(NwPrimaryButtonStyle())
                     .disabled(sourceOptions(excluding: nil).isEmpty)
-                }
-
-                if let candidateTransfer {
-                    Section("Possible Prior-Month Transfer") {
-                        Button {
-                            assignmentEditor = SavingsTransferAssignmentTarget(
-                                transfer: candidateTransfer,
-                                proposedMonth: budgetMonth,
-                                savingsGroupIdentity: selection.groupIdentity
-                            )
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Apply to \(monthLabel)")
-                                    .foregroundStyle(NwAppColors.textPrimary)
-                                Text(candidateTransferLabel(candidateTransfer))
-                                    .font(NwTypography.footnote)
-                                    .foregroundStyle(NwAppColors.textSecondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
                 }
 
                 Section("Savings Choices") {
@@ -3239,9 +3480,12 @@ private struct SavingsBucketDetailSheet: View {
                             Button {
                                 assignmentEditor = SavingsTransferAssignmentTarget(
                                     transfer: transfer,
-                                    proposedMonth: budgetMonth,
+                                    proposedMonth: transfer.effectiveMonth,
                                     savingsGroupIdentity:
-                                        selection.groupIdentity
+                                        selection.groupIdentity,
+                                    monthOptions: assignmentMonthOptions(
+                                        for: transfer
+                                    )
                                 )
                             } label: {
                                 HStack {
@@ -3339,13 +3583,6 @@ private struct SavingsBucketDetailSheet: View {
             }
     }
 
-    private var latestAssignments: [String: DurableSavingsTransferAssignment] {
-        Dictionary(grouping: assignmentRows, by: { $0.transactionId })
-            .compactMapValues { rows in
-                rows.max(by: { $0.updatedAt < $1.updatedAt })
-            }
-    }
-
     private var baseTarget: Money {
         selection.budgetSnapshots.first {
             $0.groupIdentity == selection.groupIdentity
@@ -3370,18 +3607,8 @@ private struct SavingsBucketDetailSheet: View {
 
     private var monthTransfers: [SavingsTransferActivity] {
         selection.transfers.filter {
-            effectiveMonth(for: $0) == budgetMonth
-        }
-    }
-
-    private var candidateTransfer: SavingsTransferActivity? {
-        guard remainingToMove > .zero else { return nil }
-        return selection.transfers.first { transfer in
-            transfer.amount == remainingToMove
-                && transfer.amount > .zero
-                && BudgetMonth(containing: transfer.postedDate)
-                    == budgetMonth.next
-                && latestAssignments[transfer.id] == nil
+            $0.groupIdentity == selection.groupIdentity
+                && $0.effectiveMonth == budgetMonth
         }
     }
 
@@ -3432,36 +3659,29 @@ private struct SavingsBucketDetailSheet: View {
         }
     }
 
-    private func effectiveMonth(
-        for transfer: SavingsTransferActivity
-    ) -> BudgetMonth {
-        guard let assignment = latestAssignments[transfer.id],
-              assignment.savingsGroupIdentity == selection.groupIdentity
-        else { return BudgetMonth(containing: transfer.postedDate) }
-        return assignment.assignedBudgetMonth
-    }
-
     private func transferSubtitle(
         _ transfer: SavingsTransferActivity
     ) -> String {
         var text = transfer.accountName + " · " + transfer.postedDate.formatted(
             .dateTime.month(.abbreviated).day()
         )
-        if effectiveMonth(for: transfer)
+        if transfer.effectiveMonth
             != BudgetMonth(containing: transfer.postedDate) {
             text += " · Applied to \(monthLabel)"
         }
         return text
     }
 
-    private func candidateTransferLabel(
-        _ transfer: SavingsTransferActivity
-    ) -> String {
-        CurrencyFormatter.currency(transfer.amount, showCents: false)
-            + " · "
-            + transfer.postedDate.formatted(
-                .dateTime.month(.abbreviated).day()
-            )
+    private func assignmentMonthOptions(
+        for transfer: SavingsTransferActivity
+    ) -> [BudgetMonth] {
+        let posted = BudgetMonth(containing: transfer.postedDate)
+        var months = Set(selection.outstandingMonths.compactMap {
+            $0.month < posted ? $0.month : nil
+        })
+        months.insert(posted)
+        months.insert(transfer.effectiveMonth)
+        return months.sorted()
     }
 
     private func deleteChoice(_ choice: DurableSavingsBudgetChoice) {
@@ -3715,21 +3935,21 @@ private struct SavingsTransferAssignmentSheet: View {
     }
 
     private var monthOptions: [BudgetMonth] {
-        [postedMonth.previous, postedMonth]
+        target.monthOptions
     }
 
     private func save() {
         let matches = assignmentRows.filter {
-            $0.transactionId == target.transfer.id
+            $0.transactionId == target.transfer.transactionID
+                && $0.subtransactionId
+                    == (target.transfer.subtransactionID ?? "")
         }
-        if selectedMonth == postedMonth {
-            for row in matches {
-                container.modelContainer.mainContext.delete(row)
-            }
-        } else if matches.isEmpty {
+        if matches.isEmpty {
             container.modelContainer.mainContext.insert(
                 DurableSavingsTransferAssignment(
-                    transactionId: target.transfer.id,
+                    transactionId: target.transfer.transactionID,
+                    subtransactionId:
+                        target.transfer.subtransactionID ?? "",
                     savingsGroupIdentity: target.savingsGroupIdentity,
                     assignedYear: selectedMonth.year,
                     assignedMonth: selectedMonth.month
@@ -3740,6 +3960,7 @@ private struct SavingsTransferAssignmentSheet: View {
                 row.savingsGroupIdentity = target.savingsGroupIdentity
                 row.assignedYear = selectedMonth.year
                 row.assignedMonth = selectedMonth.month
+                row.active = true
                 row.updatedAt = .now
             }
         }

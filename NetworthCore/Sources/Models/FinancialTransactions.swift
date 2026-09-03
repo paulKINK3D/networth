@@ -50,6 +50,10 @@ public enum TransactionType: String, Codable, Sendable, CaseIterable {
     /// Money paid on someone else's behalf and expected back. Both the
     /// outflow and its eventual repayment stay outside ordinary Spending.
     case reimbursement
+    /// Money intentionally moved out of the monthly budget. The real posted
+    /// transaction remains an account outflow; a separate durable attribution
+    /// selects the Spending budget month it fulfills.
+    case savings
     /// A purchase paid from one explicitly selected goal.
     case goalSpend
     /// Money returned to one explicitly selected goal.
@@ -69,6 +73,7 @@ public enum TransactionType: String, Codable, Sendable, CaseIterable {
         .income,
         .refund,
         .reimbursement,
+        .savings,
         .goalSpend,
         .goalRefund,
         .internalTransfer,
@@ -95,7 +100,7 @@ public enum TransactionTypeRules {
     ) -> Set<CategoryReportingRole>? {
         switch treatment {
         case .ordinarySpending, .refund: [.spending]
-        case .income, .investmentContribution,
+        case .income, .investmentContribution, .savings,
              .internalTransfer, .cardPayment, .reimbursement,
              .goalSpend, .goalRefund, .excluded, .unknown: nil
         }
@@ -114,7 +119,7 @@ public enum TransactionTypeRules {
         amountMilliunits: Int64
     ) -> Bool {
         switch treatment {
-        case .ordinarySpending, .goalSpend:
+        case .ordinarySpending, .goalSpend, .savings:
             amountMilliunits < 0
         case .income, .refund, .goalRefund:
             amountMilliunits > 0

@@ -251,7 +251,7 @@ public enum SpendingHistoryBuilder {
     ) -> Bool {
         switch treatment {
         case .ordinarySpending, .refund, nil: true
-        case .internalTransfer: reportingRole == .transfer
+        case .internalTransfer, .savings: reportingRole == .transfer
         case .investmentContribution: reportingRole == .investment
         case .income, .cardPayment, .reimbursement, .goalSpend, .goalRefund,
              .excluded, .unknown: false
@@ -467,6 +467,11 @@ public enum SpendingHistoryBuilder {
                 // The app supplies only the savings-account side: deposits
                 // are positive and withdrawals are negative.
                 reportedAmount = entry.amountMilliunits
+            case .savings:
+                guard entry.reportingRole == .transfer,
+                      entry.amountMilliunits < 0 else { continue }
+                // Explicit Savings uses the outgoing budgeted-cash side.
+                reportedAmount = -entry.amountMilliunits
             case .income, .cardPayment, .reimbursement, .goalSpend,
                  .goalRefund, .excluded, .unknown:
                 continue

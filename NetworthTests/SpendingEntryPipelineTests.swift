@@ -90,6 +90,78 @@ struct SpendingEntryPipelineTests {
         )
     }
 
+    @Test func explicitSavingsUsesOutgoingWholeAndSplitLines() throws {
+        let august = BudgetMonth(year: 2026, month: 8)
+        let september = august.next
+        let context = SpendingEntryPipeline.Context(
+            groups: [],
+            categories: [],
+            accounts: [account(id: "checking", type: .checking)],
+            savingsGroup: ("savings-group", "Savings"),
+            savingsAttributionByLine: [
+                SpendingSavingsLineKey(
+                    transactionID: "whole",
+                    subtransactionID: nil
+                ): SpendingSavingsAttribution(
+                    groupIdentity: "savings-group",
+                    groupName: "Savings",
+                    month: august
+                ),
+                SpendingSavingsLineKey(
+                    transactionID: "split",
+                    subtransactionID: "saved"
+                ): SpendingSavingsAttribution(
+                    groupIdentity: "savings-group",
+                    groupName: "Savings",
+                    month: september
+                ),
+            ]
+        )
+        let whole = transaction(
+            id: "whole",
+            accountID: "checking",
+            treatment: .savings
+        )
+        let split = transaction(
+            id: "split",
+            accountID: "checking",
+            treatment: .unknown
+        )
+        split.subtransactionsData = try JSONEncoder().encode([
+            SubTransactionSummary(
+                id: "saved",
+                amount: Money(milliunits: -60_000),
+                categoryId: nil,
+                categoryName: nil,
+                forecastTreatment: .savings,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+            SubTransactionSummary(
+                id: "spent",
+                amount: Money(milliunits: -40_000),
+                categoryId: "other",
+                categoryName: "Other",
+                forecastTreatment: .ordinarySpending,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+        ])
+
+        let entries = SpendingEntryPipeline.assembleEntries(
+            rows: [whole, split],
+            context: context
+        )
+        let savings = entries.filter { $0.treatment == .savings }
+
+        #expect(savings.count == 2)
+        #expect(savings.allSatisfy { $0.reportingRole == .transfer })
+        #expect(savings.map { BudgetMonth(containing: $0.date) }
+            == [august, september])
+    }
+
     @Test func investmentContributionsUseOnlyTheCashAccountSide() {
         let context = SpendingEntryPipeline.Context(
             groups: [],

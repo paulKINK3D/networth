@@ -502,7 +502,7 @@ public struct DiscretionaryBudgetCalculator: Sendable {
         _ treatment: ForecastTreatment?
     ) -> Bool {
         switch treatment {
-        case .income, .internalTransfer, .cardPayment, .reimbursement,
+        case .income, .internalTransfer, .cardPayment, .reimbursement, .savings,
              .goalSpend, .goalRefund, .investmentContribution, .excluded,
              .unknown:
             return false

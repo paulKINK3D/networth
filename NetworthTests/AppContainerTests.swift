@@ -3754,6 +3754,187 @@ struct AppContainerTests {
         })
     }
 
+    @Test func savingsReviewPersistsAndReleasesWholeAndSplitMonths() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let savingsGroup = DurableCategoryGroup(
+            groupIdentity: "group:savings",
+            name: "Savings",
+            isSavingsBucket: true
+        )
+        let summary = try #require(
+            PlaidTransactionDTO(
+                id: "savings-outflow",
+                accountId: "checking-1",
+                date: "2026-09-02",
+                amount: 100,
+                name: "TRANSFER TO SAVINGS"
+            ).financialSummary(canonicalAccountId: "canonical-checking")
+        )
+        let transaction = CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassifier().classify(
+                summary, rules: []
+            )
+        )
+        context.insert(savingsGroup)
+        context.insert(transaction)
+        try context.save()
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(),
+            mainContext: context
+        )
+        let august = BudgetMonth(year: 2026, month: 8)
+        let september = august.next
+
+        #expect(coordinator.confirmTransaction(
+            id: transaction.id,
+            displayName: "Savings Transfer",
+            categoryName: nil,
+            treatment: .savings,
+            savingsMonth: august
+        ))
+        var assignments = try context.fetch(
+            FetchDescriptor<DurableSavingsTransferAssignment>()
+        )
+        let whole = try #require(assignments.first)
+        #expect(whole.active)
+        #expect(whole.subtransactionId.isEmpty)
+        #expect(whole.assignedBudgetMonth == august)
+
+        let splits = [
+            SubTransactionSummary(
+                id: "august",
+                amount: Money.dollars(-60),
+                categoryId: nil,
+                categoryName: nil,
+                forecastTreatment: .savings,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+            SubTransactionSummary(
+                id: "september",
+                amount: Money.dollars(-40),
+                categoryId: nil,
+                categoryName: nil,
+                forecastTreatment: .savings,
+                payeeName: nil,
+                memo: nil,
+                deleted: false
+            ),
+        ]
+        #expect(coordinator.reviewSplitTransaction(
+            id: transaction.id,
+            displayName: "Savings Transfer",
+            subtransactions: splits,
+            savingsMonthBySubtransactionId: [
+                "august": august,
+                "september": september,
+            ]
+        ))
+        assignments = try context.fetch(
+            FetchDescriptor<DurableSavingsTransferAssignment>()
+        )
+        #expect(!whole.active)
+        #expect(assignments.filter { $0.active }.count == 2)
+        #expect(Set(assignments.filter { $0.active }.map {
+            $0.assignedBudgetMonth
+        }) == [august, september])
+
+        #expect(coordinator.confirmTransaction(
+            id: transaction.id,
+            displayName: "Savings Transfer",
+            categoryName: nil,
+            treatment: .internalTransfer
+        ))
+        #expect(assignments.allSatisfy { !$0.active })
+    }
+
+    @Test func legacySavingsMigrationRequeuesOnlyTheOutgoingMatch() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        context.insert(CachedFinancialAccount(
+            canonicalAccountId: "checking",
+            externalId: "checking",
+            itemId: "item",
+            source: .plaid,
+            institutionName: "Bank",
+            name: "Checking",
+            officialName: nil,
+            mask: nil,
+            type: .checking,
+            subtype: "checking",
+            currentBalanceMilliunits: 0,
+            availableBalanceMilliunits: 0,
+            creditLimitMilliunits: nil,
+            isoCurrencyCode: "USD"
+        ))
+        context.insert(CachedFinancialAccount(
+            canonicalAccountId: "savings",
+            externalId: "savings",
+            itemId: "item",
+            source: .plaid,
+            institutionName: "Bank",
+            name: "Savings",
+            officialName: nil,
+            mask: nil,
+            type: .savings,
+            subtype: "savings",
+            currentBalanceMilliunits: 0,
+            availableBalanceMilliunits: 0,
+            creditLimitMilliunits: nil,
+            isoCurrencyCode: "USD"
+        ))
+        let outgoingSummary = try #require(PlaidTransactionDTO(
+            id: "outgoing",
+            accountId: "checking",
+            date: "2026-09-01",
+            amount: 1_000,
+            name: "TRANSFER TO SAVINGS"
+        ).financialSummary(canonicalAccountId: "checking"))
+        let depositSummary = try #require(PlaidTransactionDTO(
+            id: "deposit",
+            accountId: "savings",
+            date: "2026-09-02",
+            amount: -1_000,
+            name: "TRANSFER FROM CHECKING"
+        ).financialSummary(canonicalAccountId: "savings"))
+        let classification = TransactionClassification(
+            displayName: "Savings Transfer",
+            categoryName: nil,
+            treatment: .internalTransfer,
+            confidence: .high,
+            provenance: .user,
+            requiresReview: false
+        )
+        let outgoing = CachedFinancialTransaction(
+            summary: outgoingSummary,
+            classification: classification
+        )
+        let deposit = CachedFinancialTransaction(
+            summary: depositSummary,
+            classification: classification
+        )
+        context.insert(outgoing)
+        context.insert(deposit)
+        try context.save()
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(),
+            mainContext: context
+        )
+
+        #expect(coordinator.stageLegacySavingsCandidatesForReview() == 1)
+        #expect(outgoing.requiresReview)
+        #expect(!deposit.requiresReview)
+    }
+
     @Test func reserveLedgerAssignmentsAreExplicitAndPurchasesAreReversible() throws {
         let modelContainer = try ModelContainerFactory.makeContainer(
             inMemory: true

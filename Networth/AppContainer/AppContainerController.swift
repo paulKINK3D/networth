@@ -122,6 +122,15 @@ public final class AppContainerController {
             ctx.safeSave(source: "bootstrap.migrateProjectionLookback")
         }
 
+        if settings.settingsSchemaVersion < 4 {
+            _ = plaidTransactionSyncCoordinator
+                .stageLegacySavingsCandidatesForReview()
+            settings.settingsSchemaVersion = 4
+            if !ctx.safeSave(source: "bootstrap.migrateExplicitSavings") {
+                ctx.rollback()
+            }
+        }
+
         if settings.faceIDEnabled && biometricGate.isAvailable {
             // Honor the user's biometric grace window: if the app was active
             // recently and the grace minutes haven't elapsed, skip the lock.
@@ -345,7 +354,8 @@ public final class AppContainerController {
         treatment: ForecastTreatment,
         categoryCanonicalId: String? = nil,
         goalId: UUID? = nil,
-        reserveFundId: UUID? = nil
+        reserveFundId: UUID? = nil,
+        savingsMonth: BudgetMonth? = nil
     ) -> Bool {
         plaidTransactionSyncCoordinator.confirmTransaction(
             id: id,
@@ -355,7 +365,8 @@ public final class AppContainerController {
             treatment: treatment,
             categoryCanonicalId: categoryCanonicalId,
             goalId: goalId,
-            reserveFundId: reserveFundId
+            reserveFundId: reserveFundId,
+            savingsMonth: savingsMonth
         )
     }
 
@@ -365,7 +376,8 @@ public final class AppContainerController {
         displayName: String,
         payeeCanonicalId: String? = nil,
         subtransactions: [SubTransactionSummary],
-        reserveFundIdBySubtransactionId: [String: UUID] = [:]
+        reserveFundIdBySubtransactionId: [String: UUID] = [:],
+        savingsMonthBySubtransactionId: [String: BudgetMonth] = [:]
     ) -> Bool {
         plaidTransactionSyncCoordinator.reviewSplitTransaction(
             id: id,
@@ -373,7 +385,9 @@ public final class AppContainerController {
             payeeCanonicalId: payeeCanonicalId,
             subtransactions: subtransactions,
             reserveFundIdBySubtransactionId:
-                reserveFundIdBySubtransactionId
+                reserveFundIdBySubtransactionId,
+            savingsMonthBySubtransactionId:
+                savingsMonthBySubtransactionId
         )
     }
 
@@ -382,7 +396,8 @@ public final class AppContainerController {
         displayName: String,
         payeeCanonicalId: String? = nil,
         subtransactions: [SubTransactionSummary],
-        reserveFundIdBySubtransactionId: [String: UUID] = [:]
+        reserveFundIdBySubtransactionId: [String: UUID] = [:],
+        savingsMonthBySubtransactionId: [String: BudgetMonth] = [:]
     ) -> Result<Void, PlaidTransactionSyncCoordinator.SplitReviewFailure> {
         plaidTransactionSyncCoordinator.reviewSplitTransactionResult(
             id: id,
@@ -390,7 +405,9 @@ public final class AppContainerController {
             payeeCanonicalId: payeeCanonicalId,
             subtransactions: subtransactions,
             reserveFundIdBySubtransactionId:
-                reserveFundIdBySubtransactionId
+                reserveFundIdBySubtransactionId,
+            savingsMonthBySubtransactionId:
+                savingsMonthBySubtransactionId
         )
     }
 

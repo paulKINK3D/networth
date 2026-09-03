@@ -1,5 +1,115 @@
 # WORKING
 
+## Implemented — explicit Savings transactions (2026-09-03)
+
+- Code implementation is complete. The main Savings classification and prompt
+  flow has been reviewed on the physical device; the final separation between
+  the regular Savings detail and the read-only prior-month transfer detail
+  awaits a last device check. `swift test`, generic-device Debug
+  build-for-testing, and generic-device Debug and Release builds pass.
+
+- This work completes actual Savings-transfer handling; it is separate from
+  the completed Reserve assignment and funded-purchase work below.
+- Verified legacy mismatch: the existing Savings-transfer path predates the
+  explicit budget/source model. It synthesizes Savings activity from any
+  confirmed Internal transfer on an account imported with the exact `savings`
+  subtype, then layers a separate month-assignment record on top. That couples
+  saving intent to account location, cannot represent saving in place, and may
+  count transfers whose purpose was not Savings. Replace this path rather than
+  extending its account-type inference.
+- Transaction review adds `Savings` as an explicit Type. Savings is not an
+  ordinary category and must no longer depend solely on inferring intent from
+  the provider's account subtype.
+- Savings is valid only for a negative whole transaction or a negative split
+  line. It is intentionally unavailable on the receiving deposit. A Savings
+  entry has no ordinary category, Goal, or Expense Source.
+- Selecting Savings reveals a Savings Month control. The selected month is the
+  Spending budget month only: the imported transaction's posted date, account
+  balance, transaction history, and Projection timing remain unchanged.
+- A Savings transaction consumes the selected month's Savings budget like an
+  Expense consumes its budget. It reduces that month's Savings remaining and
+  Retained while remaining separate from ordinary-spending totals and trends.
+- Multiple Savings transactions assigned to one month accumulate. Together
+  they may fulfill or exceed the Savings budget; edits and reclassification
+  recalculate the month from the remaining active transactions.
+- A single outgoing transfer may be split across Savings months using the
+  existing transaction-split interaction. Each Savings split line has its own
+  amount and Savings Month, so one transfer can finish an older outstanding
+  month and apply the remainder to a newer month without creating an overage.
+- A normal transfer may satisfy its posted month's Savings budget. A transfer
+  made after month-end may instead satisfy the immediately preceding month's
+  Savings budget, including additional Savings Choices created by forgoing
+  spending in that prior month.
+- Locked closed-month behavior: an unfulfilled Savings amount remains attached
+  to its originating month and continues prompting until explicit Savings
+  transactions assigned to that month fulfill it. It does not roll into or
+  satisfy a later month's Savings budget, and it does not disappear into
+  untracked checking cash. Partial transfers reduce the outstanding amount;
+  multiple transfers accumulate; an overage remains visible. A new month starts
+  its own Savings budget independently.
+- A full-width Savings transfer prompt appears directly beneath the Savings and
+  Reserves cards whenever a closed month remains outstanding. It presents one
+  month at a time, oldest first, so an ignored obligation cannot disappear when
+  another month closes. The card normally represents the immediately preceding
+  month. It opens a separate read-only transfer detail—not the regular Savings
+  detail—scoped to that month alone: Total to transfer, each completed transfer
+  with its posted date, and Remaining.
+- Savings Month offers every still-outstanding prior month plus the
+  transaction's posted month. It defaults to the oldest outstanding month and
+  remains explicitly changeable before saving.
+- Confirmed boundary behavior: Savings requires a
+  designated Savings budget group. Do not offer Savings as a new Type when no
+  such group exists; the user must configure Savings first. Preserve already-
+  recorded historical Savings activity if the current group designation later
+  changes so past budgets do not rewrite themselves.
+- Preserve exactly-once transfer accounting: the outgoing transaction from the
+  budgeted cash account is Type: Savings and consumes the selected month's
+  Savings budget. The receiving-side deposit remains an Internal transfer. The
+  destination account need not be linked or imported as a savings account.
+- Only confirmed, non-deleted Savings entries count. Reclassifying a whole
+  transaction or split line away from Savings removes its month allocation and
+  restores the corresponding budget balance and closed-month prompt.
+- Savings activity remains excluded from ordinary Spending Trends and from the
+  historical ordinary-spending reserve used by Projections. Its real outgoing
+  transaction still affects the source account's balance and cash-flow timing.
+- Verified implementation constraint: imported Plaid transaction rows do not
+  retain a durable link to their opposite transfer side. The replacement flow
+  cannot assume that Networth can automatically pair two imported rows.
+- Verified legacy-transition conflict: the old month assignment is keyed to
+  the receiving savings-account transaction, but the new Savings type belongs
+  on the outgoing budgeted-cash transaction, and Plaid provides no durable
+  pairing between them. Therefore an automatic conversion would be unsafe.
+  Confirmed resolution: grandfather already-assigned old
+  deposits as read-only compatibility Savings activity; stop inference for all
+  unassigned savings-account transfers; surface those unassigned formerly
+  inferred rows for one-time review; and use only explicit outgoing Savings
+  entries for new activity. Do not automatically create a new outgoing entry
+  for any grandfathered deposit.
+- The durable assignment model now supports whole transactions and independently
+  dated Savings split lines through additive split-ID and active fields. Old
+  whole-transaction assignments remain readable; reclassification tombstones
+  new allocations rather than destructively removing CloudKit records.
+- Savings is not an Expense Source. Expenses always retain an ordinary
+  category and use the existing Monthly budget, Reserve, or Goal source. Goal
+  money continues to be spent through Source: Goal. A transfer out of savings
+  remains an Internal transfer and does not retroactively reverse the budget
+  month in which the money was originally saved.
+- Locked: Reserves remain virtual earmarks held in the main checking cash. They
+  are not tied to a holding account, moved into savings, or duplicated in a
+  synthetic Goal. Networth never generates a bank transfer for an assignment.
+- Verified projection gap: the carried Spending Reserve balance is not
+  currently removed from Safe to Spend or the projected cash pool. Projections
+  must treat the aggregate carried balance as unavailable while avoiding a
+  second deduction when a later Reserve-funded purchase drains the earmark.
+- The locked design is promoted into `PLAN.md` and implemented end to end.
+  The version-4 settings migration requeues only a uniquely matched outgoing
+  cash transfer for one-time review; it never auto-classifies or auto-pairs a
+  legacy transfer.
+- Remaining physical-device checks: split one outgoing transfer across two
+  Savings months, confirm the receiving deposit remains an Internal transfer,
+  and verify the dedicated transfer detail contains only the selected closed
+  month's total, dated transfers, and remainder.
+
 ## Current handoff — Spending Reserves (2026-09-02)
 
 - Active branch: `feature/sinking-funds`; the current implementation is ready
@@ -33,12 +143,13 @@
   the imported transaction, posted date, account balance, Retained cash-flow
   total, or Projections. It changes only the regular-budget attribution and
   the carried reserve balance.
-- Confirmed on device for whole expenses: an outgoing Expense keeps its
-  ordinary category and adds a separate `Source` choice. Monthly
+- Confirmed on device for whole expenses and mixed splits: an outgoing Expense
+  keeps its ordinary category and adds a separate `Source` choice. Monthly
   budget is the default; an active Reserve or Goal may be selected explicitly.
-  Split review now applies the same choice independently to every ordinary
-  outgoing line and awaits device review. A Reserve assignment already reduces
-  its selected source budget and Retained in the assignment month. The later
+  Split review applies the same choice independently to every ordinary
+  outgoing line and preserves each selection when reopened. A Reserve
+  assignment already reduces its selected source budget and Retained in the
+  assignment month. The later
   funded purchase drains only the selected earmark, remains visible in
   transaction and Reserve/Goal activity, and stays outside monthly budgets and
   Retained. Changing a whole transaction or split line back to Monthly budget
@@ -56,16 +167,12 @@
   Debug build-for-testing, and Release builds pass. App tests compile but
   simulator tests were not requested.
 
-### Leftover Reserve work
+### Remaining Reserve work
 
-- Verify one saved mixed split on the physical device: one Monthly budget line
-  and one Reserve or Goal line. Confirm the earmark falls only by its funded
-  line and reopening the transaction preserves each Source selection.
 - Reserve assignments currently apply to the current calendar month. Adding or
   editing an explicit assignment for a selected past month remains future work.
-- The two-card section containing Savings and Reserves still uses the heading
-  `Setting Aside`. Choose and apply the previously requested one-word heading
-  before treating the Spending-page terminology as final.
+- The Spending page groups Savings and Reserves under the one-word heading
+  `Future`.
 - Consolidating scattered account management remains a separate planned task
   under `docs/PLAN.md`; it is not part of the Reserve implementation.
 

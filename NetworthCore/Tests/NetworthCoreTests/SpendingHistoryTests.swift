@@ -166,8 +166,17 @@ struct SpendingHistoryTests {
         let months = SpendingHistoryBuilder.build(
             entries: [
                 entry(date: day(2026, 8, 1), amount: Money.dollars(-50)),
+                // New Savings activity uses the negative budgeted-cash side.
+                entry(
+                    date: day(2026, 8, 1),
+                    amount: Money.dollars(-250),
+                    treatment: .savings,
+                    reportingRole: .transfer,
+                    group: ("networth:savings", "Savings"),
+                    category: ("networth:savings-transfer", "Savings Transfers")
+                ),
                 // Savings deposits use the positive savings-account side;
-                // withdrawals reduce the month's net savings allocation.
+                // retained here only for assigned legacy compatibility.
                 entry(
                     date: day(2026, 8, 1),
                     amount: Money.dollars(400),
@@ -208,10 +217,10 @@ struct SpendingHistoryTests {
             calendar: calendar
         )
 
-        #expect(months[0].totalMilliunits == Money.dollars(875).milliunits)
+        #expect(months[0].totalMilliunits == Money.dollars(1_125).milliunits)
         #expect(months[0].groups.first {
             $0.id == "networth:savings"
-        }?.spentMilliunits == Money.dollars(300).milliunits)
+        }?.spentMilliunits == Money.dollars(550).milliunits)
         #expect(months[0].groups.first {
             $0.id == "networth:investment"
         }?.spentMilliunits == Money.dollars(525).milliunits)

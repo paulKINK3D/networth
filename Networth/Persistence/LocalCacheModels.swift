@@ -780,6 +780,7 @@ public final class CachedFinancialTransaction {
               !subtransactionsDecodeFailed,
               forecastTreatment != .excluded,
               forecastTreatment != .internalTransfer,
+              forecastTreatment != .savings,
               forecastTreatment != .investmentContribution,
               forecastTreatment != .reimbursement,
               forecastTreatment != .goalSpend,

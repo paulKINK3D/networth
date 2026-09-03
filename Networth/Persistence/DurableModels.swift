@@ -290,6 +290,7 @@ public final class DurableUserSettings {
     /// Bumped when a one-time migration changes existing settings defaults.
     /// Version 2 = enable Face ID when biometric is available.
     /// Version 3 = normalize expected-spending lookback to 365 days.
+    /// Version 4 = queue uniquely matched legacy savings outflows for review.
     public var settingsSchemaVersion: Int = 0
     /// `0` = backfill not yet run on this iCloud account. Bumped to the
     /// current version (`SyncCoordinator.currentHistoryBackfillVersion`) after
@@ -733,24 +734,33 @@ public final class DurableSavingsBudgetChoice {
 public final class DurableSavingsTransferAssignment {
     public var id: UUID = UUID()
     public var transactionId: String = ""
+    /// Empty for a whole transaction and for grandfathered legacy deposits.
+    /// A stable split ID supports independently assigned Savings months.
+    public var subtransactionId: String = ""
     public var savingsGroupIdentity: String = ""
     public var assignedYear: Int = 2000
     public var assignedMonth: Int = 1
+    /// Additive tombstone so reclassification is CloudKit-safe.
+    public var active: Bool = true
     public var updatedAt: Date = Date.now
 
     public init(
         id: UUID = UUID(),
         transactionId: String = "",
+        subtransactionId: String = "",
         savingsGroupIdentity: String = "",
         assignedYear: Int = 2000,
         assignedMonth: Int = 1,
+        active: Bool = true,
         updatedAt: Date = .now
     ) {
         self.id = id
         self.transactionId = transactionId
+        self.subtransactionId = subtransactionId
         self.savingsGroupIdentity = savingsGroupIdentity
         self.assignedYear = assignedYear
         self.assignedMonth = assignedMonth
+        self.active = active
         self.updatedAt = updatedAt
     }
 

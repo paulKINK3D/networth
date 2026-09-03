@@ -1763,6 +1763,7 @@ private struct PlaidSplitDraft: Identifiable {
     var treatment: ForecastTreatment?
     var goalId: UUID?
     var expenseFunding: ExpenseFundingChoice
+    var savingsMonth: BudgetMonth?
     var amountText: String
 
     init(
@@ -1773,6 +1774,7 @@ private struct PlaidSplitDraft: Identifiable {
         treatment: ForecastTreatment? = nil,
         goalId: UUID? = nil,
         expenseFunding: ExpenseFundingChoice = .monthlyBudget,
+        savingsMonth: BudgetMonth? = nil,
         amountText: String = ""
     ) {
         self.id = id
@@ -1782,6 +1784,7 @@ private struct PlaidSplitDraft: Identifiable {
         self.treatment = treatment
         self.goalId = goalId
         self.expenseFunding = expenseFunding
+        self.savingsMonth = savingsMonth
         self.amountText = amountText
     }
 }
@@ -2766,6 +2769,12 @@ struct PlaidTransactionReviewEditor: View {
     private var reserveFundRows: [DurableSpendingSinkingFund]
     @Query private var reserveExpenseRows:
         [DurableSpendingSinkingFundExpense]
+    @Query private var savingsBudgetRuleRows:
+        [DurableSpendingGroupBudgetRule]
+    @Query private var savingsChoiceRows: [DurableSavingsBudgetChoice]
+    @Query private var savingsAssignmentRows:
+        [DurableSavingsTransferAssignment]
+    @Query private var allTransactions: [CachedFinancialTransaction]
     let transaction: CachedFinancialTransaction
     let dismissAfterSave: Bool
     let canMovePrevious: Bool
@@ -2781,6 +2790,7 @@ struct PlaidTransactionReviewEditor: View {
     @State private var treatment: ForecastTreatment
     @State private var goalId: UUID?
     @State private var expenseFunding: ExpenseFundingChoice
+    @State private var savingsMonth: BudgetMonth
     @State private var cachedCategoryGroups: [PlaidCategoryGroup] = []
     @State private var payeeNameByID: [String: String] = [:]
     @State private var categoryNameByID: [String: String] = [:]
@@ -2831,6 +2841,8 @@ struct PlaidTransactionReviewEditor: View {
             initialExpenseFunding = .monthlyBudget
         }
         _expenseFunding = State(initialValue: initialExpenseFunding)
+        let postedMonth = BudgetMonth(containing: transaction.postedDate)
+        _savingsMonth = State(initialValue: postedMonth)
         let existingDrafts = transaction.subtransactions.map {
             // Show exactly what's stored. A part with no explicit choice and
             // no recognizable name stays UNSET — silently prefilling it as
@@ -2858,6 +2870,8 @@ struct PlaidTransactionReviewEditor: View {
                 treatment: splitTreatment,
                 goalId: $0.goalId,
                 expenseFunding: splitFunding,
+                savingsMonth: $0.forecastTreatment == .savings
+                    ? postedMonth : nil,
                 amountText: CurrencyInputFormatter.text(
                     for: $0.amount.absolute
                 )
@@ -2905,6 +2919,7 @@ struct PlaidTransactionReviewEditor: View {
             prepareDirectoryIndexes()
             resolveDisplayedSelections()
             resolveExistingExpenseFunding()
+            resolveExistingSavingsMonths()
         }
         .onChange(of: canonicalPayees.count) {
             prepareDirectoryIndexes()
@@ -3015,6 +3030,10 @@ struct PlaidTransactionReviewEditor: View {
                         .font(NwTypography.footnote)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            if !isSplit, treatment == .savings {
+                savingsMonthControls(selection: $savingsMonth)
             }
 
             if !isSplit {
@@ -3141,6 +3160,8 @@ struct PlaidTransactionReviewEditor: View {
                         amountMilliunits: transaction.amountMilliunits
                     )
                     && $0 != .goalSpend
+                    && ($0 != .savings || activeSavingsGroup != nil
+                        || treatment == .savings)
                 }, id: \.self) {
                     Text($0.displayName).tag($0)
                 }
@@ -3167,6 +3188,27 @@ struct PlaidTransactionReviewEditor: View {
             }
             if treatment != .ordinarySpending {
                 expenseFunding = .monthlyBudget
+            }
+            if treatment == .savings {
+                savingsMonth = defaultSavingsMonth
+            }
+        }
+    }
+
+    private func savingsMonthControls(
+        selection: Binding<BudgetMonth>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            reviewSectionTitle("Savings Month")
+            NwCard(style: .primary, padding: 0) {
+                Picker("Savings Month", selection: selection) {
+                    ForEach(savingsMonthOptions(including: selection.wrappedValue)) {
+                        Text(savingsMonthLabel($0)).tag($0)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(NwAppColors.textSecondary)
+                .padding(NwSpacing.md)
             }
         }
     }
@@ -3293,6 +3335,136 @@ struct PlaidTransactionReviewEditor: View {
 
     private var activeGoals: [DurableGoal] {
         goalRows.filter { !$0.archived && $0.completedAt == nil }
+    }
+
+    private var activeSavingsGroup: DurableCategoryGroup? {
+        Dictionary(grouping: durableCategoryGroups, by: \.groupIdentity)
+            .compactMapValues { rows in
+                rows.max(by: { $0.updatedAt < $1.updatedAt })
+            }
+            .values
+            .filter {
+                $0.isSavingsBucket && SpendingGroupSetup.isUserGroup($0)
+            }
+            .max(by: { $0.updatedAt < $1.updatedAt })
+    }
+
+    private var savingsStatuses: [SavingsMonthStatus] {
+        guard let group = activeSavingsGroup else { return [] }
+        return SavingsMonthStatusResolver().statuses(
+            groupIdentity: group.groupIdentity,
+            rules: savingsBudgetRuleRows.map(\.coreRule),
+            choices: savingsChoiceRows.map(\.coreChoice),
+            savedByMonth: recognizedSavingsByMonth(
+                groupIdentity: group.groupIdentity
+            ),
+            through: BudgetMonth(containing: transaction.postedDate)
+        )
+    }
+
+    private var defaultSavingsMonth: BudgetMonth {
+        let posted = BudgetMonth(containing: transaction.postedDate)
+        return savingsStatuses.first {
+            $0.month < posted && $0.outstanding > .zero
+        }?.month ?? posted
+    }
+
+    private func savingsMonthOptions(
+        including selected: BudgetMonth
+    ) -> [BudgetMonth] {
+        let posted = BudgetMonth(containing: transaction.postedDate)
+        var months = Set(savingsStatuses.compactMap {
+            $0.month < posted && $0.outstanding > .zero ? $0.month : nil
+        })
+        months.insert(posted)
+        months.insert(selected)
+        return months.sorted()
+    }
+
+    private func savingsMonthLabel(_ month: BudgetMonth) -> String {
+        month.startDate().formatted(.dateTime.month(.wide).year())
+    }
+
+    private var latestSavingsAssignments: [
+        SpendingSavingsLineKey: DurableSavingsTransferAssignment
+    ] {
+        Dictionary(
+            grouping: savingsAssignmentRows,
+            by: {
+                SpendingSavingsLineKey(
+                    transactionID: $0.transactionId,
+                    subtransactionID: $0.subtransactionId.isEmpty
+                        ? nil : $0.subtransactionId
+                )
+            }
+        ).compactMapValues { rows in
+            rows.max(by: { $0.updatedAt < $1.updatedAt })
+        }
+    }
+
+    private func recognizedSavingsByMonth(
+        groupIdentity: String
+    ) -> [BudgetMonth: Money] {
+        let transactionByID = Dictionary(
+            uniqueKeysWithValues: allTransactions.map { ($0.id, $0) }
+        )
+        return latestSavingsAssignments.values.reduce(into: [:]) {
+            result, assignment in
+            guard assignment.active,
+                  assignment.savingsGroupIdentity == groupIdentity,
+                  let row = transactionByID[assignment.transactionId],
+                  !row.deleted, !row.pending, !row.requiresReview else {
+                return
+            }
+            let amount: Money?
+            if assignment.subtransactionId.isEmpty {
+                if row.forecastTreatment == .savings,
+                   row.amountMilliunits < 0 {
+                    amount = Money(milliunits: -row.amountMilliunits)
+                } else if row.forecastTreatment == .internalTransfer {
+                    amount = Money(milliunits: row.amountMilliunits)
+                } else {
+                    amount = nil
+                }
+            } else if let leg = row.subtransactions.first(where: {
+                $0.id == assignment.subtransactionId
+            }), !leg.deleted, leg.forecastTreatment == .savings,
+               leg.amount < .zero {
+                amount = leg.amount.absolute
+            } else {
+                amount = nil
+            }
+            guard let amount else { return }
+            result[assignment.assignedBudgetMonth, default: .zero] += amount
+        }
+    }
+
+    private func resolveExistingSavingsMonths() {
+        let wholeKey = SpendingSavingsLineKey(
+            transactionID: transaction.id,
+            subtransactionID: nil
+        )
+        if treatment == .savings,
+           let assignment = latestSavingsAssignments[wholeKey],
+           assignment.active {
+            savingsMonth = assignment.assignedBudgetMonth
+        } else if treatment == .savings {
+            savingsMonth = defaultSavingsMonth
+        }
+        for index in splitDrafts.indices {
+            guard splitDrafts[index].treatment == .savings,
+                  let persistedID = splitDrafts[index].persistedID else {
+                continue
+            }
+            let key = SpendingSavingsLineKey(
+                transactionID: transaction.id,
+                subtransactionID: persistedID
+            )
+            splitDrafts[index].savingsMonth =
+                latestSavingsAssignments[key]?.active == true
+                    ? latestSavingsAssignments[key]?.assignedBudgetMonth
+                    : defaultSavingsMonth
+        }
     }
 
     private var activeReserveFunds: [DurableSpendingSinkingFund] {
@@ -3423,6 +3595,11 @@ struct PlaidTransactionReviewEditor: View {
                                 if draft.treatment != .ordinarySpending {
                                     draft.expenseFunding = .monthlyBudget
                                 }
+                                if draft.treatment == .savings {
+                                    draft.savingsMonth = defaultSavingsMonth
+                                } else {
+                                    draft.savingsMonth = nil
+                                }
                             }
                         }
                         .padding(NwSpacing.md)
@@ -3474,6 +3651,27 @@ struct PlaidTransactionReviewEditor: View {
                                     ) ?? "Select type"
                                 )
                                 .foregroundStyle(.secondary)
+                            }
+                            .padding(NwSpacing.md)
+                        }
+
+                        if draft.treatment == .savings {
+                            Divider()
+                            HStack {
+                                Text("Savings Month")
+                                Spacer()
+                                Picker("", selection: $draft.savingsMonth) {
+                                    ForEach(savingsMonthOptions(
+                                        including: draft.savingsMonth
+                                            ?? defaultSavingsMonth
+                                    )) { month in
+                                        Text(savingsMonthLabel(month))
+                                            .tag(Optional(month))
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .tint(NwAppColors.textSecondary)
                             }
                             .padding(NwSpacing.md)
                         }
@@ -3616,7 +3814,9 @@ struct PlaidTransactionReviewEditor: View {
         if isIncomingSplit {
             [.income, .refund, .reimbursement, .goalRefund]
         } else {
-            [.ordinarySpending, .reimbursement]
+            activeSavingsGroup == nil
+                ? [.ordinarySpending, .reimbursement]
+                : [.ordinarySpending, .savings, .reimbursement]
         }
     }
 
@@ -3740,6 +3940,14 @@ struct PlaidTransactionReviewEditor: View {
         }
     }
 
+    private var reviewedSplitSavingsMonths: [String: BudgetMonth] {
+        splitDrafts.reduce(into: [:]) { result, draft in
+            guard draft.treatment == .savings,
+                  let month = draft.savingsMonth else { return }
+            result[splitPersistedID(for: draft)] = month
+        }
+    }
+
     private func splitPersistedID(for draft: PlaidSplitDraft) -> String {
         draft.persistedID
             ?? "plaid-split:\(selectedSplitTransaction.externalId):\(draft.id.uuidString)"
@@ -3749,6 +3957,8 @@ struct PlaidTransactionReviewEditor: View {
         if isSplit {
             return payeeCanonicalId != nil
                 && reviewedSplitTransactions != nil
+                && reviewedSplitSavingsMonths.count
+                    == splitDrafts.filter { $0.treatment == .savings }.count
         }
         return payeeCanonicalId != nil
             && treatment != .unknown
@@ -3824,7 +4034,9 @@ struct PlaidTransactionReviewEditor: View {
                 payeeCanonicalId: payeeCanonicalId,
                 subtransactions: splitTransactions,
                 reserveFundIdBySubtransactionId:
-                    reviewedSplitReserveFundIDs
+                    reviewedSplitReserveFundIDs,
+                savingsMonthBySubtransactionId:
+                    reviewedSplitSavingsMonths
             )
             if case .failure(let failure) = result {
                 splitSaveError = failure.localizedDescription
@@ -3867,7 +4079,9 @@ struct PlaidTransactionReviewEditor: View {
                     ? categoryCanonicalId
                     : nil,
                 goalId: storedGoalId,
-                reserveFundId: reserveFundId
+                reserveFundId: reserveFundId,
+                savingsMonth: storedTreatment == .savings
+                    ? savingsMonth : nil
             ) else {
                 splitSaveError =
                     "The transaction could not be saved. Check its classification, then try again."
@@ -4326,6 +4540,7 @@ extension ForecastTreatment {
         case .cardPayment: "Credit-card payment"
         case .refund: "Refund"
         case .reimbursement: "Reimbursement"
+        case .savings: "Savings"
         case .goalSpend: "Goal spend"
         case .goalRefund: "Goal refund"
         case .investmentContribution: "Investment contribution"

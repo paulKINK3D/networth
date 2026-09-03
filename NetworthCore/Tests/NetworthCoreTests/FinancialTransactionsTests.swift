@@ -1004,7 +1004,8 @@ struct FinancialTransactionsTests {
         // exclusions are fully described without an ordinary category.
         for treatment in [TransactionType.income, .investmentContribution,
                           .internalTransfer, .cardPayment, .reimbursement,
-                          .goalSpend, .goalRefund, .excluded, .unknown] {
+                          .savings, .goalSpend, .goalRefund, .excluded,
+                          .unknown] {
             #expect(!TransactionTypeRules.requiresCategory(treatment))
             #expect(TransactionTypeRules.isValidCombination(
                 treatment: treatment, categoryRole: nil
@@ -1046,6 +1047,12 @@ struct FinancialTransactionsTests {
         ))
         #expect(TransactionTypeRules.isValidAmountSign(
             .reimbursement, amountMilliunits: 1
+        ))
+        #expect(TransactionTypeRules.isValidAmountSign(
+            .savings, amountMilliunits: -1
+        ))
+        #expect(!TransactionTypeRules.isValidAmountSign(
+            .savings, amountMilliunits: 1
         ))
         #expect(!TransactionTypeRules.isValidAmountSign(
             .unknown, amountMilliunits: -1

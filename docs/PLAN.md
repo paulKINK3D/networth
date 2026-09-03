@@ -211,19 +211,33 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   available balances remain disposable Plaid cache data. Spending presents the
   selected accounts as compact two-column cards: cash-like accounts prefer
   available balance, while credit cards show amount owed.
-- **2026-08-30** — One user-designated Spending budget may act as the Savings
-  bucket. It contains no ordinary categories, its base target continues to
-  repeat normally, and actual progress is
-  the net savings-account side of confirmed internal transfers; Goal reserve
-  accounts remain separate. A manually logged savings choice moves allocation
-  from another active budget (Surplus by default) into a visually separate
-  monthly Savings addition, so the total budget remains unchanged. Choices do
-  not create transactions or alter balances. A transfer posted in the next
-  month may be explicitly credited to the preceding Savings budget; this is a
-  private-CloudKit presentation assignment only and never changes its posted
-  date in account history, balances, Net Worth, or Projections. A matching
-  next-month transfer is suggested for confirmation rather than assigned
-  automatically.
+- **2026-09-03** — One user-designated Spending budget acts as the Savings
+  bucket. It contains no ordinary categories, and its repeating target behaves
+  like every other monthly target. A Savings Choice reallocates one selected
+  month's budget from another group into Savings without creating a bank
+  transaction or changing the total budget. Actual progress comes from an
+  explicit `Savings` transaction type on the outgoing budgeted-cash side of a
+  transfer; the receiving deposit remains an Internal transfer, whether or not
+  the destination account is linked. Savings is valid only for negative whole
+  transactions and negative split lines and takes a required Savings Month,
+  but no ordinary category, Goal, or Expense Source. One outgoing transfer may
+  be split across multiple Savings months. Savings activity reduces the
+  selected month's Savings remaining and Retained like an expense while staying
+  outside ordinary-spending totals, trends, and historical projection-spending
+  estimates. Month attribution never changes the real posted date, account
+  balance, account history, Net Worth, or Projection timing. Every outstanding
+  closed month remains independently due until one or more explicit Savings
+  entries fulfill it. Spending surfaces one closed month at a time, oldest
+  first, in a full-width transfer prompt whose separate read-only detail shows
+  that month's total, each completed transfer with its posted date, and the
+  remainder. New entries default to the oldest outstanding month but may select
+  any outstanding prior month or the posted month. The type is offered only
+  while a Savings bucket is configured. Already
+  assigned legacy receiving-side deposits remain grandfathered compatibility
+  activity because Plaid supplies no durable transaction pairing; unassigned
+  account-type-inferred transfers stop counting and are surfaced for one-time
+  review. Historical assignments retain their recorded group identity if the
+  current Savings designation later changes.
 - **2026-09-02** — Reserves are distinct from Goals and ordinary monthly
   budgets. Spending presents one aggregate Reserves card; individual reserves
   carry their balances forward and require only a name. Target, due date,
@@ -247,7 +261,11 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   month. A transaction or split line draws from a reserve only after explicit
   user confirmation; that later purchase drains the carried reserve without
   reducing a monthly budget or Retained again, and without rewriting imported
-  activity, cash balances, or Projections. Transaction review calls the
+  activity or cash balances. Reserve money remains as a virtual earmark in the
+  main checking cash; it is not tied to a holding account, moved into savings,
+  or duplicated in a Goal. Projections treat the aggregate carried Reserve
+  balance as unavailable without deducting a later Reserve-funded purchase a
+  second time. Transaction review calls the
   independent funding choice `Source`; every ordinary outgoing split line has
   its own Source. New records use an additive private-CloudKit schema and do
   not revive the retired pre-goals sinking-fund models. An additive assignment-
@@ -258,7 +276,7 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   a 270-degree progress arc, keeps the separate funding comparison as Funded
   versus Retained, shows every active budget group in a compact two-column
   card grid in user order, separates monthly spending under Budgets from
-  Savings and Reserves under Setting Aside, represents ordinary budgets with
+  Savings and Reserves under Future, represents ordinary budgets with
   a vertical draining column aligned to the displayed remaining amount, and
   keeps Trends plus Transactions in a compact action strip.
   Projections leads with the most actionable amount (Available, Buffer gap,

@@ -135,6 +135,69 @@ public struct SavingsBudgetChoice: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct SavingsMonthStatus: Identifiable, Hashable, Sendable {
+    public let month: BudgetMonth
+    public let target: Money
+    public let saved: Money
+
+    public var id: String { month.id }
+    public var outstanding: Money {
+        let value = target - saved
+        return value > .zero ? value : .zero
+    }
+}
+
+/// Resolves the closed Savings obligations without rolling one month into the
+/// next. Callers supply only explicitly recognized Savings activity.
+public struct SavingsMonthStatusResolver: Sendable {
+    public init() {}
+
+    public func statuses(
+        groupIdentity: String,
+        rules: [SpendingGroupBudgetRule],
+        choices: [SavingsBudgetChoice],
+        savedByMonth: [BudgetMonth: Money],
+        through endMonth: BudgetMonth
+    ) -> [SavingsMonthStatus] {
+        let relevantRules = rules.filter {
+            $0.groupIdentity == groupIdentity
+                && $0.effectiveMonth <= endMonth
+        }
+        let relevantChoices = choices.filter {
+            $0.savingsGroupIdentity == groupIdentity
+                && $0.month <= endMonth
+                && $0.amount > .zero
+        }
+        let starts = relevantRules.map(\.effectiveMonth)
+            + relevantChoices.map(\.month)
+            + savedByMonth.keys.filter { $0 <= endMonth }
+        guard var month = starts.min() else { return [] }
+        let budgetResolver = SpendingGroupBudgetResolver()
+        var result: [SavingsMonthStatus] = []
+        while month <= endMonth {
+            let rule = budgetResolver.activeRule(
+                for: groupIdentity,
+                month: month,
+                rules: relevantRules
+            )
+            let baseTarget = rule?.enabled == true ? rule?.target ?? .zero : .zero
+            let additional = relevantChoices.filter { $0.month == month }
+                .map(\.amount).sum()
+            let saved = savedByMonth[month] ?? .zero
+            let target = baseTarget + additional
+            if target > .zero || saved > .zero {
+                result.append(SavingsMonthStatus(
+                    month: month,
+                    target: target,
+                    saved: saved
+                ))
+            }
+            month = month.next
+        }
+        return result
+    }
+}
+
 /// A factual comparison between budget used and calendar time elapsed.
 /// This never projects a finish or uses historical spending behavior.
 public enum SpendingBudgetPaceStatus: String, Hashable, Sendable {
