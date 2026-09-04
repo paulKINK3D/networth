@@ -1,5 +1,20 @@
 # WORKING
 
+## Implemented — Reserve archive and deletion lifecycle (2026-09-04)
+
+- A Reserve now has distinct Archive and Delete actions. Archive preserves the
+  complete Reserve ledger while removing it from active planning; Delete
+  permanently removes the Reserve and all of its active or inactive assignment
+  and purchase-link records without changing imported transactions.
+- The Reserves overflow menu opens Archived Reserves. Archived entries retain
+  read-only ledger access and can be restored or permanently deleted.
+- Active and archived Reserve details expose their applicable lifecycle actions
+  from a Reserve-specific overflow menu. The card long-press remains a
+  secondary shortcut, and archived-list rows support swipe Restore and Delete.
+- Validation: 257 NetworthCore tests pass, the generic-device Debug app build
+  passes, and the Networth app-test target compiles. Physical-device review
+  remains.
+
 ## Implemented — Savings surface redesign (2026-09-03)
 
 - The regular month-scoped Savings detail now follows the Reserve detail's
@@ -30,9 +45,9 @@
 
 - The Reserves overview redesign is confirmed on device: a centered total with
   `Total Reserves`, a two-column grid of Reserve cards, target progress shown
-  with vertical fill bars, no-target balances represented by stacked blue
-  $100 and orange $10 disks, and a full-width `Add Reserve` action fixed at the
-  bottom. The duplicate header plus action is removed.
+  with slim vertical columns, open-ended balances shown without an invented
+  target track, and a full-width `Add Reserve` action fixed at the bottom. The
+  duplicate header plus action is removed.
 - The individual Reserve detail is implemented for device review. It uses a
   centered total labeled `<Name> Reserve Total`, equal Monthly and Target
   metrics with any due date beneath Target, and fixed half-width `Assign` and
@@ -48,6 +63,12 @@
   monthly plans, starting balances, and assignments are whole-dollar values;
   Reserve presentation also suppresses cents while imported purchase amounts
   retain their exact underlying transaction value.
+- The Spending Reserves card keeps its aggregate total on the left and replaces
+  the plan-dependent horizontal bar with up to three slim Reserve columns on
+  the right. The lighter-blue columns use one shared balance scale; targeted
+  Reserves add a subtle outline up to the target while open-ended Reserves show
+  only their balance. Selection prioritizes nearest due date, then percentage
+  complete, then largest saved balance; additional Reserves appear as `+N`.
 
 ## Implemented — Past-month Reserve assignments (2026-09-03)
 
@@ -213,9 +234,9 @@
   target, and it remains signed: a negative remainder exposes reliance on
   prior checking cash or a real savings transfer rather than hiding it.
 - The main Spending page shows one aggregate Reserves card rather than every
-  individual reserve. It reports the total carried balance and shows this
-  month's assigned amount against the optional combined plan in a matching
-  progress bar. With no plan, the track remains neutral and empty.
+  individual reserve. It reports the total carried balance beside up to three
+  ranked Reserve columns, with an optional target outline and a `+N` count for
+  additional Reserves.
 - Reserve details provide the always-visible assignment action, optional plan
   details, purchase selection, and activity. Tapping an assignment edits that
   entry; swiping removes only that entry and returns its money to its source.
@@ -329,8 +350,8 @@
 - Regular Budget cards pair their remaining-dollar number with a slim vertical
   draining column: dark blue remaining value is anchored at the bottom and
   falls as spending occurs, while lighter blue preserves visibility for money
-  reassigned to Savings or Reserves. Setting Aside cards retain horizontal
-  accumulation bars.
+  reassigned to Savings or Reserves. Savings retains its horizontal progress
+  treatment; Reserves uses lighter-blue balance-scaled columns.
 - Status meaning does not rely on emojis or ambiguous symbols. The overview
   uses spatial progress plus familiar blue, green, and red semantics; detailed
   pace remains available after opening a budget.

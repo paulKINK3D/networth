@@ -614,6 +614,58 @@ public struct SpendingSinkingFundSnapshot: Identifiable, Hashable, Sendable {
 }
 
 public enum SpendingSinkingFundMath {
+    /// Selects the most useful Reserves for a compact overview: dated plans
+    /// first by soonest date, then target progress, then carried balance.
+    public static func featuredSnapshots(
+        from snapshots: [SpendingSinkingFundSnapshot],
+        limit: Int = 3
+    ) -> [SpendingSinkingFundSnapshot] {
+        guard limit > 0 else { return [] }
+        return snapshots.filter { !$0.fund.archived }.sorted {
+            switch ($0.fund.targetDate, $1.fund.targetDate) {
+            case let (lhs?, rhs?) where lhs != rhs:
+                return lhs < rhs
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                break
+            }
+
+            let lhsProgress = completionProgress(for: $0)
+            let rhsProgress = completionProgress(for: $1)
+            switch (lhsProgress, rhsProgress) {
+            case let (lhs?, rhs?) where lhs != rhs:
+                return lhs > rhs
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                break
+            }
+
+            if $0.balance != $1.balance {
+                return $0.balance > $1.balance
+            }
+            let nameOrder = $0.fund.name.localizedCaseInsensitiveCompare(
+                $1.fund.name
+            )
+            if nameOrder != .orderedSame {
+                return nameOrder == .orderedAscending
+            }
+            return $0.id < $1.id
+        }.prefix(limit).map { $0 }
+    }
+
+    private static func completionProgress(
+        for snapshot: SpendingSinkingFundSnapshot
+    ) -> Double? {
+        guard snapshot.fund.target > .zero else { return nil }
+        return snapshot.balance.doubleValue / snapshot.fund.target.doubleValue
+    }
+
     /// Number of plan months from `asOf` through the target month, inclusive.
     public static func contributionMonths(
         from asOf: Date,

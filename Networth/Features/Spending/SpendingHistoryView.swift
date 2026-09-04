@@ -913,12 +913,19 @@ struct SpendingHistoryView: View {
                                 let reserveMonth = BudgetMonth(
                                     containing: month.month
                                 )
+                                let reserveSnapshots =
+                                    model.sinkingFundSnapshots(
+                                        through: reserveMonth
+                                    )
                                 sinkingFundsHalfWidthCard(
                                     balance: model.sinkingFundBalance(
                                         through: reserveMonth
                                     ),
-                                    assigned: model.reserveAssigned(in: reserveMonth),
-                                    plan: model.reservePlan(for: reserveMonth)
+                                    featured: SpendingSinkingFundMath
+                                        .featuredSnapshots(
+                                            from: reserveSnapshots
+                                        ),
+                                    activeCount: reserveSnapshots.count
                                 )
                             }
                         }
@@ -1028,18 +1035,23 @@ struct SpendingHistoryView: View {
 
     private func sinkingFundsHalfWidthCard(
         balance: Money,
-        assigned: Money,
-        plan: Money
+        featured: [SpendingSinkingFundSnapshot],
+        activeCount: Int
     ) -> some View {
         Button {
             showingSinkingFunds = true
         } label: {
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                Text("Reserves")
-                    .font(NwTypography.footnoteEm)
-                    .foregroundStyle(NwAppColors.textPrimary)
-                    .lineLimit(1)
-                Text(CurrencyFormatter.currency(balance, showCents: false))
+            HStack(alignment: .bottom, spacing: NwSpacing.sm) {
+                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                    Text("Reserves")
+                        .font(NwTypography.footnoteEm)
+                        .foregroundStyle(NwAppColors.textPrimary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text(CurrencyFormatter.currency(
+                        balance,
+                        showCents: false
+                    ))
                     .font(NwTypography.headline)
                     .foregroundStyle(
                         balance.isNegative
@@ -1048,7 +1060,13 @@ struct SpendingHistoryView: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                reserveProgress(assigned: assigned, plan: plan)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                reserveColumnCluster(
+                    featured,
+                    activeCount: activeCount
+                )
             }
             .padding(NwSpacing.md)
             .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
@@ -1066,39 +1084,70 @@ struct SpendingHistoryView: View {
         .accessibilityLabel(
             reserveAccessibilityLabel(
                 balance: balance,
-                assigned: assigned,
-                plan: plan
+                featured: featured,
+                activeCount: activeCount
             )
         )
         .accessibilityHint("Shows individual reserves")
     }
 
-    private func reserveProgress(assigned: Money, plan: Money) -> some View {
-        let progress = plan > .zero
-            ? assigned.doubleValue / plan.doubleValue : 0
-        return NwBudgetProgress(
-            progress: progress,
-            isOver: false,
-            tint: NwAppColors.primary,
-            height: 6,
-            accessibilityLabel: plan > .zero
-                ? "Reserve assignments this month"
-                : "No monthly reserve plan"
-        )
+    private func reserveColumnCluster(
+        _ snapshots: [SpendingSinkingFundSnapshot],
+        activeCount: Int
+    ) -> some View {
+        let scaleMaximum = snapshots.reduce(Money.zero) { maximum, snapshot in
+            max(maximum, max(snapshot.balance, snapshot.fund.target))
+        }
+        return HStack(alignment: .bottom, spacing: 3) {
+            ForEach(snapshots) { snapshot in
+                let positiveBalance = max(snapshot.balance, .zero)
+                let balanceShare = scaleMaximum > .zero
+                    ? positiveBalance.doubleValue / scaleMaximum.doubleValue
+                    : 0
+                let targetShare = snapshot.fund.target > .zero
+                    && scaleMaximum > .zero
+                    ? snapshot.fund.target.doubleValue
+                        / scaleMaximum.doubleValue
+                    : nil
+                NwReserveBalanceColumn(
+                    balanceShare: balanceShare,
+                    targetShare: targetShare
+                )
+                .accessibilityHidden(true)
+            }
+            if activeCount > snapshots.count {
+                Text("+\(activeCount - snapshots.count)")
+                    .font(NwTypography.caption)
+                    .foregroundStyle(NwAppColors.textSecondary)
+                    .monospacedDigit()
+                    .padding(.bottom, 1)
+            }
+        }
+        .frame(height: 56, alignment: .bottom)
     }
 
     private func reserveAccessibilityLabel(
         balance: Money,
-        assigned: Money,
-        plan: Money
+        featured: [SpendingSinkingFundSnapshot],
+        activeCount: Int
     ) -> String {
         var value = "Reserves, "
-            + "\(CurrencyFormatter.currency(balance, showCents: false)) reserved, "
-            + "\(CurrencyFormatter.currency(assigned, showCents: false)) assigned this month"
-        if plan > .zero {
-            value += ", \(CurrencyFormatter.currency(plan, showCents: false)) monthly plan"
-        } else {
-            value += ", no monthly plan"
+            + "\(CurrencyFormatter.currency(balance, showCents: false)) reserved"
+        for snapshot in featured {
+            value += ", \(snapshot.fund.name), "
+                + CurrencyFormatter.currency(
+                    snapshot.balance,
+                    showCents: false
+                )
+            if snapshot.fund.target > .zero {
+                value += " of " + CurrencyFormatter.currency(
+                    snapshot.fund.target,
+                    showCents: false
+                )
+            }
+        }
+        if activeCount > featured.count {
+            value += ", plus \(activeCount - featured.count) more"
         }
         return value
     }
@@ -2778,24 +2827,6 @@ struct SpendingHistoryModel: Sendable {
         sinkingFundSnapshots(through: month).map(\.balance).sum()
     }
 
-    func reserveAssigned(in month: BudgetMonth) -> Money {
-        let activeIDs = Set(sinkingFunds.filter { !$0.archived }.map(\.id))
-        let latest = Dictionary(
-            grouping: sinkingFundContributions.filter {
-                activeIDs.contains($0.fundID) && $0.month == month
-            },
-            by: \.id
-        ).compactMapValues { rows in
-            rows.max {
-                if $0.updatedAt != $1.updatedAt {
-                    return $0.updatedAt < $1.updatedAt
-                }
-                return $0.id < $1.id
-            }
-        }
-        return latest.values.filter(\.active).map(\.amount).sum()
-    }
-
     func reserveAssignments(
         in month: BudgetMonth,
         from sourceGroupIdentity: String
@@ -2831,28 +2862,6 @@ struct SpendingHistoryModel: Sendable {
             }
             return $0.id < $1.id
         }
-    }
-
-    func reservePlan(for month: BudgetMonth) -> Money {
-        let previousMonth = BudgetMonth(
-            year: month.year,
-            month: month.month - 1
-        )
-        return sinkingFunds.filter {
-            !$0.archived && $0.startMonth <= month
-        }.map { fund in
-            let prior = SpendingSinkingFundMath.snapshot(
-                fund: fund,
-                contributions: sinkingFundContributions,
-                expenses: sinkingFundExpenses,
-                through: previousMonth
-            )
-            return SpendingSinkingFundMath.monthlyPlan(
-                for: fund,
-                balance: prior.balance,
-                asOf: month.startDate()
-            )
-        }.sum()
     }
 
     func savingsStatuses(through month: BudgetMonth) -> [SavingsMonthStatus] {
@@ -4142,7 +4151,7 @@ private struct SpendingReserveAssignmentTarget: Identifiable {
     var id: String { assignmentID?.uuidString ?? "new" }
 }
 
-private struct SpendingSinkingFundArchiveTarget: Identifiable {
+private struct SpendingSinkingFundLifecycleTarget: Identifiable {
     let fund: DurableSpendingSinkingFund
     var id: UUID { fund.id }
 }
@@ -4159,7 +4168,8 @@ private struct SpendingSinkingFundsSheet: View {
     let sourceBudgetsByMonth: [BudgetMonth: [SpendingReserveSourceBudget]]
 
     @State private var editorTarget: SpendingSinkingFundEditorTarget?
-    @State private var archiveTarget: SpendingSinkingFundArchiveTarget?
+    @State private var archiveTarget: SpendingSinkingFundLifecycleTarget?
+    @State private var deleteTarget: SpendingSinkingFundLifecycleTarget?
     @State private var persistenceError: String?
 
     var body: some View {
@@ -4207,7 +4217,7 @@ private struct SpendingSinkingFundsSheet: View {
                                 .contextMenu {
                                     Button(role: .destructive) {
                                         archiveTarget =
-                                            SpendingSinkingFundArchiveTarget(
+                                            SpendingSinkingFundLifecycleTarget(
                                                 fund: fund
                                             )
                                     } label: {
@@ -4215,6 +4225,14 @@ private struct SpendingSinkingFundsSheet: View {
                                             "Archive",
                                             systemImage: "archivebox"
                                         )
+                                    }
+                                    Button(role: .destructive) {
+                                        deleteTarget =
+                                            SpendingSinkingFundLifecycleTarget(
+                                                fund: fund
+                                            )
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
                                     }
                                 }
                             }
@@ -4238,6 +4256,25 @@ private struct SpendingSinkingFundsSheet: View {
                     }
                     .accessibilityLabel("Close")
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        NavigationLink {
+                            SpendingArchivedSinkingFundsView(
+                                month: month,
+                                sourceBudgetsByMonth: sourceBudgetsByMonth
+                            )
+                            .environment(container)
+                        } label: {
+                            Label(
+                                "Archived Reserves",
+                                systemImage: "archivebox"
+                            )
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("More")
+                }
             }
             .safeAreaInset(edge: .bottom) {
                 Button("Add Reserve") {
@@ -4254,10 +4291,22 @@ private struct SpendingSinkingFundsSheet: View {
                 Alert(
                     title: Text("Archive \(target.fund.name)?"),
                     message: Text(
-                        "Its history stays available in your records."
+                        "It will move to Archived Reserves with all of its activity."
                     ),
                     primaryButton: .destructive(Text("Archive")) {
                         archive(target.fund)
+                    },
+                    secondaryButton: .cancel()
+                )
+            }
+            .alert(item: $deleteTarget) { target in
+                Alert(
+                    title: Text("Delete \(target.fund.name)?"),
+                    message: Text(
+                        "This permanently removes the Reserve and all of its assignments and purchase links. Imported transactions are unchanged."
+                    ),
+                    primaryButton: .destructive(Text("Delete")) {
+                        delete(target.fund)
                     },
                     secondaryButton: .cancel()
                 )
@@ -4359,11 +4408,7 @@ private struct SpendingSinkingFundsSheet: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                if target > .zero {
-                    reserveTargetColumn(balance: balance, target: target)
-                } else {
-                    reserveDiskStack(balance)
-                }
+                reserveBalanceColumn(balance: balance, target: target)
             }
         }
         .padding(NwSpacing.md)
@@ -4386,54 +4431,37 @@ private struct SpendingSinkingFundsSheet: View {
         .accessibilityHint("Opens reserve details")
     }
 
-    private func reserveTargetColumn(
+    private func reserveBalanceColumn(
         balance: Money,
         target: Money
     ) -> some View {
-        let progress = target > .zero
-            ? balance.doubleValue / target.doubleValue : 0
-        return GeometryReader { geometry in
-            let fill = min(max(progress, 0), 1)
-            ZStack(alignment: .bottom) {
-                Capsule()
-                    .fill(NwAppColors.strokeSubtle)
-                Rectangle()
-                    .fill(NwAppColors.primary)
-                    .frame(height: geometry.size.height * fill)
-            }
-            .clipShape(Capsule())
-        }
-        .frame(width: 18, height: 68)
+        let positiveBalance = max(balance, .zero)
+        let balanceShare = reserveScaleMaximum > .zero
+            ? positiveBalance.doubleValue / reserveScaleMaximum.doubleValue
+            : 0
+        let targetShare = target > .zero && reserveScaleMaximum > .zero
+            ? target.doubleValue / reserveScaleMaximum.doubleValue
+            : nil
+        return NwReserveBalanceColumn(
+            balanceShare: balanceShare,
+            targetShare: targetShare,
+            width: 18,
+            height: 68
+        )
         .accessibilityHidden(true)
     }
 
-    private func reserveDiskStack(_ balance: Money) -> some View {
-        let positiveMilliunits = max(Int64(0), balance.milliunits)
-        let hundreds = min(Int(positiveMilliunits / 100_000), 10)
-        let remainder = positiveMilliunits % 100_000
-        var tens = Int(remainder / 10_000)
-        if positiveMilliunits > 0, hundreds == 0, tens == 0 {
-            tens = 1
+    private var reserveScaleMaximum: Money {
+        activeFunds.reduce(Money.zero) { maximum, fund in
+            let fundSnapshot = snapshot(for: fund)
+            return max(
+                maximum,
+                max(
+                    fundSnapshot.balance,
+                    Money(milliunits: fund.targetMilliunits)
+                )
+            )
         }
-        let colors = Array(repeating: NwAppColors.caution, count: tens)
-            + Array(repeating: NwAppColors.primary, count: hundreds)
-        return VStack(spacing: -3) {
-            Spacer(minLength: 0)
-            ForEach(Array(colors.enumerated()), id: \.offset) { _, color in
-                Ellipse()
-                    .fill(color)
-                    .frame(width: 30, height: 7)
-                    .overlay {
-                        Ellipse()
-                            .stroke(
-                                NwAppColors.cardSurface.opacity(0.7),
-                                lineWidth: 0.5
-                            )
-                    }
-            }
-        }
-        .frame(width: 30, height: 68, alignment: .bottom)
-        .accessibilityHidden(true)
     }
 
     private func reserveCardAccessibilityLabel(
@@ -4455,12 +4483,149 @@ private struct SpendingSinkingFundsSheet: View {
     }
 
     private func archive(_ fund: DurableSpendingSinkingFund) {
-        fund.archived = true
-        fund.updatedAt = .now
-        guard container.modelContainer.mainContext.safeSave(
-            source: "spending.reserve.archive"
-        ) else {
+        guard SpendingSinkingFundLedgerService(
+            context: container.modelContainer.mainContext
+        ).setArchived(true, fundID: fund.id) else {
             persistenceError = "The reserve wasn’t archived."
+            return
+        }
+    }
+
+    private func delete(_ fund: DurableSpendingSinkingFund) {
+        guard SpendingSinkingFundLedgerService(
+            context: container.modelContainer.mainContext
+        ).deleteFund(fundID: fund.id) else {
+            persistenceError = "The reserve wasn’t deleted."
+            return
+        }
+    }
+}
+
+private struct SpendingArchivedSinkingFundsView: View {
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    @Query private var fundRows: [DurableSpendingSinkingFund]
+    @Query private var contributionRows:
+        [DurableSpendingSinkingFundContribution]
+    @Query private var expenseRows: [DurableSpendingSinkingFundExpense]
+
+    let month: BudgetMonth
+    let sourceBudgetsByMonth: [BudgetMonth: [SpendingReserveSourceBudget]]
+
+    @State private var deleteTarget: SpendingSinkingFundLifecycleTarget?
+    @State private var persistenceError: String?
+
+    var body: some View {
+        List {
+            if archivedFunds.isEmpty {
+                Text("No archived reserves")
+                    .font(NwTypography.body)
+                    .foregroundStyle(NwAppColors.textSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 96)
+                    .listRowBackground(Color.clear)
+            } else {
+                ForEach(archivedFunds) { fund in
+                    NavigationLink {
+                        SpendingSinkingFundDetailView(
+                            fundID: fund.id,
+                            month: month,
+                            sourceBudgetsByMonth: sourceBudgetsByMonth
+                        )
+                        .environment(container)
+                    } label: {
+                        HStack(spacing: NwSpacing.md) {
+                            Text(fund.name)
+                                .font(NwTypography.bodyEmphasis)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            NwAmountText(
+                                snapshot(for: fund).balance,
+                                variant: .body,
+                                showCents: false,
+                                color: snapshot(for: fund).balance.isNegative
+                                    ? NwAppColors.liability
+                                    : NwAppColors.primary
+                            )
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                        Button("Restore") {
+                            restore(fund)
+                        }
+                        .tint(NwAppColors.primary)
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button("Delete", role: .destructive) {
+                            deleteTarget = SpendingSinkingFundLifecycleTarget(
+                                fund: fund
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(NwAppColors.background.ignoresSafeArea())
+        .navigationTitle("Archived Reserves")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert(item: $deleteTarget) { target in
+            Alert(
+                title: Text("Delete \(target.fund.name)?"),
+                message: Text(
+                    "This permanently removes the Reserve and all of its assignments and purchase links. Imported transactions are unchanged."
+                ),
+                primaryButton: .destructive(Text("Delete")) {
+                    delete(target.fund)
+                },
+                secondaryButton: .cancel()
+            )
+        }
+        .alert(
+            "Couldn’t Save Changes",
+            isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
+        }
+    }
+
+    private var archivedFunds: [DurableSpendingSinkingFund] {
+        fundRows.filter(\.archived).sorted {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            return $0.name.localizedCaseInsensitiveCompare($1.name)
+                == .orderedAscending
+        }
+    }
+
+    private func snapshot(
+        for fund: DurableSpendingSinkingFund
+    ) -> SpendingSinkingFundSnapshot {
+        SpendingSinkingFundMath.snapshot(
+            fund: fund.coreFund,
+            contributions: contributionRows.map(\.coreContribution),
+            expenses: expenseRows.map(\.coreExpense),
+            through: month
+        )
+    }
+
+    private func restore(_ fund: DurableSpendingSinkingFund) {
+        guard SpendingSinkingFundLedgerService(
+            context: container.modelContainer.mainContext
+        ).setArchived(false, fundID: fund.id) else {
+            persistenceError = "The reserve wasn’t restored."
+            return
+        }
+    }
+
+    private func delete(_ fund: DurableSpendingSinkingFund) {
+        guard SpendingSinkingFundLedgerService(
+            context: container.modelContainer.mainContext
+        ).deleteFund(fundID: fund.id) else {
+            persistenceError = "The reserve wasn’t deleted."
             return
         }
     }
@@ -4667,6 +4832,7 @@ private struct SpendingSinkingFundEditorSheet: View {
 }
 
 private struct SpendingSinkingFundDetailView: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query private var fundRows: [DurableSpendingSinkingFund]
     @Query private var contributionRows:
@@ -4681,6 +4847,8 @@ private struct SpendingSinkingFundDetailView: View {
     @State private var assignmentTarget: SpendingReserveAssignmentTarget?
     @State private var showingPurchasePicker = false
     @State private var showingEditor = false
+    @State private var showingArchiveConfirmation = false
+    @State private var showingDeleteConfirmation = false
     @State private var persistenceError: String?
 
     var body: some View {
@@ -4746,18 +4914,52 @@ private struct SpendingSinkingFundDetailView: View {
         }
         .background(NwAppColors.background.ignoresSafeArea())
         .safeAreaInset(edge: .bottom) {
-            reserveActionCards
+            if fund?.archived == false {
+                reserveActionCards
+            }
         }
         .navigationTitle(fund?.name ?? "Reserve")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showingEditor = true } label: {
-                    Image(systemName: "pencil.circle.fill")
-                        .foregroundStyle(NwAppColors.primary)
-                }
-                    .disabled(fund == nil)
+            ToolbarItemGroup(placement: .primaryAction) {
+                if fund?.archived == false {
+                    Button { showingEditor = true } label: {
+                        Image(systemName: "pencil.circle.fill")
+                            .foregroundStyle(NwAppColors.primary)
+                    }
                     .accessibilityLabel("Edit reserve")
+                }
+                if let fund {
+                    Menu {
+                        if fund.archived {
+                            Button {
+                                restore()
+                            } label: {
+                                Label(
+                                    "Restore Reserve",
+                                    systemImage: "arrow.uturn.backward"
+                                )
+                            }
+                        } else {
+                            Button(role: .destructive) {
+                                showingArchiveConfirmation = true
+                            } label: {
+                                Label(
+                                    "Archive Reserve",
+                                    systemImage: "archivebox"
+                                )
+                            }
+                        }
+                        Button(role: .destructive) {
+                            showingDeleteConfirmation = true
+                        } label: {
+                            Label("Delete Reserve", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("Reserve actions")
+                }
             }
         }
         .sheet(isPresented: $showingPurchasePicker) {
@@ -4782,6 +4984,32 @@ private struct SpendingSinkingFundDetailView: View {
         .sheet(isPresented: $showingEditor) {
             SpendingSinkingFundEditorSheet(fundID: fundID)
                 .environment(container)
+        }
+        .alert(
+            "Archive \(fund?.name ?? "Reserve")?",
+            isPresented: $showingArchiveConfirmation
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Archive", role: .destructive) {
+                archive()
+            }
+        } message: {
+            Text(
+                "It will move to Archived Reserves with all of its activity."
+            )
+        }
+        .alert(
+            "Delete \(fund?.name ?? "Reserve")?",
+            isPresented: $showingDeleteConfirmation
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                delete()
+            }
+        } message: {
+            Text(
+                "This permanently removes the Reserve and all of its assignments and purchase links. Imported transactions are unchanged."
+            )
         }
         .alert(
             "Couldn’t Save Changes",
@@ -5020,7 +5248,8 @@ private struct SpendingSinkingFundDetailView: View {
                     .foregroundStyle(NwAppColors.textSecondary)
             } else {
                 ForEach(items) { item in
-                    if let contribution = item.contribution {
+                    if let contribution = item.contribution,
+                       fund?.archived == false {
                         Button {
                             assignmentTarget =
                                 SpendingReserveAssignmentTarget(
@@ -5042,7 +5271,7 @@ private struct SpendingSinkingFundDetailView: View {
                                 remove(contribution)
                             }
                         }
-                    } else {
+                    } else if fund?.archived == false {
                         activityRow(item)
                             .swipeActions(edge: .trailing) {
                                 if let expense = item.expense {
@@ -5052,6 +5281,8 @@ private struct SpendingSinkingFundDetailView: View {
                                     .tint(NwAppColors.primary)
                                 }
                             }
+                    } else {
+                        activityRow(item)
                     }
                 }
             }
@@ -5065,7 +5296,9 @@ private struct SpendingSinkingFundDetailView: View {
     }
 
     private var fund: DurableSpendingSinkingFund? {
-        fundRows.first { $0.id == fundID && !$0.archived }
+        fundRows.filter { $0.id == fundID }.max {
+            $0.updatedAt < $1.updatedAt
+        }
     }
 
     private var activeExpenses: [DurableSpendingSinkingFundExpense] {
@@ -5260,6 +5493,36 @@ private struct SpendingSinkingFundDetailView: View {
             return
         }
     }
+
+    private func archive() {
+        guard SpendingSinkingFundLedgerService(
+            context: container.modelContainer.mainContext
+        ).setArchived(true, fundID: fundID) else {
+            persistenceError = "The reserve wasn’t archived."
+            return
+        }
+        dismiss()
+    }
+
+    private func restore() {
+        guard SpendingSinkingFundLedgerService(
+            context: container.modelContainer.mainContext
+        ).setArchived(false, fundID: fundID) else {
+            persistenceError = "The reserve wasn’t restored."
+            return
+        }
+        dismiss()
+    }
+
+    private func delete() {
+        guard SpendingSinkingFundLedgerService(
+            context: container.modelContainer.mainContext
+        ).deleteFund(fundID: fundID) else {
+            persistenceError = "The reserve wasn’t deleted."
+            return
+        }
+        dismiss()
+    }
 }
 
 private struct SpendingReserveAssignmentSheet: View {
@@ -5325,17 +5588,10 @@ private struct SpendingReserveAssignmentSheet: View {
                             showCents: false
                         )
                     }
-                    HStack(spacing: NwSpacing.md) {
-                        Text("Assignment")
-                        Spacer()
-                        TextField("0", text: $amountText)
-                            .multilineTextAlignment(.trailing)
-                            .nwWholeDollarInput(
-                                text: $amountText,
-                                title: "Assignment"
-                            )
-                            .frame(width: 140, height: 44)
-                    }
+                    NwWholeDollarEntryRow(
+                        "Assignment",
+                        text: $amountText
+                    )
                 }
                 if amount > maximum {
                     Section {

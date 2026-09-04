@@ -422,6 +422,64 @@ struct SpendingBudgetsTests {
         #expect(snapshot.balance == Money.dollars(integer: 325))
     }
 
+    @Test("Featured Reserves prioritize due date, progress, then balance")
+    func featuredReserveOrdering() {
+        let october = date(2026, 10, 1)
+        let november = date(2026, 11, 1)
+        func snapshot(
+            _ id: String,
+            balance: Int,
+            target: Int = 0,
+            due: Date? = nil,
+            archived: Bool = false
+        ) -> SpendingSinkingFundSnapshot {
+            SpendingSinkingFundSnapshot(
+                fund: SpendingSinkingFund(
+                    id: id,
+                    name: id,
+                    mode: due == nil ? .buildToAmount : .dueByDate,
+                    target: .dollars(integer: target),
+                    targetDate: due,
+                    startMonth: BudgetMonth(year: 2026, month: 9),
+                    archived: archived
+                ),
+                balance: .dollars(integer: balance),
+                contributed: .zero,
+                spent: .zero
+            )
+        }
+        let snapshots = [
+            snapshot("undated-large", balance: 2_000),
+            snapshot("november", balance: 900, target: 1_000, due: november),
+            snapshot("october-small", balance: 100, target: 1_000, due: october),
+            snapshot("undated-half", balance: 500, target: 1_000),
+            snapshot("undated-most", balance: 800, target: 1_000),
+            snapshot("october-large", balance: 200, target: 2_000, due: october),
+            snapshot("undated-small", balance: 500),
+            snapshot("archived", balance: 9_000, due: october, archived: true)
+        ]
+
+        #expect(SpendingSinkingFundMath.featuredSnapshots(
+            from: snapshots,
+            limit: 8
+        ).map(\.id) == [
+            "october-large",
+            "october-small",
+            "november",
+            "undated-most",
+            "undated-half",
+            "undated-large",
+            "undated-small"
+        ])
+        #expect(SpendingSinkingFundMath.featuredSnapshots(
+            from: snapshots
+        ).map(\.id) == [
+            "october-large",
+            "october-small",
+            "november"
+        ])
+    }
+
     @Test("Projection protects active reserves and excludes their purchases")
     func reserveProjectionAdjustment() {
         let month = BudgetMonth(year: 2026, month: 8)

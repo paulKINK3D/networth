@@ -206,6 +206,62 @@ public struct NwDrainingBudgetColumn: View {
     }
 }
 
+/// A compact Reserve balance column. Saved balance and any optional target use
+/// the same caller-provided scale, so open-ended Reserves need no invented goal.
+public struct NwReserveBalanceColumn: View {
+    public let balanceShare: Double
+    public let targetShare: Double?
+    public let width: CGFloat
+    public let height: CGFloat
+    public let tint: Color
+
+    public init(
+        balanceShare: Double,
+        targetShare: Double? = nil,
+        width: CGFloat = 18,
+        height: CGFloat = 56,
+        tint: Color = NwAppColors.budgetReallocated
+    ) {
+        self.balanceShare = balanceShare
+        self.targetShare = targetShare
+        self.width = width
+        self.height = height
+        self.tint = tint
+    }
+
+    public var body: some View {
+        GeometryReader { geometry in
+            let balance = min(max(balanceShare, 0), 1)
+            ZStack(alignment: .bottom) {
+                if let targetShare {
+                    Capsule()
+                        .strokeBorder(
+                            NwAppColors.strokeSubtle,
+                            lineWidth: 1
+                        )
+                        .frame(
+                            height: geometry.size.height
+                                * min(max(targetShare, 0), 1)
+                        )
+                }
+                if balance > 0 {
+                    Capsule()
+                        .fill(tint)
+                        .frame(
+                            height: max(4, geometry.size.height * balance)
+                        )
+                }
+            }
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height,
+                alignment: .bottom
+            )
+        }
+        .frame(width: width, height: height)
+    }
+}
+
 /// Savings uses the same compact budget bar with a separate green extension
 /// for one-month choices moved in from another budget group. The primary bar
 /// remains actual transfer progress toward the repeating target.

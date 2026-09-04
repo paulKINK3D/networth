@@ -247,6 +247,13 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   action. Add/Edit Savings follows the Reserve form pattern and accepts
   trailing-aligned whole-dollar currency values. This regular detail remains
   distinct from the closed-month transfer prompt's read-only detail.
+- **2026-09-04** — Spending Reserves have two distinct lifecycle actions.
+  Archive preserves the Reserve and every assignment and purchase interaction,
+  removes it from active planning, and moves it to the Archived Reserves area
+  reached from the Reserves overflow menu. Archived Reserves retain read-only
+  ledger access and may be restored. Delete permanently removes the Reserve
+  and all Reserve-specific assignment and purchase-link records; it never
+  removes or rewrites the imported financial transactions beneath those links.
 - **2026-09-02** — Reserves are distinct from Goals and ordinary monthly
   budgets. Spending presents one aggregate Reserves card; individual reserves
   carry their balances forward and require only a name. Target, due date,
@@ -258,9 +265,13 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   removable. Assignments cannot exceed their source groups' currently unspent
   amounts, and each source card includes them in its lighter-blue reallocation
   segment.
-  The aggregate card's progress compares this month's explicit assignments
-  with the optional combined monthly plan; without a plan, its track remains
-  neutral. One budget group may be the effective-dated automatic remainder;
+  The aggregate card shows the total carried balance beside up to three slim
+  Reserve columns. The columns use a lighter reallocation blue on one shared
+  balance scale; targeted Reserves add a subtle outline up to the target while
+  open-ended Reserves show only their saved balance. They prioritize nearest
+  due date, then highest percentage complete, then largest saved balance, with
+  a `+N` count for additional Reserves. One budget group may be the effective-
+  dated automatic remainder;
   its target is confirmed funding minus every other repeating target, so all
   funding is assigned without rewriting historical months. The remainder is
   signed rather than clamped: a shortfall remains visible and can be covered

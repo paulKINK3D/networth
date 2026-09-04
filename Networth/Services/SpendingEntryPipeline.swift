@@ -332,6 +332,60 @@ struct SpendingSinkingFundLedgerService {
     let context: ModelContext
 
     @discardableResult
+    func setArchived(_ archived: Bool, fundID: UUID) -> Bool {
+        guard let funds = try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFund>()
+        ) else { return false }
+        let matches = funds.filter { $0.id == fundID }
+        guard !matches.isEmpty else { return false }
+        let now = Date.now
+        for fund in matches {
+            fund.archived = archived
+            fund.updatedAt = now
+        }
+        guard context.safeSave(
+            source: archived
+                ? "spending.reserve.archive"
+                : "spending.reserve.restore"
+        ) else {
+            context.rollback()
+            return false
+        }
+        return true
+    }
+
+    /// Permanently removes one Reserve planning construct. Imported
+    /// transactions are deliberately not touched; deleting expense overlays
+    /// returns those purchases to their ordinary monthly-budget treatment.
+    @discardableResult
+    func deleteFund(fundID: UUID) -> Bool {
+        guard let funds = try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFund>()
+        ), let contributions = try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundContribution>()
+        ), let expenses = try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        ) else { return false }
+        let matchingFunds = funds.filter { $0.id == fundID }
+        guard !matchingFunds.isEmpty else { return false }
+
+        for row in contributions where row.fundId == fundID {
+            context.delete(row)
+        }
+        for row in expenses where row.fundId == fundID {
+            context.delete(row)
+        }
+        for fund in matchingFunds {
+            context.delete(fund)
+        }
+        guard context.safeSave(source: "spending.reserve.delete") else {
+            context.rollback()
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
     func saveAssignment(
         id: UUID? = nil,
         fundID: UUID,

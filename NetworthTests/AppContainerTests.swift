@@ -4077,6 +4077,111 @@ struct AppContainerTests {
         )
     }
 
+    @Test func reserveLifecyclePreservesArchiveAndDeletesOnlyPlanningRecords()
+        throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let month = BudgetMonth(containing: .now)
+        let fund = DurableSpendingSinkingFund(
+            name: "Test reserve",
+            startYear: month.year,
+            startMonth: month.month
+        )
+        let otherFund = DurableSpendingSinkingFund(
+            name: "Keep reserve",
+            startYear: month.year,
+            startMonth: month.month
+        )
+        context.insert(fund)
+        context.insert(otherFund)
+        context.insert(DurableSpendingSinkingFundContribution(
+            fundId: fund.id,
+            budgetYear: month.year,
+            budgetMonth: month.month,
+            sourceGroupIdentity: "flexible",
+            amountMilliunits: Money.dollars(integer: 40).milliunits
+        ))
+        context.insert(DurableSpendingSinkingFundContribution(
+            fundId: fund.id,
+            budgetYear: month.year,
+            budgetMonth: month.month,
+            sourceGroupIdentity: "flexible",
+            amountMilliunits: Money.dollars(integer: 10).milliunits,
+            active: false
+        ))
+        context.insert(DurableSpendingSinkingFundContribution(
+            fundId: otherFund.id,
+            budgetYear: month.year,
+            budgetMonth: month.month,
+            sourceGroupIdentity: "flexible",
+            amountMilliunits: Money.dollars(integer: 25).milliunits
+        ))
+        context.insert(DurableSpendingSinkingFundExpense(
+            fundId: fund.id,
+            transactionId: "test-purchase",
+            amountMilliunits: Money.dollars(integer: 15).milliunits
+        ))
+        context.insert(DurableSpendingSinkingFundExpense(
+            fundId: fund.id,
+            transactionId: "old-test-purchase",
+            amountMilliunits: Money.dollars(integer: 5).milliunits,
+            active: false
+        ))
+        context.insert(DurableSpendingSinkingFundExpense(
+            fundId: otherFund.id,
+            transactionId: "keep-purchase",
+            amountMilliunits: Money.dollars(integer: 20).milliunits
+        ))
+        let transactionSummary = try #require(PlaidTransactionDTO(
+            id: "test-purchase",
+            accountId: "checking",
+            date: "2026-09-04",
+            amount: 15,
+            name: "TEST PURCHASE"
+        ).financialSummary(canonicalAccountId: "checking"))
+        context.insert(CachedFinancialTransaction(
+            summary: transactionSummary,
+            classification: TransactionClassification(
+                displayName: "Test Purchase",
+                categoryName: "Shopping",
+                treatment: .ordinarySpending,
+                confidence: .high,
+                provenance: .user,
+                requiresReview: false
+            )
+        ))
+        try context.save()
+        let service = SpendingSinkingFundLedgerService(context: context)
+
+        #expect(service.setArchived(true, fundID: fund.id))
+        #expect(fund.archived)
+        #expect(try context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundContribution>()
+        ).filter { $0.fundId == fund.id }.count == 2)
+        #expect(try context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        ).filter { $0.fundId == fund.id }.count == 2)
+
+        #expect(service.setArchived(false, fundID: fund.id))
+        #expect(!fund.archived)
+        #expect(service.deleteFund(fundID: fund.id))
+
+        #expect(try context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFund>()
+        ).map(\.id) == [otherFund.id])
+        #expect(try context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundContribution>()
+        ).allSatisfy { $0.fundId == otherFund.id })
+        #expect(try context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        ).allSatisfy { $0.fundId == otherFund.id })
+        #expect(try context.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        ).contains { $0.id == "test-purchase" })
+    }
+
     // MARK: - Helpers
 
     private func linkedLoanSnapshot(
