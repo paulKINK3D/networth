@@ -3337,6 +3337,50 @@ struct AppContainerTests {
         #expect(!month.groups.contains { $0.id == importedGroup.groupIdentity })
     }
 
+    @Test func spendingPlanFollowsDurableGroupOrder() async throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let fixedID = "networth:spending:user:fixed"
+        let necessitiesID = "networth:spending:user:necessities"
+        context.insert(DurableCategoryGroup(
+            groupIdentity: fixedID,
+            name: "Fixed",
+            displayOrder: 2
+        ))
+        context.insert(DurableCategoryGroup(
+            groupIdentity: necessitiesID,
+            name: "Necessities",
+            displayOrder: 0
+        ))
+        for identity in [fixedID, necessitiesID] {
+            context.insert(DurableSpendingGroupBudgetRule(
+                groupIdentity: identity,
+                effectiveYear: 2026,
+                effectiveMonth: 9,
+                targetMilliunits: Money.dollars(integer: 1_000).milliunits,
+                enabled: true
+            ))
+        }
+        try context.save()
+
+        let now = try #require(Calendar.current.date(from: DateComponents(
+            year: 2026,
+            month: 9,
+            day: 4,
+            hour: 12
+        )))
+        let actor = SpendingHistoryBuildActor(modelContainer: modelContainer)
+        let model = try await actor.build(now: now, monthsBack: 1)
+        let month = try #require(model.months.first)
+
+        #expect(model.budgetSummary(for: month).groups.map(\.groupIdentity) == [
+            necessitiesID,
+            fixedID
+        ])
+    }
+
     @Test func savingsBucketCombinesTransfersChoicesAndPriorMonthAssignment() async throws {
         let modelContainer = try ModelContainerFactory.makeContainer(
             inMemory: true

@@ -60,6 +60,7 @@ struct SettingsView: View {
     @State private var showingForceResyncConfirm = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
+    @State private var showingSpendingGroups = false
     @State private var showingPlaidConnection = false
     @State private var showingPlaidReview = false
     @State private var showingPlaidBankingConnection = false
@@ -93,6 +94,21 @@ struct SettingsView: View {
                             value: "Plaid"
                         )
                     }
+
+                    Button {
+                        showingSpendingGroups = true
+                    } label: {
+                        HStack(spacing: NwSpacing.sm) {
+                            NwSettingsNavigationRow(
+                                "Spending Plan",
+                                subtitle: "Groups, budgets, and display order",
+                                icon: .budget
+                            )
+                            NwIcon.chevron.image
+                                .foregroundStyle(NwAppColors.textSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
 
                     NavigationLink {
                         SettingsView(page: .budget)
@@ -669,6 +685,10 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingCashBuffer) {
                 MinimumCashBufferSheet().environment(container)
+            }
+            .sheet(isPresented: $showingSpendingGroups) {
+                SpendingGroupManagementSheet(allowsReordering: true)
+                    .environment(container)
             }
             .sheet(isPresented: $showingPlaidConnection) {
                 PlaidConnectionSheet().environment(container)

@@ -254,6 +254,17 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   ledger access and may be restored. Delete permanently removes the Reserve
   and all Reserve-specific assignment and purchase-link records; it never
   removes or rewrites the imported financial transactions beneath those links.
+- **2026-09-04** — Spending's daily overview uses a local `Plan | Future`
+  switch beneath Accounts and always opens on Plan after a fresh app launch.
+  Plan presents ordinary monthly budgets as compact full-width cards with the
+  group name, remaining amount, and draining vertical column on one line.
+  Future contains the secondary Savings and Reserves cards without a shared
+  colored container; Savings displays its two components as `$X + $Y`, while
+  Reserves displays only its balance beside its reserve columns. Funded and
+  Retained are integrated into the monthly hero. Plan display order remains a
+  durable group preference and is managed from Settings → Spending Plan.
+  This supersedes the 2026-08-30 two-column budget-grid placement while
+  preserving its color semantics, calculations, and drill-down behavior.
 - **2026-09-02** — Reserves are distinct from Goals and ordinary monthly
   budgets. Spending presents one aggregate Reserves card; individual reserves
   carry their balances forward and require only a name. Target, due date,

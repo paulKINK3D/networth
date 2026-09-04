@@ -1,5 +1,25 @@
 # WORKING
 
+## Current handoff — Spending Plan/Future hierarchy (2026-09-04)
+
+- Active branch: `feature/ux-ui-improvements`; the implementation is not yet
+  committed.
+- Funded and Retained now live inside the monthly Spending hero. Accounts use
+  compact full-width rows beneath the `Accounts` heading.
+- A local `Plan | Future` switch changes the middle section only and defaults
+  to Plan on every fresh app launch. Plan budgets are compact full-width cards
+  with the group name and remaining amount on one line plus the existing
+  draining vertical column.
+- Future contains the half-width Savings and Reserves cards with aligned top
+  titles and no surrounding blue container. Savings shows `$X + $Y`; Reserves
+  shows only its balance beside its reserve columns.
+- Settings → Spending Plan opens group management with persistent drag
+  reordering. The main Spending screen no longer exposes group management in
+  its overflow menu; the no-budget setup flow remains available.
+- Validation: all 258 NetworthCore tests pass, generic-device Debug and Release
+  builds pass, and the app-test target compiles. The new durable-order app test
+  was compiled but not simulator-executed, per the workspace's simulator rule.
+
 ## Current handoff — Reserve lifecycle and card polish (2026-09-04)
 
 - A Reserve now has distinct Archive and Delete actions. Archive preserves the
