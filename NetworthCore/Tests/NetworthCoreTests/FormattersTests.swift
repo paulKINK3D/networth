@@ -38,4 +38,20 @@ struct FormattersTests {
         #expect(CurrencyInputFormatter.formatted("$1,234.56") == "1234.56")
         #expect(CurrencyInputFormatter.formatted("") == "")
     }
+
+    @Test func wholeDollarInputNeverCreatesCents() {
+        #expect(
+            CurrencyInputFormatter.formattedWholeDollars("$1,500.00")
+                == "1500"
+        )
+        #expect(
+            CurrencyInputFormatter.wholeDollarText(
+                for: Money.dollars(1500)
+            ) == "1500"
+        )
+        #expect(
+            CurrencyInputFormatter.wholeDollarMoney(from: "1500")
+                == Money.dollars(1500)
+        )
+    }
 }

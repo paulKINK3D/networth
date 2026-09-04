@@ -116,12 +116,16 @@ public struct CashPositionProjector: Sendable {
         lookbackDays: Int = 365,
         asOf today: Date,
         horizonDays: Int = 90,
-        minimumCashBuffer: Money = Money.dollars(500)
+        minimumCashBuffer: Money = Money.dollars(500),
+        spendingReserve: Money = .zero
     ) -> Result {
         let start = calendar.startOfDay(for: today)
         let end = calendar.date(byAdding: .day, value: max(1, horizonDays), to: start) ?? start
         let accountsById = Dictionary(uniqueKeysWithValues: cashAccounts.map { ($0.id, $0) })
         let startingBalance = selectedCashAccountIds.compactMap { accountsById[$0]?.balance }.sum()
+        let protectedSpendingReserve = max(spendingReserve, .zero)
+        let protectedCashMinimum = minimumCashBuffer
+            + protectedSpendingReserve
 
         let scheduledEvents = buildScheduledEvents(
             scheduled: scheduled,
@@ -199,7 +203,8 @@ public struct CashPositionProjector: Sendable {
         let status: CashProjectionStatus
         if let expectedLow, expectedLow.balance < .zero {
             status = .shortfall
-        } else if let expectedLow, expectedLow.balance < minimumCashBuffer {
+        } else if let expectedLow,
+                  expectedLow.balance < protectedCashMinimum {
             status = .tight
         } else {
             status = .covered
@@ -214,14 +219,16 @@ public struct CashPositionProjector: Sendable {
             knownPoints: knownPoints,
             expectedPoints: expectedPoints,
             events: events,
-            minimumCashBuffer: minimumCashBuffer
+            minimumCashBuffer: minimumCashBuffer,
+            spendingReserve: protectedSpendingReserve
         )
         let higherSpendSafeToSpend = makeSafeToSpendEstimate(
             startingBalance: startingBalance,
             knownPoints: knownPoints,
             expectedPoints: higherSpendPoints,
             events: events,
-            minimumCashBuffer: minimumCashBuffer
+            minimumCashBuffer: minimumCashBuffer,
+            spendingReserve: protectedSpendingReserve
         )
         let accountProjections = buildAccountProjections(
             accountsById: accountsById,
@@ -255,7 +262,8 @@ public struct CashPositionProjector: Sendable {
         knownPoints: [CashPositionPoint],
         expectedPoints: [CashPositionPoint],
         events: [CashProjectionEvent],
-        minimumCashBuffer: Money
+        minimumCashBuffer: Money,
+        spendingReserve: Money
     ) -> SafeToSpendEstimate? {
         guard let lowPoint = expectedPoints.min(by: { $0.balance < $1.balance }) else {
             return nil
@@ -277,10 +285,14 @@ public struct CashPositionProjector: Sendable {
             .sum()
 
         return SafeToSpendEstimate(
-            amount: max(lowPoint.balance - minimumCashBuffer, .zero),
+            amount: max(
+                lowPoint.balance - minimumCashBuffer - spendingReserve,
+                .zero
+            ),
             lowPointDate: lowPoint.date,
             projectedLowBalance: lowPoint.balance,
             minimumCashBuffer: minimumCashBuffer,
+            spendingReserve: spendingReserve,
             startingBalance: startingBalance,
             knownInflows: knownInflows,
             scheduledOutflows: scheduledOutflows,

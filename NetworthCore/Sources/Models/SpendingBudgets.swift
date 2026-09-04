@@ -733,3 +733,66 @@ public enum SpendingSinkingFundMath {
         )
     }
 }
+
+/// Projection-facing summary of virtual Spending Reserves. The balance stays
+/// in real cash accounts but is unavailable for extra spending. Purchases that
+/// drain a Reserve are excluded from historical ordinary-spending estimates so
+/// the earmark and its eventual use are never protected twice.
+public struct SpendingReserveProjectionAdjustment: Hashable, Sendable {
+    public let balance: Money
+    public let excludedHistoricalLineIDs: Set<String>
+
+    public init(
+        balance: Money,
+        excludedHistoricalLineIDs: Set<String>
+    ) {
+        self.balance = balance
+        self.excludedHistoricalLineIDs = excludedHistoricalLineIDs
+    }
+}
+
+public enum SpendingReserveProjectionResolver {
+    public static func resolve(
+        funds: [SpendingSinkingFund],
+        contributions: [SpendingSinkingFundContribution],
+        expenses: [SpendingSinkingFundExpense],
+        through month: BudgetMonth,
+        calendar: Calendar = .current
+    ) -> SpendingReserveProjectionAdjustment {
+        let balance = max(
+            funds.filter { !$0.archived }.map {
+                SpendingSinkingFundMath.snapshot(
+                    fund: $0,
+                    contributions: contributions,
+                    expenses: expenses,
+                    through: month,
+                    calendar: calendar
+                ).balance
+            }.sum(),
+            .zero
+        )
+        let latestExpenses = Dictionary(
+            grouping: expenses,
+            by: {
+                "\($0.transactionID)|\($0.subtransactionID ?? "whole")"
+            }
+        ).compactMapValues { rows in
+            rows.max {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt < $1.updatedAt
+                }
+                return $0.id < $1.id
+            }
+        }
+        let excludedLineIDs = Set<String>(
+            latestExpenses.values.compactMap { expense in
+                guard expense.active else { return nil }
+                return expense.subtransactionID ?? expense.transactionID
+            }
+        )
+        return SpendingReserveProjectionAdjustment(
+            balance: balance,
+            excludedHistoricalLineIDs: excludedLineIDs
+        )
+    }
+}

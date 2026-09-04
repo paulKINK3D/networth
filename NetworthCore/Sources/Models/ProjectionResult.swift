@@ -131,6 +131,9 @@ public struct SafeToSpendEstimate: Sendable, Hashable {
     public let lowPointDate: Date
     public let projectedLowBalance: Money
     public let minimumCashBuffer: Money
+    /// Current Spending Reserve balance protected inside the selected cash
+    /// pool. Unlike a scheduled event, this does not move cash.
+    public let spendingReserve: Money
     public let startingBalance: Money
     public let knownInflows: Money
     public let scheduledOutflows: Money
@@ -143,6 +146,7 @@ public struct SafeToSpendEstimate: Sendable, Hashable {
         lowPointDate: Date,
         projectedLowBalance: Money,
         minimumCashBuffer: Money,
+        spendingReserve: Money,
         startingBalance: Money,
         knownInflows: Money,
         scheduledOutflows: Money,
@@ -154,6 +158,7 @@ public struct SafeToSpendEstimate: Sendable, Hashable {
         self.lowPointDate = lowPointDate
         self.projectedLowBalance = projectedLowBalance
         self.minimumCashBuffer = minimumCashBuffer
+        self.spendingReserve = spendingReserve
         self.startingBalance = startingBalance
         self.knownInflows = knownInflows
         self.scheduledOutflows = scheduledOutflows
@@ -164,6 +169,14 @@ public struct SafeToSpendEstimate: Sendable, Hashable {
 
     public var bufferGap: Money {
         max(minimumCashBuffer - projectedLowBalance, .zero)
+    }
+
+    public var protectedCashMinimum: Money {
+        minimumCashBuffer + spendingReserve
+    }
+
+    public var protectedCashGap: Money {
+        max(protectedCashMinimum - projectedLowBalance, .zero)
     }
 }
 

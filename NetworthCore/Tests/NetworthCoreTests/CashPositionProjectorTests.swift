@@ -532,6 +532,50 @@ struct CashPositionProjectorTests {
         #expect(result.safeToSpend?.expectedSpendingReserve == Money.dollars(90))
     }
 
+    @Test func spendingReservesProtectCashWithoutChangingProjectedBalances() {
+        let today = date(2026, 1, 1)
+        let bill = ScheduledTransactionSummary(
+            id: "bill", accountId: "cash", nextDate: date(2026, 1, 2),
+            frequency: .never, amount: Money.dollars(-3_000),
+            payeeName: "Bill"
+        )
+        let result = CashPositionProjector(calendar: utc).project(
+            cashAccounts: [account("cash", balance: 10_000)],
+            selectedCashAccountIds: ["cash"],
+            cardAccountIds: [], fundedCardAccountIds: [], cardPayments: [],
+            scheduled: [bill], historicalTransactions: [],
+            asOf: today, horizonDays: 2,
+            minimumCashBuffer: Money.dollars(500),
+            spendingReserve: Money.dollars(2_000)
+        )
+
+        #expect(result.startingBalance == Money.dollars(10_000))
+        #expect(result.expectedLowPoint?.balance == Money.dollars(7_000))
+        #expect(result.safeToSpend?.amount == Money.dollars(4_500))
+        #expect(result.safeToSpend?.spendingReserve == Money.dollars(2_000))
+        #expect(
+            result.safeToSpend?.protectedCashMinimum
+                == Money.dollars(2_500)
+        )
+
+        let reserveTight = CashPositionProjector(calendar: utc).project(
+            cashAccounts: [account("cash", balance: 2_000)],
+            selectedCashAccountIds: ["cash"],
+            cardAccountIds: [], fundedCardAccountIds: [], cardPayments: [],
+            scheduled: [], historicalTransactions: [],
+            asOf: today, horizonDays: 2,
+            minimumCashBuffer: Money.dollars(500),
+            spendingReserve: Money.dollars(1_600)
+        )
+        #expect(reserveTight.status == .tight)
+        #expect(reserveTight.safeToSpend?.amount == .zero)
+        #expect(reserveTight.safeToSpend?.bufferGap == .zero)
+        #expect(
+            reserveTight.safeToSpend?.protectedCashGap
+                == Money.dollars(100)
+        )
+    }
+
     @Test func firstShortfallIsDistinctFromLowestBalanceAtHorizon() {
         let today = date(2026, 1, 1)
         let firstBill = ScheduledTransactionSummary(

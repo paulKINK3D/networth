@@ -4031,6 +4031,52 @@ struct AppContainerTests {
         #expect(!assigned.active)
     }
 
+    @Test func reserveLedgerCanAddAndEditAPriorMonthAssignment() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let currentMonth = BudgetMonth(containing: .now)
+        let priorMonth = currentMonth.previous
+        let fund = DurableSpendingSinkingFund(
+            name: "Car repair",
+            mode: .ongoingReserve,
+            startYear: currentMonth.year,
+            startMonth: currentMonth.month
+        )
+        context.insert(fund)
+        try context.save()
+        let service = SpendingSinkingFundLedgerService(context: context)
+
+        #expect(service.saveAssignment(
+            fundID: fund.id,
+            month: priorMonth,
+            sourceGroupIdentity: "flexible",
+            amount: Money.dollars(integer: 80),
+            maximum: Money.dollars(integer: 200)
+        ))
+        let assignment = try #require(context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundContribution>()
+        ).first)
+        #expect(assignment.budgetYear == priorMonth.year)
+        #expect(assignment.budgetMonth == priorMonth.month)
+
+        #expect(service.saveAssignment(
+            id: assignment.id,
+            fundID: fund.id,
+            month: priorMonth,
+            sourceGroupIdentity: "flexible",
+            amount: Money.dollars(integer: 95),
+            maximum: Money.dollars(integer: 200)
+        ))
+        #expect(assignment.budgetYear == priorMonth.year)
+        #expect(assignment.budgetMonth == priorMonth.month)
+        #expect(
+            assignment.amountMilliunits
+                == Money.dollars(integer: 95).milliunits
+        )
+    }
+
     // MARK: - Helpers
 
     private func linkedLoanSnapshot(

@@ -84,6 +84,33 @@ public enum CurrencyInputFormatter {
         }
         return Money.dollars(decimal)
     }
+
+    public static func formattedWholeDollars(
+        _ proposedText: String
+    ) -> String {
+        let sanitized = proposedText.filter {
+            $0.isNumber || $0 == "." || $0 == "-"
+        }
+        guard !sanitized.isEmpty,
+              var dollars = Decimal(string: sanitized) else { return "" }
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &dollars, 0, .plain)
+        return NSDecimalNumber(decimal: rounded).stringValue
+    }
+
+    public static func wholeDollarText(for amount: Money) -> String {
+        var dollars = amount.absolute.decimalValue
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &dollars, 0, .plain)
+        return NSDecimalNumber(decimal: rounded).stringValue
+    }
+
+    public static func wholeDollarMoney(from text: String) -> Money? {
+        let formatted = formattedWholeDollars(text)
+        guard !formatted.isEmpty,
+              let dollars = Decimal(string: formatted) else { return nil }
+        return Money.dollars(dollars)
+    }
 }
 
 public enum DateDisplay {

@@ -41,7 +41,8 @@ struct ProjectionHeroMetric: Sendable, Equatable {
         availableAmount: Money?,
         showsPaymentFundingHeadline: Bool,
         status: CashProjectionStatus,
-        headlineAmount: Money?
+        headlineAmount: Money?,
+        tightLabel: String = "Buffer gap"
     ) -> ProjectionHeroMetric {
         if setupIncomplete {
             return ProjectionHeroMetric(
@@ -67,7 +68,7 @@ struct ProjectionHeroMetric: Sendable, Equatable {
         if status == .tight {
             return ProjectionHeroMetric(
                 kind: .bufferGap,
-                label: "Buffer gap",
+                label: tightLabel,
                 amount: headlineAmount
             )
         }
@@ -521,7 +522,8 @@ struct ProjectionsView: View {
             availableAmount: data.result.safeToSpend?.amount,
             showsPaymentFundingHeadline: data.showsPaymentFundingHeadline,
             status: data.result.status,
-            headlineAmount: data.headlineAmount
+            headlineAmount: data.headlineAmount,
+            tightLabel: data.protectionGapLabel
         )
     }
 
@@ -954,9 +956,20 @@ struct ProjectionsView: View {
                 && result.status == .tight
         }
 
+        var protectsSpendingReserves: Bool {
+            (result.safeToSpend?.spendingReserve ?? .zero) > .zero
+        }
+
+        var protectionGapLabel: String {
+            protectsSpendingReserves ? "Protected cash gap" : "Buffer gap"
+        }
+
         var firstBufferBreachPoint: CashPositionPoint? {
-            guard let buffer = result.safeToSpend?.minimumCashBuffer else { return nil }
-            return result.expectedPoints.first { $0.balance < buffer }
+            guard let protectedCash = result.safeToSpend?
+                .protectedCashMinimum else { return nil }
+            return result.expectedPoints.first {
+                $0.balance < protectedCash
+            }
         }
 
         var startsBelowBuffer: Bool {
@@ -968,13 +981,15 @@ struct ProjectionsView: View {
         var headlineAmount: Money? {
             if setupIncomplete { return nil }
             if showsPaymentFundingHeadline { return primaryPaymentAccountShortfall?.fundingNeeded }
-            if result.status == .tight { return result.safeToSpend?.bufferGap }
+            if result.status == .tight {
+                return result.safeToSpend?.protectedCashGap
+            }
             return aggregateHeadlinePoint?.balance
         }
 
         var headlineAmountLabel: String {
             if showsPaymentFundingHeadline { return "Transfer needed" }
-            if result.status == .tight { return "Buffer gap" }
+            if result.status == .tight { return protectionGapLabel }
             if aggregateCashShortfall { return "Projected balance" }
             return "Projected low"
         }
@@ -990,7 +1005,7 @@ struct ProjectionsView: View {
                 return "First negative projected balance on \(point.date.formatted(.dateTime.month(.abbreviated).day()))"
             }
             if result.status == .tight {
-                let gap = result.safeToSpend?.bufferGap ?? .zero
+                let gap = result.safeToSpend?.protectedCashGap ?? .zero
                 return "Falls as much as \(CurrencyFormatter.compact(gap)) below on \(point.date.formatted(.dateTime.month(.abbreviated).day()))"
             }
             return "Lowest projected total \(point.date.formatted(.dateTime.month(.abbreviated).day()))"
@@ -1024,7 +1039,9 @@ struct ProjectionsView: View {
                 return "After \(cause.title) of \(CurrencyFormatter.compact(cause.amount.absolute)), selected cash reaches its projected low."
             }
             if result.status == .tight {
-                return "Expected commitments and everyday spending bring selected cash below your cash buffer."
+                return protectsSpendingReserves
+                    ? "Expected commitments and everyday spending bring selected cash below the amount protecting your cash buffer and Spending Reserves."
+                    : "Expected commitments and everyday spending bring selected cash below your cash buffer."
             }
             return nil
         }
@@ -1047,16 +1064,18 @@ struct ProjectionsView: View {
             case .covered:
                 return "Covered through \(result.horizonEnd.formatted(.dateTime.month(.abbreviated).day()))"
             case .tight:
-                let buffer = result.safeToSpend.map {
-                    CurrencyFormatter.compact($0.minimumCashBuffer)
+                let protectedCash = result.safeToSpend.map {
+                    CurrencyFormatter.compact($0.protectedCashMinimum)
                 } ?? "your"
+                let label = protectsSpendingReserves
+                    ? "protected cash" : "buffer"
                 if startsBelowBuffer {
-                    return "Below \(buffer) buffer now"
+                    return "Below \(protectedCash) \(label) now"
                 }
                 if let breach = firstBufferBreachPoint {
-                    return "Below \(buffer) buffer on \(breach.date.formatted(.dateTime.month(.abbreviated).day()))"
+                    return "Below \(protectedCash) \(label) on \(breach.date.formatted(.dateTime.month(.abbreviated).day()))"
                 }
-                return "Below \(buffer) buffer"
+                return "Below \(protectedCash) \(label)"
             case .shortfall:
                 let date = result.expectedFirstShortfallPoint?.date ?? low.date
                 return "Cash turns negative on \(date.formatted(.dateTime.month(.abbreviated).day()))"
@@ -1199,10 +1218,34 @@ private struct SafeToSpendDetailSheet: View {
                             amount: estimate.minimumCashBuffer,
                             color: NwAppColors.primary
                         )
+                        if estimate.spendingReserve > .zero {
+                            compositionLegend(
+                                "Spending Reserves",
+                                amount: estimate.spendingReserve,
+                                color: NwAppColors.gold
+                            )
+                        } else {
+                            compositionLegend(
+                                estimate.protectedCashGap.isZero
+                                    ? "Extra room" : "Buffer gap",
+                                amount: estimate.protectedCashGap.isZero
+                                    ? estimate.amount
+                                    : estimate.protectedCashGap,
+                                color: estimate.protectedCashGap.isZero
+                                    ? NwAppColors.positive
+                                    : NwAppColors.liability
+                            )
+                        }
+                    }
+
+                    if estimate.spendingReserve > .zero {
                         compositionLegend(
-                            estimate.bufferGap.isZero ? "Extra room" : "Buffer gap",
-                            amount: estimate.bufferGap.isZero ? estimate.amount : estimate.bufferGap,
-                            color: estimate.bufferGap.isZero
+                            estimate.protectedCashGap.isZero
+                                ? "Extra room" : "Protected cash gap",
+                            amount: estimate.protectedCashGap.isZero
+                                ? estimate.amount
+                                : estimate.protectedCashGap,
+                            color: estimate.protectedCashGap.isZero
                                 ? NwAppColors.positive
                                 : NwAppColors.liability
                         )
@@ -1215,22 +1258,28 @@ private struct SafeToSpendDetailSheet: View {
     private var lowPointCompositionBar: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
-            if estimate.bufferGap.isZero {
+            if estimate.protectedCashGap.isZero {
                 let total = max(estimate.projectedLowBalance.doubleValue, 0.01)
-                let bufferShare = min(max(estimate.minimumCashBuffer.doubleValue / total, 0), 1)
-                let bufferWidth = width * bufferShare
+                let protectedShare = min(max(
+                    estimate.protectedCashMinimum.doubleValue / total,
+                    0
+                ), 1)
+                let protectedWidth = width * protectedShare
                 HStack(spacing: 2) {
                     Capsule()
                         .fill(NwAppColors.primary)
-                        .frame(width: bufferWidth)
+                        .frame(width: protectedWidth)
                     if !estimate.amount.isZero {
                         Capsule()
                             .fill(NwAppColors.positive)
-                            .frame(width: max(width - bufferWidth - 2, 0))
+                            .frame(width: max(width - protectedWidth - 2, 0))
                     }
                 }
             } else {
-                let target = max(estimate.minimumCashBuffer.doubleValue, 0.01)
+                let target = max(
+                    estimate.protectedCashMinimum.doubleValue,
+                    0.01
+                )
                 let available = max(estimate.projectedLowBalance.doubleValue, 0)
                 let coveredShare = min(available / target, 1)
                 ZStack(alignment: .leading) {
@@ -1451,12 +1500,18 @@ private struct SafeToSpendDetailSheet: View {
     }
 
     private var lowPointStatusText: String {
-        if estimate.bufferGap.isZero { return "Cash buffer protected" }
-        return "\(CurrencyFormatter.compact(estimate.bufferGap)) below the cash buffer"
+        if estimate.protectedCashGap.isZero {
+            return estimate.spendingReserve > .zero
+                ? "Cash buffer and Reserves protected"
+                : "Cash buffer protected"
+        }
+        let protected = estimate.spendingReserve > .zero
+            ? "protected cash" : "cash buffer"
+        return "\(CurrencyFormatter.compact(estimate.protectedCashGap)) below the \(protected)"
     }
 
     private var lowPointStatusColor: Color {
-        if !estimate.bufferGap.isZero { return NwAppColors.liability }
+        if !estimate.protectedCashGap.isZero { return NwAppColors.liability }
         return NwAppColors.positive
     }
 
@@ -2608,8 +2663,26 @@ private actor ProjectionsDataActor {
         let transactionExclusions = (try? context.fetch(
             FetchDescriptor<DurableExcludedSpendTransaction>()
         )) ?? []
+        let spendingReserveFunds = (try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFund>()
+        )) ?? []
+        let spendingReserveContributions = (try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundContribution>()
+        )) ?? []
+        let spendingReserveExpenses = (try? context.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        )) ?? []
         let excludedCategoryIds = Set(exclusions.map(\.categoryId))
         let hiddenInternalCategoryIds: Set<String> = []
+        let spendingReserveAdjustment = SpendingReserveProjectionResolver
+            .resolve(
+                funds: spendingReserveFunds.map(\.coreFund),
+                contributions: spendingReserveContributions.map(
+                    \.coreContribution
+                ),
+                expenses: spendingReserveExpenses.map(\.coreExpense),
+                through: BudgetMonth(containing: .now)
+            )
 
         let openCash = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
         var overrideMap: [String: Bool] = [:]
@@ -2815,14 +2888,18 @@ private actor ProjectionsDataActor {
             historicalTransactions: history,
             excludedCategoryIds: excludedCategoryIds,
             excludedTransactionIds: Set(transactionExclusions.map(\.transactionId))
-                .union(expectationMatchedIds),
+                .union(expectationMatchedIds)
+                .union(
+                    spendingReserveAdjustment.excludedHistoricalLineIDs
+                ),
             recurringMatchedTransactionIds: expectationMatchedIds,
             outflowOnlyExcludedCategoryIds: hiddenInternalCategoryIds,
             spendAccountIds: spendIds,
             lookbackDays: 365,
             asOf: .now,
             horizonDays: horizonDays,
-            minimumCashBuffer: minimumCashBuffer
+            minimumCashBuffer: minimumCashBuffer,
+            spendingReserve: spendingReserveAdjustment.balance
         )
         return ProjectionsView.ProjectionData(
             result: result,

@@ -4,7 +4,9 @@ import NetworthCore
 /// Standardized currency-amount label. Uses NetworthCore's formatter so views
 /// never reach for raw milliunits.
 public struct NwAmountText: View {
-    public enum Variant { case hero, large, body, compact, signed }
+    public enum Variant {
+        case hero, large, metricSmall, body, compact, signed
+    }
 
     public let amount: Money
     public let variant: Variant
@@ -39,6 +41,7 @@ public struct NwAmountText: View {
         switch variant {
         case .hero:    return NwTypography.displayLarge
         case .large:   return NwTypography.display
+        case .metricSmall: return NwTypography.metricSmall
         case .body:    return NwTypography.bodyEmphasis
         case .compact: return NwTypography.headline
         case .signed:  return NwTypography.bodyEmphasis
@@ -55,9 +58,31 @@ public struct NwAmountText: View {
     }
 }
 
+private enum NwCurrencyInputPrecision {
+    case cents
+    case wholeDollars
+
+    func formatted(_ text: String) -> String {
+        switch self {
+        case .cents:
+            return CurrencyInputFormatter.formatted(text)
+        case .wholeDollars:
+            return CurrencyInputFormatter.formattedWholeDollars(text)
+        }
+    }
+
+    var zeroDisplay: String {
+        switch self {
+        case .cents: return "0.00"
+        case .wholeDollars: return "0"
+        }
+    }
+}
+
 private struct NwCurrencyInputModifier: ViewModifier {
     @Binding var text: String
     let title: String
+    let precision: NwCurrencyInputPrecision
     let onFocusChange: (Bool) -> Void
     @State private var showingKeypad = false
 
@@ -80,7 +105,7 @@ private struct NwCurrencyInputModifier: ViewModifier {
             .accessibilityValue(text.isEmpty ? "Not set" : text)
         }
         .onChange(of: text) { _, proposedText in
-            let formatted = CurrencyInputFormatter.formatted(proposedText)
+            let formatted = precision.formatted(proposedText)
             if formatted != proposedText {
                 text = formatted
             }
@@ -88,7 +113,11 @@ private struct NwCurrencyInputModifier: ViewModifier {
         .sheet(isPresented: $showingKeypad, onDismiss: {
             onFocusChange(false)
         }) {
-            NwCurrencyEntryPadSheet(title: title, value: $text)
+            NwCurrencyEntryPadSheet(
+                title: title,
+                value: $text,
+                precision: precision
+            )
         }
     }
 }
@@ -98,6 +127,7 @@ private struct NwCurrencyEntryPadSheet: View {
 
     let title: String
     @Binding var value: String
+    let precision: NwCurrencyInputPrecision
 
     @State private var draft = ""
     @State private var replaceOnNextNumber = false
@@ -116,7 +146,7 @@ private struct NwCurrencyEntryPadSheet: View {
                 .font(NwTypography.titleSmall)
                 .frame(maxWidth: .infinity, alignment: .center)
 
-            Text(draft.isEmpty ? "0.00" : draft)
+            Text(draft.isEmpty ? precision.zeroDisplay : draft)
                 .font(NwTypography.displayLarge)
                 .monospacedDigit()
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -176,7 +206,7 @@ private struct NwCurrencyEntryPadSheet: View {
         .padding(.bottom, NwSpacing.md)
         .background(NwAppColors.background.ignoresSafeArea())
         .onAppear {
-            draft = CurrencyInputFormatter.formatted(value)
+            draft = precision.formatted(value)
             replaceOnNextNumber = !draft.isEmpty
             cancelled = false
         }
@@ -199,12 +229,12 @@ private struct NwCurrencyEntryPadSheet: View {
                 .dropLast()
                 .map(String.init)
                 .joined()
-            draft = CurrencyInputFormatter.formatted(digits)
+            draft = precision.formatted(digits)
             replaceOnNextNumber = false
         default:
             guard key.allSatisfy(\.isNumber) else { return }
             let proposedText = replaceOnNextNumber ? key : draft + key
-            draft = CurrencyInputFormatter.formatted(proposedText)
+            draft = precision.formatted(proposedText)
             replaceOnNextNumber = false
         }
     }
@@ -221,6 +251,22 @@ extension View {
         modifier(NwCurrencyInputModifier(
             text: text,
             title: title,
+            precision: .cents,
+            onFocusChange: onFocusChange
+        ))
+    }
+
+    /// Whole-dollar entry for planning values that intentionally exclude
+    /// cents. The first number typed replaces any existing value.
+    func nwWholeDollarInput(
+        text: Binding<String>,
+        title: String = "Amount",
+        onFocusChange: @escaping (Bool) -> Void = { _ in }
+    ) -> some View {
+        modifier(NwCurrencyInputModifier(
+            text: text,
+            title: title,
+            precision: .wholeDollars,
             onFocusChange: onFocusChange
         ))
     }
@@ -232,11 +278,18 @@ public struct NwTransactionRow: View {
     public let title: String
     public let subtitle: String
     public let amount: Money
+    public let showCents: Bool
 
-    public init(title: String, subtitle: String, amount: Money) {
+    public init(
+        title: String,
+        subtitle: String,
+        amount: Money,
+        showCents: Bool = true
+    ) {
         self.title = title
         self.subtitle = subtitle
         self.amount = amount
+        self.showCents = showCents
     }
 
     public var body: some View {
@@ -255,6 +308,7 @@ public struct NwTransactionRow: View {
             NwAmountText(
                 amount,
                 variant: .body,
+                showCents: showCents,
                 color: amount.isNegative
                     ? NwAppColors.liability
                     : NwAppColors.positive

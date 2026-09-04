@@ -187,8 +187,12 @@ cd PlaidWorker && npm test && npm run check
   raw transactions. Each Reserve assignment reduces its selected source budget
   and therefore Retained exactly once; a Reserve may receive multiple
   independently editable assignments in one month, including from different
-  groups. A later Reserve- or Goal-funded purchase drains only that earmark and
-  stays outside monthly budgets and Retained.
+  groups. Reserve management uses the month selected on Spending: new
+  assignments belong to that month, while an existing assignment always keeps
+  its original month when edited. Historical changes revise that month's
+  budget and carry the resulting balance forward. A later Reserve- or
+  Goal-funded purchase drains only that earmark and stays outside monthly
+  budgets and Retained.
   Historical averages belong in Spending Trends, not the main monthly budget
   summary. Factual calendar pace may compare
   percent used with percent of the current month elapsed, but the Spending
@@ -197,6 +201,14 @@ cd PlaidWorker && npm test && npm run check
   Wada-family red, positive Retained is green, and negative Retained is red.
   Pace remains available in the tapped detail. Never extrapolate that
   comparison into a projected finish.
+- **Carried Spending Reserves are protected cash, not a bank balance change.**
+  Projections keeps the cash curve and per-account warnings on real balances,
+  but Safe to Spend and tight-status calculations protect the aggregate active
+  Reserve balance in addition to the configured cash buffer. The Spending Room
+  reconciliation shows Reserves separately. Confirmed Reserve-funded whole
+  transactions and split lines are excluded from historical expected-spending
+  estimates so assigning and later using the earmark never creates a second
+  deduction. Future Reserve plans are not projected before explicit assignment.
 - **Savings is a designated budget group, not ordinary spending.** Its
   repeating target behaves like every other group target, it contains no
   ordinary categories, and new actual progress comes only from an explicit

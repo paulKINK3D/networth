@@ -422,6 +422,87 @@ struct SpendingBudgetsTests {
         #expect(snapshot.balance == Money.dollars(integer: 325))
     }
 
+    @Test("Projection protects active reserves and excludes their purchases")
+    func reserveProjectionAdjustment() {
+        let month = BudgetMonth(year: 2026, month: 8)
+        let activeFund = SpendingSinkingFund(
+            id: "home",
+            name: "Home",
+            mode: .ongoingReserve,
+            openingBalance: Money.dollars(integer: 300),
+            startMonth: month
+        )
+        let archivedFund = SpendingSinkingFund(
+            id: "old",
+            name: "Old reserve",
+            mode: .ongoingReserve,
+            openingBalance: Money.dollars(integer: 500),
+            startMonth: month,
+            archived: true
+        )
+        let contributions = [
+            SpendingSinkingFundContribution(
+                id: "assignment",
+                fundID: activeFund.id,
+                month: month,
+                amount: Money.dollars(integer: 200),
+                updatedAt: date(2026, 8, 1)
+            )
+        ]
+        let expenses = [
+            SpendingSinkingFundExpense(
+                id: "whole",
+                fundID: activeFund.id,
+                transactionID: "whole-transaction",
+                date: date(2026, 8, 10),
+                amount: Money.dollars(integer: 100),
+                updatedAt: date(2026, 8, 10)
+            ),
+            SpendingSinkingFundExpense(
+                id: "split-old",
+                fundID: activeFund.id,
+                transactionID: "split-transaction",
+                subtransactionID: "split-line",
+                date: date(2026, 8, 11),
+                amount: Money.dollars(integer: 50),
+                active: true,
+                updatedAt: date(2026, 8, 11)
+            ),
+            SpendingSinkingFundExpense(
+                id: "split-new",
+                fundID: activeFund.id,
+                transactionID: "split-transaction",
+                subtransactionID: "split-line",
+                date: date(2026, 8, 11),
+                amount: Money.dollars(integer: 50),
+                active: false,
+                updatedAt: date(2026, 8, 12)
+            ),
+            SpendingSinkingFundExpense(
+                id: "archived",
+                fundID: archivedFund.id,
+                transactionID: "archived-transaction",
+                date: date(2026, 8, 9),
+                amount: Money.dollars(integer: 25),
+                updatedAt: date(2026, 8, 9)
+            ),
+        ]
+
+        let adjustment = SpendingReserveProjectionResolver.resolve(
+            funds: [activeFund, archivedFund],
+            contributions: contributions,
+            expenses: expenses,
+            through: month,
+            calendar: utc
+        )
+
+        #expect(adjustment.balance == Money.dollars(integer: 400))
+        #expect(adjustment.excludedHistoricalLineIDs == [
+            "whole-transaction",
+            "archived-transaction",
+        ])
+    }
+
     @Test("Remainder selection is effective dated")
     func remainderSelectionPreservesHistory() {
         let rules = [

@@ -263,9 +263,18 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   reducing a monthly budget or Retained again, and without rewriting imported
   activity or cash balances. Reserve money remains as a virtual earmark in the
   main checking cash; it is not tied to a holding account, moved into savings,
-  or duplicated in a Goal. Projections treat the aggregate carried Reserve
-  balance as unavailable without deducting a later Reserve-funded purchase a
-  second time. Transaction review calls the
+  or duplicated in a Goal. Opening Reserves from Spending uses the displayed
+  month: balances and activity stop at that month, new assignments belong to
+  it, and existing assignments retain their original month when edited. A
+  historical assignment changes that month's source budget and Retained, then
+  carries the resulting balance forward. Projections treat the aggregate
+  carried Reserve balance as unavailable in Safe to Spend and tight-status
+  calculations while leaving the chart and account warnings on real bank
+  balances. Spending Room lists the Reserve balance separately. Confirmed
+  Reserve-funded purchases are excluded from historical expected spending so
+  using an earmark is not deducted a second time; future plans have no
+  projection effect until an assignment is explicit. Transaction review calls
+  the
   independent funding choice `Source`; every ordinary outgoing split line has
   its own Source. New records use an additive private-CloudKit schema and do
   not revive the retired pre-goals sinking-fund models. An additive assignment-

@@ -1,5 +1,65 @@
 # WORKING
 
+## In progress — Reserve surface redesign (2026-09-03)
+
+- The Reserves overview redesign is confirmed on device: a centered total with
+  `Total Reserves`, a two-column grid of Reserve cards, target progress shown
+  with vertical fill bars, no-target balances represented by stacked blue
+  $100 and orange $10 disks, and a full-width `Add Reserve` action fixed at the
+  bottom. The duplicate header plus action is removed.
+- The individual Reserve detail is implemented for device review. It uses a
+  centered total labeled `<Name> Reserve Total`, equal Monthly and Target
+  metrics with any due date beneath Target, and fixed half-width `Assign` and
+  `Choose Purchase` actions.
+- The detail's central ledger shows every month from the displayed month back
+  to the Reserve start in reverse chronological order. Each row reports that
+  month's signed net change and its ending Reserve balance. Tapping a month
+  opens its individual assignments and purchases; the final Start row shows
+  the original opening balance. There is no duplicate total or Current row.
+- Reserve editing keeps its existing focused form, reached through a blue
+  pencil-circle control. `Optional` is renamed `Plan`, and `Already saved` is
+  renamed `Starting balance` to match the ledger. User-entered Reserve targets,
+  monthly plans, starting balances, and assignments are whole-dollar values;
+  Reserve presentation also suppresses cents while imported purchase amounts
+  retain their exact underlying transaction value.
+
+## Implemented — Past-month Reserve assignments (2026-09-03)
+
+- Reserves inherit the single month selected on Spending. Their balance and
+  activity stop at that month, and assignment availability is recalculated
+  from that month's source budgets.
+- `Assign Money` creates an assignment in the displayed month, including a
+  prior month. The editor shows the month explicitly.
+- Tapping an existing assignment always edits it in its original month. It
+  cannot silently move into the current calendar month.
+- A historical assignment immediately revises that month's source budget and
+  Retained amount, then carries the changed Reserve balance into later months
+  and current protected cash.
+- Implementation and app-test coverage are complete. The generic-device Debug
+  build and app-test compilation pass; physical-device validation remains.
+
+## Implemented — Reserve-aware Projections (2026-09-03)
+
+- Projections now protects the aggregate carried balance of every active
+  Spending Reserve in addition to the configured cash buffer. Safe to Spend is
+  the real projected low less both protected amounts.
+- The cash curve and per-account overdraft checks continue to show real bank
+  balances. Reserves are virtual earmarks and are not assigned to an account.
+- Spending Room shows the cash buffer and Spending Reserves as separate
+  protected amounts. A Reserve-driven tight state uses `Protected cash gap`
+  rather than mislabeling the full shortfall as a buffer gap.
+- Confirmed Reserve-funded whole transactions and split lines are removed from
+  historical expected-spending estimates. Their bank outflow and matching
+  Reserve reduction therefore leave available cash unchanged instead of being
+  protected twice. Released assignments return to ordinary history.
+- Future Reserve plans remain informational. Projections changes only after an
+  explicit Reserve assignment changes the carried balance.
+- Physical-device validation confirmed the Reserve-aware Spending Room and
+  projection behavior.
+- Validation: 256 NetworthCore tests, a fresh generic-device Debug build, and
+  generic-device Debug build-for-testing pass. Simulator execution was not
+  requested.
+
 ## Implemented — explicit Savings transactions (2026-09-03)
 
 - Code implementation is complete. The main Savings classification and prompt
@@ -97,10 +157,8 @@
 - Locked: Reserves remain virtual earmarks held in the main checking cash. They
   are not tied to a holding account, moved into savings, or duplicated in a
   synthetic Goal. Networth never generates a bank transfer for an assignment.
-- Verified projection gap: the carried Spending Reserve balance is not
-  currently removed from Safe to Spend or the projected cash pool. Projections
-  must treat the aggregate carried balance as unavailable while avoiding a
-  second deduction when a later Reserve-funded purchase drains the earmark.
+- Reserve-aware Projection handling is implemented in the current handoff
+  above.
 - The locked design is promoted into `PLAN.md` and implemented end to end.
   The version-4 settings migration requeues only a uniquely matched outgoing
   cash transfer for one-time review; it never auto-classifies or auto-pairs a
@@ -169,8 +227,6 @@
 
 ### Remaining Reserve work
 
-- Reserve assignments currently apply to the current calendar month. Adding or
-  editing an explicit assignment for a selected past month remains future work.
 - The Spending page groups Savings and Reserves under the one-word heading
   `Future`.
 - Consolidating scattered account management remains a separate planned task
