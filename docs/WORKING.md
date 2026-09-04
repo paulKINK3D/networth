@@ -1,6 +1,6 @@
 # WORKING
 
-## Implemented — Reserve archive and deletion lifecycle (2026-09-04)
+## Current handoff — Reserve lifecycle and card polish (2026-09-04)
 
 - A Reserve now has distinct Archive and Delete actions. Archive preserves the
   complete Reserve ledger while removing it from active planning; Delete
@@ -11,9 +11,23 @@
 - Active and archived Reserve details expose their applicable lifecycle actions
   from a Reserve-specific overflow menu. The card long-press remains a
   secondary shortcut, and archived-list rows support swipe Restore and Delete.
-- Validation: 257 NetworthCore tests pass, the generic-device Debug app build
-  passes, and the Networth app-test target compiles. Physical-device review
-  remains.
+- The Spending Reserves card shows its aggregate balance on the left and up to
+  three slim columns on the right. The lighter reallocation blue distinguishes
+  them from ordinary budget columns. Every column uses one shared balance
+  scale and one shared bottom edge; targeted Reserves add a subtle outline up
+  to the target, while open-ended Reserves show only saved balance. Ranking is
+  nearest due date, then highest percentage complete, then largest saved
+  balance; additional Reserves appear as `+N`. Individual Reserve cards reuse
+  the same column treatment.
+- The light-blue segment in an ordinary budget's vertical column means money
+  reallocated out to either Savings or Reserves; it is not a bank transfer.
+- Reserve Assignment uses the shared whole-dollar currency row, including its
+  attached `$` prefix and staged keypad.
+- Implementation is committed at `84f2309` on `feature/sinking-funds`.
+  Validation: 258 NetworthCore tests pass, the generic-device Debug app build
+  passes, and the Networth app-test target compiles. The user reviewed the
+  Spending-card direction on a physical-device screenshot; final re-checks of
+  the corrected shared baseline and lifecycle flows remain.
 
 ## Implemented — Savings surface redesign (2026-09-03)
 

@@ -193,6 +193,15 @@ cd PlaidWorker && npm test && npm run check
   budget and carry the resulting balance forward. A later Reserve- or
   Goal-funded purchase drains only that earmark and stays outside monthly
   budgets and Retained.
+  Reserve lifecycle actions are intentionally distinct: Archive removes a
+  Reserve from active planning but preserves its complete ledger in the
+  user-visible Archived Reserves area, where it can be reviewed or restored.
+  Delete permanently removes the Reserve plus every associated assignment and
+  purchase-link record, but never removes or rewrites imported transactions.
+  The aggregate Spending card shows up to three lighter-blue Reserve columns
+  on one shared balance scale, ranked by nearest due date, then highest
+  percentage complete, then largest saved balance. Targeted Reserves add a
+  subtle target outline; open-ended Reserves show only their saved balance.
   Historical averages belong in Spending Trends, not the main monthly budget
   summary. Factual calendar pace may compare
   percent used with percent of the current month elapsed, but the Spending
