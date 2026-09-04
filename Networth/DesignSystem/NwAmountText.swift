@@ -58,6 +58,46 @@ public struct NwAmountText: View {
     }
 }
 
+/// Whole-dollar form row whose currency symbol stays visually attached to
+/// the value while presenting the shared staged numeric-entry sheet.
+public struct NwWholeDollarEntryRow: View {
+    public let title: String
+    @Binding public var text: String
+    public let inputTitle: String
+
+    public init(
+        _ title: String,
+        text: Binding<String>,
+        inputTitle: String? = nil
+    ) {
+        self.title = title
+        _text = text
+        self.inputTitle = inputTitle ?? title
+    }
+
+    public var body: some View {
+        HStack(spacing: NwSpacing.md) {
+            Text(title)
+            Spacer()
+            Text("$" + (text.isEmpty ? "0" : text))
+                .foregroundStyle(
+                    text.isEmpty
+                        ? NwAppColors.textSecondary
+                        : NwAppColors.textPrimary
+                )
+                .font(NwTypography.body)
+                .monospacedDigit()
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity,
+                    alignment: .trailing
+                )
+                .nwWholeDollarInput(text: $text, title: inputTitle)
+                .frame(width: 116, height: 44, alignment: .trailing)
+        }
+    }
+}
+
 private enum NwCurrencyInputPrecision {
     case cents
     case wholeDollars

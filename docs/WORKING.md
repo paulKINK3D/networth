@@ -1,5 +1,31 @@
 # WORKING
 
+## Implemented — Savings surface redesign (2026-09-03)
+
+- The regular month-scoped Savings detail now follows the Reserve detail's
+  visual hierarchy while remaining separate from the closed-month transfer
+  prompt and its read-only detail.
+- Its centered hero preserves both components visibly as
+  `<Transferred> + <Savings>` rather than collapsing them into one total, so a
+  zero transfer remains explicit. Transferred uses the primary blue and
+  Savings uses the same favorable green as the Spending Savings card.
+- Compact cards beneath the hero show the repeating monthly amount as
+  `Available` and the month's Savings entries as `Assigned`. The former
+  `Remaining to move` row is removed.
+- Savings entries and actual transfers share one reverse-chronological table
+  with Date, Activity, and Amount columns. Savings entries remain editable and
+  swipe-deletable; transfers retain their Savings Month editor. A month with no
+  transfer shows a factual, non-tappable `Transfer` row with `$0` rather than
+  omitting that side of the reconciliation.
+- The full-width bottom action is named `Add Savings`. Add/Edit Savings uses
+  the same form hierarchy and close/confirm controls as Reserve editing while
+  preserving From, Available, Date, and the optional note. Savings entry is
+  whole-dollar only and uses the shared staged keypad; its `$` prefix and value
+  render together as one trailing-aligned value. Reserve planning fields reuse
+  that shared currency row.
+- Physical-device review confirmed the redesigned detail and editor through
+  the final currency-field alignment. Generic-device Debug builds pass.
+
 ## In progress — Reserve surface redesign (2026-09-03)
 
 - The Reserves overview redesign is confirmed on device: a centered total with
@@ -63,10 +89,10 @@
 ## Implemented — explicit Savings transactions (2026-09-03)
 
 - Code implementation is complete. The main Savings classification and prompt
-  flow has been reviewed on the physical device; the final separation between
-  the regular Savings detail and the read-only prior-month transfer detail
-  awaits a last device check. `swift test`, generic-device Debug
-  build-for-testing, and generic-device Debug and Release builds pass.
+  flow and the separation between the regular Savings detail and read-only
+  prior-month transfer detail have been reviewed on the physical device.
+  `swift test`, generic-device Debug build-for-testing, and generic-device
+  Debug and Release builds pass.
 
 - This work completes actual Savings-transfer handling; it is separate from
   the completed Reserve assignment and funded-purchase work below.

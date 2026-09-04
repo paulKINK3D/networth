@@ -1161,7 +1161,7 @@ struct SpendingHistoryView: View {
         )
         .accessibilityHint(
             budget.groupIdentity == model.savingsGroupIdentity
-                ? "Shows transfers and savings choices"
+                ? "Shows transfers and assigned savings"
                 : "Shows categories and transactions"
         )
     }
@@ -1315,7 +1315,7 @@ struct SpendingHistoryView: View {
             + "\(CurrencyFormatter.currency(budget.spent, showCents: false)) transferred, "
             + "\(CurrencyFormatter.currency(budget.baseTarget, showCents: false)) monthly budget"
         if budget.additionalTarget > .zero {
-            value += ", plus \(CurrencyFormatter.currency(budget.additionalTarget, showCents: false)) from savings choices"
+            value += ", plus \(CurrencyFormatter.currency(budget.additionalTarget, showCents: false)) assigned to Savings"
         }
         value += ", \(CurrencyFormatter.currency(maxMoney(budget.remaining, .zero), showCents: false)) remaining to move"
         return value
@@ -3378,153 +3378,132 @@ private struct SavingsBucketDetailSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    LabeledContent("Transferred") {
-                        NwAmountText(
-                            transferred,
-                            variant: .body,
+                VStack(spacing: NwSpacing.xl) {
+                    VStack(spacing: NwSpacing.xs) {
+                        HStack(spacing: 0) {
+                            Text(CurrencyFormatter.currency(
+                                transferred,
+                                showCents: false
+                            ))
+                            .foregroundStyle(NwAppColors.primary)
+                            Text(" + ")
+                                .foregroundStyle(NwAppColors.textSecondary)
+                            Text(CurrencyFormatter.currency(
+                                additionalTarget,
+                                showCents: false
+                            ))
+                            .foregroundStyle(NwAppColors.favorableText)
+                        }
+                        .font(NwTypography.displayLarge)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        Text("Transferred + Savings")
+                            .font(NwTypography.headline)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    HStack(alignment: .top, spacing: NwSpacing.sm) {
+                        NwCompactMoneyMetricCard(
+                            amount: baseTarget,
+                            label: "Available"
+                        )
+                        NwCompactMoneyMetricCard(
+                            amount: additionalTarget,
+                            label: "Assigned",
                             color: NwAppColors.favorableText
                         )
                     }
-                    LabeledContent("Monthly budget") {
-                        NwAmountText(baseTarget, variant: .body)
-                    }
-                    if additionalTarget > .zero {
-                        LabeledContent("Additional") {
-                            NwAmountText(
-                                additionalTarget,
-                                variant: .body,
-                                color: NwAppColors.favorableText
+                }
+                .padding(.vertical, NwSpacing.sm)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+
+                activityColumnHeader
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+
+                if activityRows.isEmpty {
+                    Text("No savings activity")
+                        .font(NwTypography.body)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                        .frame(maxWidth: .infinity, minHeight: 72)
+                        .background(
+                            RoundedRectangle(
+                                cornerRadius: NwCornerRadius.card,
+                                style: .continuous
                             )
-                        }
-                    }
-                    LabeledContent("Remaining to move") {
-                        NwAmountText(
-                            remainingToMove,
-                            variant: .body,
-                            color: remainingToMove > .zero
-                                ? NwAppColors.primary
-                                : NwAppColors.favorableText
+                            .fill(NwAppColors.cardSurface)
                         )
-                    }
-                } header: {
-                    Text(monthLabel)
-                }
-
-                Section {
-                    Button("Add Savings Choice") {
-                        choiceEditor = SavingsChoiceEditorTarget(
-                            choiceID: nil,
-                            amount: nil,
-                            note: "",
-                            occurredAt: defaultChoiceDate,
-                            sourceGroupIdentity: defaultSourceGroupID
-                        )
-                    }
-                    .buttonStyle(NwPrimaryButtonStyle())
-                    .disabled(sourceOptions(excluding: nil).isEmpty)
-                }
-
-                Section("Savings Choices") {
-                    if monthChoices.isEmpty {
-                        Text("No savings choices")
-                            .foregroundStyle(NwAppColors.textSecondary)
-                    } else {
-                        ForEach(monthChoices, id: \.id) { choice in
-                            Button {
-                                choiceEditor = SavingsChoiceEditorTarget(
-                                    choiceID: choice.id,
-                                    amount: Money(
-                                        milliunits: choice.amountMilliunits
-                                    ),
-                                    note: choice.note,
-                                    occurredAt: choice.occurredAt,
-                                    sourceGroupIdentity:
-                                        choice.sourceGroupIdentity
-                                )
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(choice.note.isEmpty
-                                            ? "Savings choice" : choice.note)
-                                            .foregroundStyle(
-                                                NwAppColors.textPrimary
-                                            )
-                                        Text(choice.occurredAt.formatted(
-                                            .dateTime.month(.abbreviated).day()
-                                        ))
-                                        .font(NwTypography.footnote)
-                                        .foregroundStyle(
-                                            NwAppColors.textSecondary
-                                        )
-                                    }
-                                    Spacer()
-                                    NwAmountText(
-                                        Money(
-                                            milliunits: choice.amountMilliunits
-                                        ),
-                                        variant: .body,
-                                        color: NwAppColors.favorableText
-                                    )
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .swipeActions {
-                                Button(role: .destructive) {
-                                    deleteChoice(choice)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                } else {
+                    ForEach(activityRows) { row in
+                        Group {
+                            if row.isInteractive {
+                                Button {
+                                    openActivity(row)
                                 } label: {
-                                    Label("Delete", systemImage: "trash")
+                                    activityRow(row)
                                 }
-                            }
-                        }
-                    }
-                }
-
-                Section("Savings Transfers") {
-                    if monthTransfers.isEmpty {
-                        Text("No savings transfers")
-                            .foregroundStyle(NwAppColors.textSecondary)
-                    } else {
-                        ForEach(monthTransfers) { transfer in
-                            Button {
-                                assignmentEditor = SavingsTransferAssignmentTarget(
-                                    transfer: transfer,
-                                    proposedMonth: transfer.effectiveMonth,
-                                    savingsGroupIdentity:
-                                        selection.groupIdentity,
-                                    monthOptions: assignmentMonthOptions(
-                                        for: transfer
-                                    )
-                                )
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(transfer.title)
-                                            .foregroundStyle(
-                                                NwAppColors.textPrimary
+                                .buttonStyle(.plain)
+                                .swipeActions {
+                                    if case let .savings(choice) = row.kind {
+                                        Button(role: .destructive) {
+                                            deleteChoice(choice)
+                                        } label: {
+                                            Label(
+                                                "Delete",
+                                                systemImage: "trash"
                                             )
-                                        Text(transferSubtitle(transfer))
-                                            .font(NwTypography.footnote)
-                                            .foregroundStyle(
-                                                NwAppColors.textSecondary
-                                            )
+                                        }
                                     }
-                                    Spacer()
-                                    NwAmountText(
-                                        transfer.amount,
-                                        variant: .body,
-                                        color: transfer.amount.isNegative
-                                            ? NwAppColors.budgetOver
-                                            : NwAppColors.favorableText
-                                    )
                                 }
-                                .contentShape(Rectangle())
+                            } else {
+                                activityRow(row)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .listRowInsets(EdgeInsets(
+                            top: NwSpacing.xs,
+                            leading: 0,
+                            bottom: NwSpacing.xs,
+                            trailing: 0
+                        ))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                     }
                 }
+            }
+            .listStyle(.plain)
+            .contentMargins(
+                .horizontal,
+                NwSpacing.screenPadding,
+                for: .scrollContent
+            )
+            .background(NwAppColors.background.ignoresSafeArea())
+            .safeAreaInset(edge: .bottom) {
+                Button("Add Savings") {
+                    choiceEditor = SavingsChoiceEditorTarget(
+                        choiceID: nil,
+                        amount: nil,
+                        note: "",
+                        occurredAt: defaultChoiceDate,
+                        sourceGroupIdentity: defaultSourceGroupID
+                    )
+                }
+                .buttonStyle(NwPrimaryButtonStyle())
+                .disabled(sourceOptions(excluding: nil).isEmpty)
+                .opacity(
+                    sourceOptions(excluding: nil).isEmpty ? 0.4 : 1
+                )
+                .padding(.horizontal, NwSpacing.screenPadding)
+                .padding(.vertical, NwSpacing.sm)
+                .background(.ultraThinMaterial)
             }
             .navigationTitle(selection.groupName)
             .navigationBarTitleDisplayMode(.inline)
@@ -3570,10 +3549,6 @@ private struct SavingsBucketDetailSheet: View {
         BudgetMonth(containing: selection.month)
     }
 
-    private var monthLabel: String {
-        budgetMonth.startDate().formatted(.dateTime.month(.wide).year())
-    }
-
     private var monthChoices: [DurableSavingsBudgetChoice] {
         Dictionary(grouping: choiceRows, by: { $0.id })
             .compactMapValues { rows in
@@ -3610,15 +3585,164 @@ private struct SavingsBucketDetailSheet: View {
         return total > .zero ? total : .zero
     }
 
-    private var remainingToMove: Money {
-        let remaining = baseTarget + additionalTarget - transferred
-        return remaining > .zero ? remaining : .zero
-    }
-
     private var monthTransfers: [SavingsTransferActivity] {
         selection.transfers.filter {
             $0.groupIdentity == selection.groupIdentity
                 && $0.effectiveMonth == budgetMonth
+        }
+    }
+
+    private enum ActivityKind {
+        case savings(DurableSavingsBudgetChoice)
+        case transfer(SavingsTransferActivity)
+        case emptyTransfer
+    }
+
+    private struct ActivityRow: Identifiable {
+        let id: String
+        let date: Date?
+        let title: String
+        let detail: String
+        let amount: Money
+        let kind: ActivityKind
+
+        var isInteractive: Bool {
+            if case .emptyTransfer = kind { return false }
+            return true
+        }
+    }
+
+    private var activityRows: [ActivityRow] {
+        let savings = monthChoices.map { choice in
+            let sourceName = selection.budgetSnapshots.first {
+                $0.groupIdentity == choice.sourceGroupIdentity
+            }?.groupName ?? "Budget"
+            return ActivityRow(
+                id: "savings:\(choice.id.uuidString)",
+                date: choice.occurredAt,
+                title: choice.note.isEmpty ? "Savings" : choice.note,
+                detail: "Savings · \(sourceName)",
+                amount: Money(milliunits: choice.amountMilliunits),
+                kind: .savings(choice)
+            )
+        }
+        var transfers = monthTransfers.map { transfer in
+            ActivityRow(
+                id: "transfer:\(transfer.id)",
+                date: transfer.postedDate,
+                title: transfer.title,
+                detail: "Transfer · \(transfer.accountName)",
+                amount: transfer.amount,
+                kind: .transfer(transfer)
+            )
+        }
+        if transfers.isEmpty {
+            transfers = [ActivityRow(
+                id: "transfer:empty",
+                date: nil,
+                title: "Transfer",
+                detail: "No transfers",
+                amount: .zero,
+                kind: .emptyTransfer
+            )]
+        }
+        return (savings + transfers).sorted {
+            if $0.date != $1.date {
+                return ($0.date ?? .distantPast) > ($1.date ?? .distantPast)
+            }
+            return $0.id < $1.id
+        }
+    }
+
+    private var activityColumnHeader: some View {
+        HStack(spacing: NwSpacing.sm) {
+            Text("Date")
+                .frame(width: 62, alignment: .leading)
+            Text("Activity")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Amount")
+                .frame(width: 78, alignment: .trailing)
+        }
+        .font(NwTypography.caption)
+        .foregroundStyle(NwAppColors.textSecondary)
+        .textCase(.uppercase)
+        .padding(.horizontal, NwSpacing.md)
+    }
+
+    private func activityRow(_ row: ActivityRow) -> some View {
+        HStack(spacing: NwSpacing.sm) {
+            Text(row.date?.formatted(
+                .dateTime.month(.abbreviated).day()
+            ) ?? "—")
+                .font(NwTypography.footnoteEm)
+                .foregroundStyle(NwAppColors.textPrimary)
+                .frame(width: 62, alignment: .leading)
+                .lineLimit(1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.title)
+                    .font(NwTypography.bodyEmphasis)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                    .lineLimit(1)
+                Text(row.detail)
+                    .font(NwTypography.caption)
+                    .foregroundStyle(NwAppColors.textSecondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            NwAmountText(
+                row.amount,
+                variant: .body,
+                showCents: false,
+                color: row.amount.isNegative
+                    ? NwAppColors.budgetOver : NwAppColors.favorableText
+            )
+            .frame(width: 78, alignment: .trailing)
+        }
+        .padding(NwSpacing.md)
+        .background(
+            RoundedRectangle(
+                cornerRadius: NwCornerRadius.card,
+                style: .continuous
+            )
+            .fill(NwAppColors.cardSurface)
+        )
+        .nwShadow(NwShadow.card)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            row.title + ", "
+                + (row.date?.formatted(
+                    .dateTime.month(.wide).day().year()
+                ) ?? "no transfer date")
+                + ", "
+                + CurrencyFormatter.currency(row.amount, showCents: false)
+        )
+        .accessibilityHint(
+            row.isInteractive ? "Opens savings activity" : ""
+        )
+    }
+
+    private func openActivity(_ row: ActivityRow) {
+        switch row.kind {
+        case let .savings(choice):
+            choiceEditor = SavingsChoiceEditorTarget(
+                choiceID: choice.id,
+                amount: Money(milliunits: choice.amountMilliunits),
+                note: choice.note,
+                occurredAt: choice.occurredAt,
+                sourceGroupIdentity: choice.sourceGroupIdentity
+            )
+        case let .transfer(transfer):
+            assignmentEditor = SavingsTransferAssignmentTarget(
+                transfer: transfer,
+                proposedMonth: transfer.effectiveMonth,
+                savingsGroupIdentity: selection.groupIdentity,
+                monthOptions: assignmentMonthOptions(for: transfer)
+            )
+        case .emptyTransfer:
+            break
         }
     }
 
@@ -3669,19 +3793,6 @@ private struct SavingsBucketDetailSheet: View {
         }
     }
 
-    private func transferSubtitle(
-        _ transfer: SavingsTransferActivity
-    ) -> String {
-        var text = transfer.accountName + " · " + transfer.postedDate.formatted(
-            .dateTime.month(.abbreviated).day()
-        )
-        if transfer.effectiveMonth
-            != BudgetMonth(containing: transfer.postedDate) {
-            text += " · Applied to \(monthLabel)"
-        }
-        return text
-    }
-
     private func assignmentMonthOptions(
         for transfer: SavingsTransferActivity
     ) -> [BudgetMonth] {
@@ -3703,7 +3814,7 @@ private struct SavingsBucketDetailSheet: View {
             source: "spending.savingsChoice.delete"
         ) else {
             container.modelContainer.mainContext.rollback()
-            persistenceError = "Your savings choice wasn’t deleted."
+            persistenceError = "Your savings wasn’t deleted."
             return
         }
     }
@@ -3736,7 +3847,7 @@ private struct SavingsChoiceEditorSheet: View {
         self.savingsGroupIdentity = savingsGroupIdentity
         self.sourceOptions = sourceOptions
         _amountText = State(initialValue: target.amount.map {
-            CurrencyInputFormatter.text(for: $0)
+            CurrencyInputFormatter.wholeDollarText(for: $0)
         } ?? "")
         _note = State(initialValue: target.note)
         _occurredAt = State(initialValue: target.occurredAt)
@@ -3747,68 +3858,85 @@ private struct SavingsChoiceEditorSheet: View {
     }
 
     var body: some View {
-        NwModalLayout(
-            title: target.choiceID == nil
-                ? "Add Savings Choice" : "Edit Savings Choice",
-            onClose: { dismiss() },
-            onConfirm: save,
-            confirmDisabled: !canSave
-        ) {
-            NwCard(style: .primary) {
-                VStack(spacing: NwSpacing.md) {
-                    LabeledContent("Amount") {
-                        TextField("0.00", text: $amountText)
-                            .multilineTextAlignment(.trailing)
-                            .frame(maxWidth: 150)
-                            .nwCurrencyInput(
-                                text: $amountText,
-                                title: "Savings amount"
-                            )
-                    }
-                    Divider()
-                    LabeledContent("From") {
-                        Picker("From", selection: $sourceGroupIdentity) {
-                            ForEach(sourceOptions) { option in
-                                Text(option.name).tag(option.id)
-                            }
+        NavigationStack {
+            Form {
+                Section("Savings") {
+                    NwWholeDollarEntryRow(
+                        "Amount",
+                        text: $amountText,
+                        inputTitle: "Savings amount"
+                    )
+                    Picker("From", selection: $sourceGroupIdentity) {
+                        ForEach(sourceOptions) { option in
+                            Text(option.name).tag(option.id)
                         }
-                        .labelsHidden()
                     }
-                    Divider()
-                    LabeledContent("Date") {
-                        DatePicker(
-                            "Date",
-                            selection: $occurredAt,
-                            in: dateRange,
-                            displayedComponents: .date
-                        )
-                        .labelsHidden()
-                        .datePickerStyle(.compact)
+                    if let selectedSource {
+                        LabeledContent("Available") {
+                            NwAmountText(
+                                selectedSource.available,
+                                variant: .body,
+                                showCents: false
+                            )
+                        }
                     }
-                    Divider()
+                    DatePicker(
+                        "Date",
+                        selection: $occurredAt,
+                        in: dateRange,
+                        displayedComponents: .date
+                    )
+                }
+
+                Section("Optional") {
                     TextField("What did you skip?", text: $note)
                 }
             }
-
-            if let selectedSource {
-                LabeledContent("Available from \(selectedSource.name)") {
-                    NwAmountText(selectedSource.available, variant: .body)
+            .navigationTitle(
+                target.choiceID == nil ? "Add Savings" : "Edit Savings"
+            )
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Cancel")
                 }
-                .padding(.horizontal, NwSpacing.xs)
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: save) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(
+                                canSave
+                                    ? NwAppColors.positive
+                                    : Color.secondary.opacity(0.35)
+                            )
+                    }
+                    .disabled(!canSave)
+                    .accessibilityLabel("Save")
+                }
             }
-
-            if let persistenceError {
-                NwInlineNotice(
-                    "Couldn’t Save Choice",
-                    message: persistenceError,
-                    tone: .warning
+            .alert(
+                "Couldn’t Save Savings",
+                isPresented: Binding(
+                    get: { persistenceError != nil },
+                    set: { if !$0 { persistenceError = nil } }
                 )
+            ) {
+                Button("OK", role: .cancel) {
+                    persistenceError = nil
+                }
+            } message: {
+                Text(persistenceError ?? "Please try again.")
             }
         }
     }
 
     private var amount: Money? {
-        CurrencyInputFormatter.money(from: amountText)
+        CurrencyInputFormatter.wholeDollarMoney(from: amountText)
     }
 
     private var selectedSource: SavingsSourceGroupOption? {
@@ -3842,7 +3970,7 @@ private struct SavingsChoiceEditorSheet: View {
         if let choiceID = target.choiceID {
             let matches = choiceRows.filter { $0.id == choiceID }
             guard !matches.isEmpty else {
-                persistenceError = "This savings choice no longer exists."
+                persistenceError = "This savings entry no longer exists."
                 return
             }
             for row in matches {
@@ -3876,7 +4004,7 @@ private struct SavingsChoiceEditorSheet: View {
             source: "spending.savingsChoice.save"
         ) else {
             container.modelContainer.mainContext.rollback()
-            persistenceError = "Your savings choice wasn’t saved."
+            persistenceError = "Your savings wasn’t saved."
             return
         }
         dismiss()
@@ -4365,7 +4493,7 @@ private struct SpendingSinkingFundEditorSheet: View {
                 }
 
                 Section("Plan") {
-                    currencyRow("Target", text: $targetText)
+                    NwWholeDollarEntryRow("Target", text: $targetText)
                     if target > .zero {
                         Toggle("Due date", isOn: $hasDueDate)
                         if hasDueDate {
@@ -4388,8 +4516,14 @@ private struct SpendingSinkingFundEditorSheet: View {
                             }
                         }
                     }
-                    currencyRow("Monthly plan", text: $monthlyText)
-                    currencyRow("Starting balance", text: $openingText)
+                    NwWholeDollarEntryRow(
+                        "Monthly plan",
+                        text: $monthlyText
+                    )
+                    NwWholeDollarEntryRow(
+                        "Starting balance",
+                        text: $openingText
+                    )
                 }
             }
             .navigationTitle(fundID == nil ? "Add Reserve" : "Edit Reserve")
@@ -4430,24 +4564,6 @@ private struct SpendingSinkingFundEditorSheet: View {
             }
         }
         .onAppear(perform: load)
-    }
-
-    private func currencyRow(
-        _ title: String,
-        text: Binding<String>
-    ) -> some View {
-        HStack(spacing: NwSpacing.md) {
-            Text(title)
-            Spacer()
-            HStack(spacing: 2) {
-                Text("$")
-                    .foregroundStyle(NwAppColors.textSecondary)
-                TextField("0", text: text)
-                    .multilineTextAlignment(.trailing)
-                    .nwWholeDollarInput(text: text, title: title)
-                    .frame(width: 116, height: 44)
-            }
-        }
     }
 
     private var cleanedName: String {
@@ -4587,11 +4703,11 @@ private struct SpendingSinkingFundDetailView: View {
                     .frame(maxWidth: .infinity)
 
                     HStack(alignment: .top, spacing: NwSpacing.sm) {
-                        reservePlanMetric(
+                        NwCompactMoneyMetricCard(
                             amount: monthlyPlan,
                             label: "Monthly"
                         )
-                        reservePlanMetric(
+                        NwCompactMoneyMetricCard(
                             amount: Money(
                                 milliunits: fund.targetMilliunits
                             ),
@@ -4712,47 +4828,6 @@ private struct SpendingSinkingFundDetailView: View {
         .padding(.horizontal, NwSpacing.screenPadding)
         .padding(.vertical, NwSpacing.sm)
         .background(.ultraThinMaterial)
-    }
-
-    private func reservePlanMetric(
-        amount: Money,
-        label: String,
-        detail: String? = nil
-    ) -> some View {
-        VStack(spacing: 2) {
-            NwAmountText(
-                amount,
-                variant: .metricSmall,
-                showCents: false,
-                color: NwAppColors.primary
-            )
-            Text(label)
-                .font(NwTypography.footnoteEm)
-                .foregroundStyle(NwAppColors.textSecondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 58)
-        .padding(.horizontal, NwSpacing.md)
-        .padding(.vertical, NwSpacing.sm)
-        .background(
-            RoundedRectangle(
-                cornerRadius: NwCornerRadius.card,
-                style: .continuous
-            )
-            .fill(NwAppColors.cardSurface)
-        )
-        .nwShadow(NwShadow.card)
-        .overlay(alignment: .topTrailing) {
-            if let detail {
-                Text(detail)
-                    .font(NwTypography.caption)
-                    .foregroundStyle(NwAppColors.textOnPrimary)
-                    .padding(.horizontal, NwSpacing.sm)
-                    .padding(.vertical, 3)
-                    .background(NwAppColors.caution)
-                    .clipShape(Capsule())
-                    .offset(x: 4, y: -8)
-            }
-        }
     }
 
     private struct LedgerRow: Identifiable {

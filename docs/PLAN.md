@@ -237,7 +237,16 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   activity because Plaid supplies no durable transaction pairing; unassigned
   account-type-inferred transfers stop counting and are surfaced for one-time
   review. Historical assignments retain their recorded group identity if the
-  current Savings designation later changes.
+  current Savings designation later changes. The regular month-scoped Savings
+  detail keeps Transferred and user-entered Savings visibly separate in its
+  hero, including an explicit `$0` transfer when none exists. It shows the
+  repeating monthly amount as Available, the month's Savings entries as
+  Assigned, and combines dated Savings entries and transfers in one activity
+  table. Savings entries use favorable green, remain independently editable
+  and swipe-deletable, and are added through the fixed bottom `Add Savings`
+  action. Add/Edit Savings follows the Reserve form pattern and accepts
+  trailing-aligned whole-dollar currency values. This regular detail remains
+  distinct from the closed-month transfer prompt's read-only detail.
 - **2026-09-02** — Reserves are distinct from Goals and ordinary monthly
   budgets. Spending presents one aggregate Reserves card; individual reserves
   carry their balances forward and require only a name. Target, due date,

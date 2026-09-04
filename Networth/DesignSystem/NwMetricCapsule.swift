@@ -1,4 +1,5 @@
 import SwiftUI
+import NetworthCore
 
 public struct NwMetricCapsule: View {
     public let label: String
@@ -33,6 +34,63 @@ public struct NwMetricCapsule: View {
                 .minimumScaleFactor(0.6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Compact, card-backed money metric used beneath a detail-screen hero value.
+public struct NwCompactMoneyMetricCard: View {
+    public let amount: Money
+    public let label: String
+    public let detail: String?
+    public let color: Color
+
+    public init(
+        amount: Money,
+        label: String,
+        detail: String? = nil,
+        color: Color = NwAppColors.primary
+    ) {
+        self.amount = amount
+        self.label = label
+        self.detail = detail
+        self.color = color
+    }
+
+    public var body: some View {
+        VStack(spacing: 2) {
+            NwAmountText(
+                amount,
+                variant: .metricSmall,
+                showCents: false,
+                color: color
+            )
+            Text(label)
+                .font(NwTypography.footnoteEm)
+                .foregroundStyle(NwAppColors.textSecondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 58)
+        .padding(.horizontal, NwSpacing.md)
+        .padding(.vertical, NwSpacing.sm)
+        .background(
+            RoundedRectangle(
+                cornerRadius: NwCornerRadius.card,
+                style: .continuous
+            )
+            .fill(NwAppColors.cardSurface)
+        )
+        .nwShadow(NwShadow.card)
+        .overlay(alignment: .topTrailing) {
+            if let detail {
+                Text(detail)
+                    .font(NwTypography.caption)
+                    .foregroundStyle(NwAppColors.textOnPrimary)
+                    .padding(.horizontal, NwSpacing.sm)
+                    .padding(.vertical, 3)
+                    .background(NwAppColors.caution)
+                    .clipShape(Capsule())
+                    .offset(x: 4, y: -8)
+            }
+        }
     }
 }
 
