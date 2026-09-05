@@ -68,15 +68,17 @@ struct AccountsView: View {
     @Query private var plaidTreatments: [DurablePlaidAccountTreatment]
     @Query private var canonicalBindings: [DurableCanonicalAccountBinding]
     @Query private var accountNicknames: [DurableAccountNickname]
+    @Query private var spendingAccountPins: [DurableSpendingAccountPin]
+    @Query private var projectionCashOverrides: [DurableProjectionCashAccountOverride]
+    @Query private var goalReserveAccounts: [DurableGoalReserveAccount]
     @Query private var plaidTransactionCursors: [PlaidTransactionCursor]
     @Query(sort: \DurableCanonicalPayee.name)
     private var canonicalPayees: [DurableCanonicalPayee]
     @Query(sort: \DurableCanonicalCategory.name)
     private var canonicalCategories: [DurableCanonicalCategory]
 
-    @State private var showingNewAsset = false
     @State private var showingClassificationReview = false
-    @State private var showingGroupedReview = false
+    @State private var showingPlaidReview = false
     @State private var showingPlaidAccountMapping = false
     @State private var showingPlaidCutoverConfirm = false
     @State private var plaidCutoverError: String?
@@ -143,19 +145,19 @@ struct AccountsView: View {
 
     private var accountsList: some View {
             List {
-                if pendingClassificationReviewCount > 0 {
+                if pendingPlaidReviewCount > 0 {
                     Section {
                         Button {
-                            showingGroupedReview = true
+                            showingPlaidReview = true
                         } label: {
                             HStack(spacing: NwSpacing.md) {
                                 NwIcon.warning.image
                                     .foregroundStyle(NwAppColors.caution)
-                                Text("Review Transactions")
+                                Text("Review Connected Accounts")
                                     .foregroundStyle(NwAppColors.textPrimary)
                                 Spacer()
                                 NwStatusBadge(
-                                    "\(pendingClassificationReviewCount)",
+                                    "\(pendingPlaidReviewCount)",
                                     style: .caution,
                                     icon: .warning
                                 )
@@ -219,46 +221,41 @@ struct AccountsView: View {
                     }
                 }
 
-                let assets = manualAssets.filter { !$0.deleted }
-                if !assets.isEmpty {
-                    Section {
-                        ForEach(manualGroups(from: assets)) { group in
-                            manualGroupRows(group)
-                        }
-                    } header: {
-                        sectionHeader("Manual Assets", total: manualAssetTotal, isLiability: false)
-                    }
-                }
-
                 if financialAccountSections.isEmpty &&
                     standalonePlaidInvestmentAccounts.isEmpty &&
-                    assets.isEmpty &&
                     container.linkedIBRLoanDocument == nil {
                     NwEmptyState(
                         title: "No accounts yet",
-                        message: "Connect Plaid or add an asset manually.",
+                        message: "Connect Plaid in Connections & Sync.",
                         icon: .accounts
                     )
                     .listRowBackground(Color.clear)
                 }
-            }
-            .navigationTitle("Accounts")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingNewAsset = true
+
+                Section {
+                    NavigationLink {
+                        SettingsView(page: .connections)
                     } label: {
-                        Image(systemName: "plus")
+                        Label(
+                            "Connections & Sync",
+                            systemImage: NwIcon.sync.rawValue
+                        )
                     }
-                    .accessibilityLabel("Add manual asset")
                 }
             }
-            .sheet(isPresented: $showingNewAsset) {
-                ManualAssetForm(asset: nil).environment(container)
+            .navigationTitle("Accounts")
+            .sheet(isPresented: $showingPlaidReview) {
+                PlaidAccountReviewSheet().environment(container)
             }
-            .sheet(isPresented: $showingGroupedReview) {
-                GroupedHistoricalReviewSheet().environment(container)
-            }
+    }
+
+    private var pendingPlaidReviewCount: Int {
+        plaidAccounts.filter { account in
+            let treatment = plaidTreatments.last {
+                $0.plaidAccountId == account.id
+            }?.treatment ?? .pendingReview
+            return treatment == .pendingReview
+        }.count
     }
 
     private var usesPlaidTransactions: Bool {
@@ -337,7 +334,31 @@ struct AccountsView: View {
     private func financialAccountSubtitle(_ account: CachedFinancialAccount) -> String {
         let institution = account.institutionName ?? subtitle(for: account.kind)
         let mask = account.mask.map { " •••• \($0)" } ?? ""
-        return "\(institution)\(mask)"
+        let roles = financialAccountRoles(account)
+        let roleSuffix = roles.isEmpty ? "" : " · \(roles.joined(separator: ", "))"
+        return "\(institution)\(mask)\(roleSuffix)"
+    }
+
+    private func financialAccountRoles(
+        _ account: CachedFinancialAccount
+    ) -> [String] {
+        var roles: [String] = []
+        if SpendingAccountPinResolver(rows: spendingAccountPins)
+            .isVisible(account.canonicalAccountId) {
+            roles.append("Spending")
+        }
+        let backsGoals = goalReserveAccounts.contains {
+            $0.active && $0.canonicalAccountId == account.canonicalAccountId
+        }
+        if backsGoals {
+            roles.append("Goals")
+        } else if account.type.isCashLike {
+            let included = projectionCashOverrides.last {
+                $0.canonicalAccountId == account.canonicalAccountId
+            }?.included ?? true
+            if included { roles.append("Projections") }
+        }
+        return roles
     }
 
     private func accountRow(_ account: CachedAccount) -> some View {
@@ -388,13 +409,24 @@ struct AccountsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(accountNameResolver.name(for: account))
                     .font(NwTypography.body)
-                Text("\(account.institutionName)\(mask)")
+                Text(plaidInvestmentSubtitle(account, mask: mask))
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             NwAmountText(account.currentBalance ?? .zero, variant: .body)
         }
+    }
+
+    private func plaidInvestmentSubtitle(
+        _ account: CachedPlaidAccount,
+        mask: String
+    ) -> String {
+        let backsGoals = goalReserveAccounts.contains {
+            $0.active && $0.canonicalAccountId == account.id
+        }
+        return "\(account.institutionName)\(mask)"
+            + (backsGoals ? " · Goals" : "")
     }
 
     private func mappedFinancialAccount(
@@ -988,8 +1020,13 @@ struct FinancialAccountDetailView: View {
     @Query private var recentTransactions: [CachedFinancialTransaction]
     @Query private var accountNicknames: [DurableAccountNickname]
     @Query private var spendingAccountPins: [DurableSpendingAccountPin]
+    @Query private var projectionCashOverrides: [DurableProjectionCashAccountOverride]
+    @Query private var goalReserveAccounts: [DurableGoalReserveAccount]
+    @Query private var plaidItems: [CachedPlaidItem]
+    @Query private var cardSettings: [DurableCardSettings]
     @Query private var availableFinancialAccounts: [CachedFinancialAccount]
     @State private var showingRename = false
+    @State private var showingCardSettings = false
     @State private var activityTotals: AccountActivityTotals?
     @State private var activityLoadFailed = false
     @State private var spendingVisibilityError: String?
@@ -1050,21 +1087,11 @@ struct FinancialAccountDetailView: View {
                         Text("Updated \(account.updatedAt.formatted(.relative(presentation: .named)))")
                             .font(NwTypography.caption)
                             .foregroundStyle(.secondary)
-                        if SpendingAccountPinEligibility.canShow(account) {
-                            Divider()
-                            Toggle(
-                                "Show on Spending",
-                                isOn: Binding(
-                                    get: { isShownOnSpending },
-                                    set: { proposedValue in
-                                        setShownOnSpending(proposedValue)
-                                    }
-                                )
-                            )
-                            .tint(NwAppColors.primary)
-                        }
                     }
                 }
+
+                accountUsesSection
+                connectionSection
 
                 VStack(alignment: .leading, spacing: NwSpacing.md) {
                     Text("30-Day Activity")
@@ -1173,8 +1200,17 @@ struct FinancialAccountDetailView: View {
                 currentName: displayName
             )
         }
+        .sheet(isPresented: $showingCardSettings) {
+            CardSettingsForm(
+                target: CardSettingsTarget(
+                    id: account.canonicalAccountId,
+                    name: displayName
+                )
+            )
+            .environment(container)
+        }
         .alert(
-            "Spending Accounts",
+            "Account Settings",
             isPresented: Binding(
                 get: { spendingVisibilityError != nil },
                 set: { if !$0 { spendingVisibilityError = nil } }
@@ -1194,6 +1230,222 @@ struct FinancialAccountDetailView: View {
     private var displayName: String {
         AccountDisplayNameResolver(nicknames: accountNicknames)
             .name(for: account)
+    }
+
+    @ViewBuilder
+    private var accountUsesSection: some View {
+        let canShowOnSpending = SpendingAccountPinEligibility.canShow(account)
+        let canBackGoals = GoalReserveAccountEligibility.canBackGoals(account)
+            && account.currentBalanceMilliunits != nil
+        let canUseForProjections = account.type.isCashLike
+        let hasCardForecast = account.type == .creditCard
+
+        if canShowOnSpending || canBackGoals || canUseForProjections
+            || hasCardForecast {
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
+                Text("Used By")
+                    .font(NwTypography.titleSmall)
+                NwCard(style: .primary, padding: 0) {
+                    VStack(spacing: 0) {
+                        if canShowOnSpending {
+                            Toggle(
+                                "Show on Spending",
+                                isOn: Binding(
+                                    get: { isShownOnSpending },
+                                    set: { setShownOnSpending($0) }
+                                )
+                            )
+                            .tint(NwAppColors.primary)
+                            .padding(NwSpacing.md)
+                        }
+
+                        if canShowOnSpending
+                            && (canBackGoals || canUseForProjections
+                                || hasCardForecast) {
+                            Divider()
+                        }
+
+                        if canBackGoals {
+                            Toggle(
+                                "Back Goals",
+                                isOn: Binding(
+                                    get: { backsGoals },
+                                    set: { setBacksGoals($0) }
+                                )
+                            )
+                            .tint(NwAppColors.primary)
+                            .padding(NwSpacing.md)
+                        }
+
+                        if canBackGoals && (canUseForProjections || hasCardForecast) {
+                            Divider()
+                        }
+
+                        if canUseForProjections {
+                            if backsGoals {
+                                LabeledContent(
+                                    "Projection Cash",
+                                    value: "Excluded by Goals"
+                                )
+                                .padding(NwSpacing.md)
+                            } else {
+                                Toggle(
+                                    "Include in Projections",
+                                    isOn: Binding(
+                                        get: { includedInProjections },
+                                        set: { setIncludedInProjections($0) }
+                                    )
+                                )
+                                .tint(NwAppColors.primary)
+                                .padding(NwSpacing.md)
+                            }
+                        }
+
+                        if canUseForProjections && hasCardForecast {
+                            Divider()
+                        }
+
+                        if hasCardForecast {
+                            Button {
+                                showingCardSettings = true
+                            } label: {
+                                HStack {
+                                    Text("Payment Forecast")
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                    Spacer()
+                                    Text(cardForecastSummary)
+                                        .foregroundStyle(.secondary)
+                                    NwIcon.chevron.image
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                                .padding(NwSpacing.md)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var connectionSection: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Text("Connection")
+                .font(NwTypography.titleSmall)
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    LabeledContent("Source", value: "Plaid")
+                        .padding(NwSpacing.md)
+                    Divider()
+                    LabeledContent("Status", value: connectionStatus)
+                        .padding(NwSpacing.md)
+                    Divider()
+                    LabeledContent(
+                        "Updated",
+                        value: account.updatedAt.formatted(
+                            .relative(presentation: .named)
+                        )
+                    )
+                    .padding(NwSpacing.md)
+                    Divider()
+                    NavigationLink {
+                        SettingsView(page: .connections)
+                    } label: {
+                        HStack {
+                            Text("Manage Connection")
+                                .foregroundStyle(NwAppColors.textPrimary)
+                            Spacer()
+                            NwIcon.chevron.image
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                        .padding(NwSpacing.md)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var connectionStatus: String {
+        guard let itemID = account.itemId,
+              let item = plaidItems.last(where: { $0.id == itemID }) else {
+            return account.deleted ? "Unavailable" : "Connected"
+        }
+        return item.status == "healthy" ? "Connected" : "Needs Attention"
+    }
+
+    private var backsGoals: Bool {
+        goalReserveAccounts.contains {
+            $0.active && $0.canonicalAccountId == account.canonicalAccountId
+        }
+    }
+
+    private func setBacksGoals(_ enabled: Bool) {
+        guard enabled != backsGoals else { return }
+        do {
+            let service = GoalLedgerService(
+                context: container.modelContainer.mainContext
+            )
+            if enabled {
+                try service.addReserveAccount(
+                    canonicalAccountId: account.canonicalAccountId,
+                    accountName: displayName,
+                    institutionName: account.institutionName ?? "",
+                    mask: account.mask ?? ""
+                )
+            } else if let row = goalReserveAccounts.first(where: {
+                $0.active
+                    && $0.canonicalAccountId == account.canonicalAccountId
+            }) {
+                try service.removeReserveAccount(row)
+            }
+        } catch {
+            spendingVisibilityError = error.localizedDescription
+        }
+    }
+
+    private var includedInProjections: Bool {
+        guard !backsGoals else { return false }
+        return projectionCashOverrides.last {
+            $0.canonicalAccountId == account.canonicalAccountId
+        }?.included ?? true
+    }
+
+    private func setIncludedInProjections(_ included: Bool) {
+        guard !backsGoals, included != includedInProjections else { return }
+        let context = container.modelContainer.mainContext
+        let existing = projectionCashOverrides.filter {
+            $0.canonicalAccountId == account.canonicalAccountId
+        }
+        if included {
+            existing.forEach(context.delete)
+        } else if let first = existing.first {
+            first.included = false
+            existing.dropFirst().forEach(context.delete)
+        } else {
+            let row = DurableProjectionCashAccountOverride(
+                accountId: "",
+                included: false
+            )
+            row.canonicalAccountId = account.canonicalAccountId
+            context.insert(row)
+        }
+        guard context.safeSave(source: "account.projectionInclusion.save") else {
+            context.rollback()
+            spendingVisibilityError = "This account’s projection setting wasn’t saved."
+            return
+        }
+    }
+
+    private var cardForecastSummary: String {
+        let setting = cardSettings.last {
+            ($0.canonicalAccountId ?? $0.accountId)
+                == account.canonicalAccountId
+        }
+        guard let setting, setting.paymentDueDay >= 1 else { return "Set Up" }
+        return "Closes \(setting.statementCycleDay) · Pays \(setting.paymentDueDay)"
     }
 
     private var pinResolver: SpendingAccountPinResolver {

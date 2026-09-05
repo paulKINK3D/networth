@@ -20,6 +20,8 @@ public final class AppContainerController {
     public let claudeDataSyncCoordinator: ClaudeDataSyncCoordinator
     public let ibrLoanStore: any IBRLoanStore
     public let ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore
+    public let reviewNotificationService:
+        any ReviewNotificationScheduling
 
     public var unlocked: Bool = false
     public var bootstrapped: Bool = false
@@ -29,6 +31,8 @@ public final class AppContainerController {
     public var lastPersistenceError: PersistenceFailure?
     public private(set) var linkedIBRLoanDocument: SharedIBRLoanDocument?
     public private(set) var linkedIBRLoanHistoryStartDate: Date?
+    public private(set) var reviewNotificationsEnabled = false
+    public private(set) var reviewNotificationsDenied = false
 
     private let logger = Logger(subsystem: "com.bluelava.me.networth", category: "app-container")
 
@@ -39,7 +43,9 @@ public final class AppContainerController {
         transactionInferenceProvider: any OnDeviceTransactionInferring = RecordedTransactionInferenceProvider(),
         modelContainer: ModelContainer,
         ibrLoanStore: any IBRLoanStore = AppGroupIBRLoanStore(),
-        ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore = InMemoryIBRLoanHistorySettingsStore()
+        ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore = InMemoryIBRLoanHistorySettingsStore(),
+        reviewNotificationService: any ReviewNotificationScheduling =
+            InMemoryReviewNotificationService()
     ) {
         self.secretStore = secretStore
         self.biometricGate = biometricGate
@@ -47,6 +53,7 @@ public final class AppContainerController {
         self.modelContainer = modelContainer
         self.ibrLoanStore = ibrLoanStore
         self.ibrLoanHistorySettingsStore = ibrLoanHistorySettingsStore
+        self.reviewNotificationService = reviewNotificationService
         self.linkedIBRLoanHistoryStartDate = ibrLoanHistorySettingsStore.loadStartDate()
         self.connectivity = ConnectivityMonitor()
         let ctx = modelContainer.mainContext
@@ -69,18 +76,7 @@ public final class AppContainerController {
     /// determines the initial biometric lock state.
     public func bootstrap() async {
         refreshLinkedIBRLoan()
-        let plaidToken: String?
-        do { plaidToken = try secretStore.load(.plaidBackendBearerToken) }
-        catch {
-            logger.error("Plaid backend secret load failed: \(error.localizedDescription, privacy: .public)")
-            plaidToken = nil
-        }
-        plaidBackendBaseURL = Self.configuredPlaidBackendBaseURL
-        await plaidClient.configure(
-            baseURL: plaidBackendBaseURL,
-            bearerToken: plaidToken
-        )
-        hasPlaidBackendToken = (plaidToken?.isEmpty == false)
+        await configurePlaidBackendAccess()
 
         let ctx = modelContainer.mainContext
         claudeDataSyncCoordinator.start()
@@ -776,9 +772,11 @@ public final class AppContainerController {
     }
 
     /// Plaid is the sole external source for normal launch and sync.
-    public func syncNow() async {
+    @discardableResult
+    public func syncNow() async -> Bool {
+        var allSucceeded = false
         if hasPlaidBackendToken, plaidBackendBaseURL != nil {
-            var allSucceeded = true
+            allSucceeded = true
             if await plaidSyncCoordinator.syncAll() {
                 recordPlaidBalanceSnapshot()
             } else {
@@ -803,6 +801,61 @@ public final class AppContainerController {
         if let settings = try? modelContainer.mainContext.fetch(descriptor).first {
             selectedBudgetId = settings.selectedBudgetId
         }
+        return allSucceeded
+    }
+
+    /// Runs the same read-only Plaid refresh without entering the interactive
+    /// Face ID bootstrap path. Keychain access remains `WhenUnlocked`; if iOS
+    /// launches this task while the device is locked, configuration fails
+    /// closed and the normal foreground refresh remains the fallback.
+    @discardableResult
+    public func performBackgroundRefresh() async -> Bool {
+        guard await configurePlaidBackendAccess() else { return false }
+        let priorReviewIDs = pendingNewReviewTransactionIDs()
+        guard await syncNow(), !Task.isCancelled else { return false }
+        let newReviewCount = pendingNewReviewTransactionIDs()
+            .subtracting(priorReviewIDs)
+            .count
+        if newReviewCount > 0 {
+            await reviewNotificationService.postNewReviewNotification(
+                count: newReviewCount
+            )
+        }
+        return true
+    }
+
+    public func refreshReviewNotificationPreference() async {
+        applyReviewNotificationPreference(
+            await reviewNotificationService.preference()
+        )
+    }
+
+    public func setReviewNotificationsEnabled(_ enabled: Bool) async {
+        applyReviewNotificationPreference(
+            await reviewNotificationService.setEnabled(enabled)
+        )
+    }
+
+    private func applyReviewNotificationPreference(
+        _ preference: ReviewNotificationPreference
+    ) {
+        reviewNotificationsEnabled = preference.enabled
+        reviewNotificationsDenied = preference.denied
+    }
+
+    private func pendingNewReviewTransactionIDs() -> Set<String> {
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.requiresReview
+                    && !$0.deleted
+                    && !$0.pending
+                    && $0.reviewOriginRaw == "new"
+            }
+        )
+        return Set(
+            ((try? modelContainer.mainContext.fetch(descriptor)) ?? [])
+                .map(\.id)
+        )
     }
 
     /// Approves a reviewed cluster of historical transactions in one save.
@@ -891,6 +944,26 @@ public final class AppContainerController {
         return URL(string: trimmed)
     }
 
+    @discardableResult
+    private func configurePlaidBackendAccess() async -> Bool {
+        let plaidToken: String?
+        do {
+            plaidToken = try secretStore.load(.plaidBackendBearerToken)
+        } catch {
+            logger.error(
+                "Plaid backend secret load failed: \(error.localizedDescription, privacy: .public)"
+            )
+            plaidToken = nil
+        }
+        plaidBackendBaseURL = Self.configuredPlaidBackendBaseURL
+        await plaidClient.configure(
+            baseURL: plaidBackendBaseURL,
+            bearerToken: plaidToken
+        )
+        hasPlaidBackendToken = plaidToken?.isEmpty == false
+        return hasPlaidBackendToken && plaidBackendBaseURL != nil
+    }
+
     /// Production wiring.
     public static func makeProduction() throws -> AppContainerController {
         let secretStore = KeychainSecretStore()
@@ -904,7 +977,8 @@ public final class AppContainerController {
             transactionInferenceProvider: AppleTransactionInferenceProvider(),
             modelContainer: container,
             ibrLoanStore: AppGroupIBRLoanStore(),
-            ibrLoanHistorySettingsStore: UserDefaultsIBRLoanHistorySettingsStore()
+            ibrLoanHistorySettingsStore: UserDefaultsIBRLoanHistorySettingsStore(),
+            reviewNotificationService: SystemReviewNotificationService()
         )
     }
 
@@ -918,7 +992,8 @@ public final class AppContainerController {
             transactionInferenceProvider: RecordedTransactionInferenceProvider(),
             modelContainer: container,
             ibrLoanStore: InMemoryIBRLoanStore(),
-            ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore()
+            ibrLoanHistorySettingsStore: InMemoryIBRLoanHistorySettingsStore(),
+            reviewNotificationService: InMemoryReviewNotificationService()
         )
     }
 

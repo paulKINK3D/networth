@@ -156,13 +156,9 @@ struct ProjectionsView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     NwTopLevelMenu(
                         canRefresh: container.hasPlaidBackendToken,
-                        contextualActions: [
-                            NwTopLevelMenuAction(
-                                title: "Projection Settings",
-                                systemImage: "slider.horizontal.3",
-                                action: { SettingsRouter.open(.budget) }
-                            )
-                        ],
+                        onAccounts: {
+                            SettingsRouter.open(SettingsPage.accounts)
+                        },
                         onRefresh: {
                             Task { await container.syncNow() }
                         },

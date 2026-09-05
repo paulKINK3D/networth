@@ -238,13 +238,9 @@ struct InvestmentsView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 NwTopLevelMenu(
                     canRefresh: container.hasPlaidBackendToken,
-                    contextualActions: [
-                        NwTopLevelMenuAction(
-                            title: "Manage Investment Accounts",
-                            systemImage: NwIcon.accounts.rawValue,
-                            action: { SettingsRouter.open(.connections) }
-                        )
-                    ],
+                    onAccounts: {
+                        SettingsRouter.open(SettingsPage.accounts)
+                    },
                     onRefresh: {
                         Task { await container.syncNow() }
                     },
@@ -493,12 +489,17 @@ struct InvestmentsView: View {
 }
 
 struct PlaidInvestmentAccountDetailView: View {
+    @Environment(AppContainerController.self) private var container
     let account: CachedPlaidAccount
     @Query private var holdings: [CachedPlaidHolding]
     @Query private var securities: [CachedPlaidSecurity]
     @Query private var items: [CachedPlaidItem]
     @Query private var accountNicknames: [DurableAccountNickname]
+    @Query private var treatments: [DurablePlaidAccountTreatment]
+    @Query private var goalReserveAccounts: [DurableGoalReserveAccount]
     @State private var showingRename = false
+    @State private var showingAccountReview = false
+    @State private var accountUseError: String?
 
     init(account: CachedPlaidAccount) {
         self.account = account
@@ -533,6 +534,78 @@ struct PlaidInvestmentAccountDetailView: View {
                             Text("Updated \(updated.formatted(.relative(presentation: .named)))")
                                 .font(NwTypography.caption)
                                 .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: NwSpacing.md) {
+                    Text("Used By")
+                        .font(NwTypography.titleSmall)
+                    NwCard(style: .primary, padding: 0) {
+                        VStack(spacing: 0) {
+                            Button {
+                                showingAccountReview = true
+                            } label: {
+                                HStack {
+                                    Text("Net Worth")
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                    Spacer()
+                                    Text(netWorthTreatmentLabel)
+                                        .foregroundStyle(.secondary)
+                                    NwIcon.chevron.image
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                                .padding(NwSpacing.md)
+                            }
+                            .buttonStyle(.plain)
+
+                            if canBackGoals {
+                                Divider()
+                                Toggle(
+                                    "Back Goals",
+                                    isOn: Binding(
+                                        get: { backsGoals },
+                                        set: { setBacksGoals($0) }
+                                    )
+                                )
+                                .tint(NwAppColors.primary)
+                                .padding(NwSpacing.md)
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: NwSpacing.md) {
+                    Text("Connection")
+                        .font(NwTypography.titleSmall)
+                    NwCard(style: .primary, padding: 0) {
+                        VStack(spacing: 0) {
+                            LabeledContent("Source", value: "Plaid")
+                                .padding(NwSpacing.md)
+                            Divider()
+                            LabeledContent(
+                                "Status",
+                                value: connectionStatus
+                            )
+                            .padding(NwSpacing.md)
+                            Divider()
+                            NavigationLink {
+                                SettingsView(page: .connections)
+                            } label: {
+                                HStack {
+                                    Text("Manage Connection")
+                                        .foregroundStyle(
+                                            NwAppColors.textPrimary
+                                        )
+                                    Spacer()
+                                    NwIcon.chevron.image
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                                .padding(NwSpacing.md)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -577,11 +650,84 @@ struct PlaidInvestmentAccountDetailView: View {
                 currentName: displayName
             )
         }
+        .sheet(isPresented: $showingAccountReview) {
+            PlaidAccountReviewSheet().environment(container)
+        }
+        .alert(
+            "Account Settings",
+            isPresented: Binding(
+                get: { accountUseError != nil },
+                set: { if !$0 { accountUseError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { accountUseError = nil }
+        } message: {
+            Text(accountUseError ?? "Please try again.")
+        }
     }
 
     private var displayName: String {
         AccountDisplayNameResolver(nicknames: accountNicknames)
             .name(for: account)
+    }
+
+    private var treatment: PlaidAccountTreatment {
+        treatments.last { $0.plaidAccountId == account.id }?.treatment
+            ?? .pendingReview
+    }
+
+    private var netWorthTreatmentLabel: String {
+        switch treatment {
+        case .pendingReview: "Needs Review"
+        case .included, .duplicateYNAB: "Included"
+        case .duplicateManualAsset: "Matched to Manual Asset"
+        case .excluded: "Excluded"
+        }
+    }
+
+    private var canBackGoals: Bool {
+        account.currentBalanceMilliunits != nil
+            && !PlaidRetirementClassifier.isRetirement(
+                subtype: account.subtype
+            )
+            && treatment != .excluded
+            && treatment != .duplicateManualAsset
+    }
+
+    private var backsGoals: Bool {
+        goalReserveAccounts.contains {
+            $0.active && $0.canonicalAccountId == account.id
+        }
+    }
+
+    private func setBacksGoals(_ enabled: Bool) {
+        guard enabled != backsGoals else { return }
+        do {
+            let service = GoalLedgerService(
+                context: container.modelContainer.mainContext
+            )
+            if enabled {
+                try service.addReserveAccount(
+                    canonicalAccountId: account.id,
+                    accountName: displayName,
+                    institutionName: account.institutionName,
+                    mask: account.mask ?? ""
+                )
+            } else if let row = goalReserveAccounts.first(where: {
+                $0.active && $0.canonicalAccountId == account.id
+            }) {
+                try service.removeReserveAccount(row)
+            }
+        } catch {
+            accountUseError = error.localizedDescription
+        }
+    }
+
+    private var connectionStatus: String {
+        guard let item = items.last(where: { $0.id == account.itemId }) else {
+            return "Connected"
+        }
+        return item.status == "healthy" ? "Connected" : "Needs Attention"
     }
 
     private var securityByID: [String: CachedPlaidSecurity] {

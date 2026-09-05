@@ -1,5 +1,70 @@
 # WORKING
 
+## Current handoff — Account and menu management (2026-09-05)
+
+- The Settings landing screen is now a separate query-free view. Opening the
+  menu no longer eagerly fetches the records used by every nested settings
+  destination; each destination loads its own data only after navigation. This
+  addresses the observed Settings hang and the forced-relaunch splash stall.
+- Every primary overflow menu now has the same three destinations in the same
+  order: Accounts, Settings, then Refresh Data after a divider. Reserves,
+  Projection Settings, Goal Accounts, and Manage Investment Accounts were
+  removed from those menus.
+- Accounts is the canonical management catalog, reached from every main menu
+  and from Settings. It groups connected financial accounts and contributing
+  investment accounts, surfaces pending investment review, and links to
+  Connections & Sync without restoring an Accounts tab. Manual assets remain
+  in their separate Settings destination.
+- Financial account detail now owns applicable Spending visibility, projection
+  inclusion, Goal backing, credit-card payment forecast setup, connection
+  status, and connection access. Goal-backed cash is visibly derived as
+  excluded from projection cash. Investment detail owns Net Worth treatment,
+  eligible Goal backing, and connection status/access.
+- Settings uses the tab-aligned Spending, Projections, and Goals labels. Goals
+  opens the focused eligible-account checklist. Goals has no account-selection
+  action, while a small info control beside Available for Goals explains that
+  its balance comes from Settings → Goal Accounts. Projections → Cash Accounts
+  retains its focused cash checklist. The global Accounts catalog remains the
+  place to inspect one account's complete roles and details.
+- Settings groups its first level into Planning, Financial Data, and App.
+  Connections & Sync, Contacts & Categories, and Privacy & App now live one
+  level down inside App & Data. Claude transaction-review fallback remains in
+  Privacy & App, and tutorial copy uses the new connection destination name.
+- No model, persistence, CloudKit, or connection behavior changed. All 258
+  NetworthCore tests pass; generic-device Debug and Release builds pass; and
+  the app-test target compiles. Simulator execution was not requested.
+
+## Current handoff — Background refresh and review notifications (2026-09-05)
+
+- A physical-device launch freeze exposed two critical-path risks: notification
+  authorization state was awaited before bootstrap could finish, and the scene
+  task plus active-state callback could enter bootstrap concurrently. Launch no
+  longer waits for notification settings, and bootstrap is now single-flight.
+  Privacy & App still refreshes the preference whenever that screen opens or the
+  app returns from iPhone Settings.
+- Networth schedules an opportunistic iOS app-refresh task after foreground
+  bootstrap, whenever it enters the background, and again when a background
+  task runs. The task uses the existing read-only Plaid sync and snapshot
+  paths without invoking Face ID.
+- The existing `WhenUnlocked` Keychain protection is unchanged. A background
+  launch while the phone is locked cannot load the private backend token and
+  therefore exits safely; foreground refresh remains the guaranteed fallback.
+- Privacy & App has a device-local Transaction Reviews toggle, off by default.
+  Enabling it requests alert and sound permission. If iOS permission is
+  denied, the screen offers a direct path to iPhone Settings.
+- A successful background sync compares stable transaction IDs before and
+  after import. Only newly imported posted transactions marked for review
+  produce one local summary notification; historical backlog and previously
+  seen review rows never repeat. Tapping the notification selects Spending
+  and opens the one-by-one Review Transactions sheet after unlock.
+- The permitted background-task identifier is registered in the app plist.
+  No remote-notification entitlement, server push path, CloudKit schema,
+  production store migration, or weaker Keychain accessibility was added.
+- Validation: all 258 NetworthCore tests pass. Generic-device Debug and Release
+  builds pass, and the app-test target compiles with focused background-refresh
+  deduplication and notification-route coverage. Simulator execution was not
+  requested.
+
 ## Current handoff — Spending hero stability (2026-09-04)
 
 - The separate transaction-review card no longer appears above the Spending
@@ -792,14 +857,12 @@
    - Warnings say the named account may be overdrawn and state how far below
      zero its projected low falls and on which date.
    - Amount and date are derived from the same low point.
-19. **Rethink account-management organization — open**
-   - Account viewing and management are scattered across Net Worth category
-     drill-downs, investment details, Settings → Accounts & Sync, Projection
-     cash-account selection, and Goal Accounts.
-   - Reconsider the information architecture so there is one obvious place to
-     find an account, rename it, review its source and sync state, control its
-     inclusion, and reach feature-specific settings without duplicating those
-     controls or rebuilding an Accounts tab by default.
+19. **Rethink account-management organization — complete**
+   - Accounts is the shared catalog and account detail is the owner of account
+     roles, naming, source status, and connection access. Contextual feature
+     routes open that shared workflow rather than separate selectors.
+   - The four-tab structure remains unchanged, and top-level overflow menus are
+     now identical.
 
 ### Parked
 

@@ -19,7 +19,7 @@ struct GoalsView: View {
     @State private var rebuildTask: Task<Void, Never>?
     @State private var editorTarget: GoalEditorTarget?
     @State private var detailGoalId: UUID?
-    @State private var showingReservePicker = false
+    @State private var showingGoalAccountsInfo = false
     @State private var showingAllocate = false
     @State private var transferRequestId: UUID?
 
@@ -57,13 +57,9 @@ struct GoalsView: View {
 
                     NwTopLevelMenu(
                         canRefresh: container.hasPlaidBackendToken,
-                        contextualActions: [
-                            NwTopLevelMenuAction(
-                                title: "Goal Accounts",
-                                systemImage: NwIcon.savings.rawValue,
-                                action: { showingReservePicker = true }
-                            )
-                        ],
+                        onAccounts: {
+                            SettingsRouter.open(SettingsPage.accounts)
+                        },
                         onRefresh: {
                             Task { await container.syncNow() }
                         },
@@ -98,10 +94,6 @@ struct GoalsView: View {
             GoalDetailSheet(goalId: goalId, model: model)
                 .environment(container)
         }
-        .sheet(isPresented: $showingReservePicker) {
-            GoalReservePickerSheet(model: model)
-                .environment(container)
-        }
         .sheet(isPresented: $showingAllocate) {
             GoalAllocateSheet(
                 pool: model?.pool.pool ?? .zero,
@@ -121,19 +113,10 @@ struct GoalsView: View {
         VStack(spacing: NwSpacing.lg) {
             NwEmptyState(
                 title: "Save for the big things",
-                message: "Pick the accounts that back your goals, "
+                message: "Choose backing accounts in Settings → Goal Accounts, "
                     + "then create goals to divide that money by purpose.",
                 icon: .goals
             )
-            Button {
-                showingReservePicker = true
-            } label: {
-                Label("Choose Goal Accounts",
-                      systemImage: NwIcon.savings.rawValue)
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(NwAppColors.accent)
         }
         .frame(maxWidth: .infinity, minHeight: 300)
     }
@@ -144,9 +127,12 @@ struct GoalsView: View {
         NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
                 VStack(alignment: .leading, spacing: NwSpacing.xs) {
-                    Text("Available for Goals")
-                        .font(NwTypography.headline)
-                        .foregroundStyle(NwAppColors.textPrimary)
+                    HStack(spacing: NwSpacing.xs) {
+                        Text("Available for Goals")
+                            .font(NwTypography.headline)
+                            .foregroundStyle(NwAppColors.textPrimary)
+                        goalAccountsInfoButton
+                    }
                     NwAmountText(
                         model.pool.pool, variant: .large, showCents: false
                     )
@@ -191,6 +177,29 @@ struct GoalsView: View {
                     .padding(.top, NwSpacing.xs)
                 }
             }
+        }
+    }
+
+    private var goalAccountsInfoButton: some View {
+        Button {
+            showingGoalAccountsInfo = true
+        } label: {
+            Image(systemName: "info.circle")
+                .font(NwTypography.footnote)
+                .foregroundStyle(NwAppColors.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("About goal accounts")
+        .popover(isPresented: $showingGoalAccountsInfo) {
+            Text(
+                "Available for Goals is the combined balance of accounts "
+                    + "selected in Settings → Goal Accounts."
+            )
+            .font(NwTypography.footnote)
+            .foregroundStyle(NwAppColors.textPrimary)
+            .padding(NwSpacing.md)
+            .frame(maxWidth: 280, alignment: .leading)
+            .presentationCompactAdaptation(.popover)
         }
     }
 

@@ -7,14 +7,20 @@ import class LinkKit.PlaidLinkSession
 import UIKit
 
 enum SettingsPage {
+    case accounts
+    case appData
     case connections
+    case organization
     case budget
     case assets
     case privacy
 
     var title: String {
         switch self {
-        case .connections: "Accounts & Sync"
+        case .accounts: "Accounts"
+        case .appData: "App & Data"
+        case .connections: "Connections & Sync"
+        case .organization: "Contacts & Categories"
         case .budget: "Projections"
         case .assets: "Manual Assets"
         case .privacy: "Privacy & App"
@@ -28,6 +34,105 @@ enum SettingsRouter {
             name: .openSettings,
             object: page
         )
+    }
+}
+
+/// The first Settings screen deliberately owns no SwiftData queries. Opening
+/// Settings should be instantaneous; each destination loads only the records
+/// it actually needs after the user chooses it.
+struct SettingsHomeView: View {
+    @SwiftUI.Environment(AppContainerController.self) private var container
+
+    @State private var showingGoalAccounts = false
+    @State private var showingSpendingGroups = false
+
+    var body: some View {
+        List {
+            Section("Planning") {
+                Button {
+                    showingSpendingGroups = true
+                } label: {
+                    HStack(spacing: NwSpacing.sm) {
+                        NwSettingsNavigationRow(
+                            "Spending",
+                            subtitle: "Groups, budgets, and display order",
+                            icon: .budget
+                        )
+                        NwIcon.chevron.image
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                NavigationLink {
+                    SettingsView(page: .budget)
+                } label: {
+                    NwSettingsNavigationRow(
+                        "Projections",
+                        subtitle: "Cash accounts and card timing",
+                        icon: .projections
+                    )
+                }
+
+                Button {
+                    showingGoalAccounts = true
+                } label: {
+                    HStack(spacing: NwSpacing.sm) {
+                        NwSettingsNavigationRow(
+                            "Goals",
+                            subtitle: "Accounts whose balances back goals",
+                            icon: .goals
+                        )
+                        NwIcon.chevron.image
+                            .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+
+            Section("Financial Data") {
+                NavigationLink {
+                    AccountsView(embedded: true)
+                } label: {
+                    NwSettingsNavigationRow(
+                        "Accounts",
+                        subtitle: "Names, roles, and account details",
+                        icon: .accounts
+                    )
+                }
+
+                NavigationLink {
+                    SettingsView(page: .assets)
+                } label: {
+                    NwSettingsNavigationRow(
+                        "Manual Assets",
+                        subtitle: "Property and manually tracked values",
+                        icon: .otherAsset
+                    )
+                }
+            }
+
+            Section("App") {
+                NavigationLink {
+                    SettingsView(page: .appData)
+                } label: {
+                    NwSettingsNavigationRow(
+                        "App & Data",
+                        subtitle: "Connections, organization, and privacy",
+                        icon: .settings
+                    )
+                }
+            }
+        }
+        .navigationTitle("Settings")
+        .navigationBarTitleDisplayMode(.large)
+        .sheet(isPresented: $showingGoalAccounts) {
+            GoalReservePickerSheet().environment(container)
+        }
+        .sheet(isPresented: $showingSpendingGroups) {
+            SpendingGroupManagementSheet(allowsReordering: true)
+                .environment(container)
+        }
     }
 }
 
@@ -60,7 +165,6 @@ struct SettingsView: View {
     @State private var showingForceResyncConfirm = false
     @State private var showingCashAccounts = false
     @State private var showingCashBuffer = false
-    @State private var showingSpendingGroups = false
     @State private var showingPlaidConnection = false
     @State private var showingPlaidReview = false
     @State private var showingPlaidBankingConnection = false
@@ -72,9 +176,9 @@ struct SettingsView: View {
     @State private var showingRemovePlaidConfirm = false
     @State private var plaidActionError: String?
 
-    private let page: SettingsPage?
+    private let page: SettingsPage
 
-    init(page: SettingsPage? = nil) {
+    init(page: SettingsPage) {
         self.page = page
     }
 
@@ -82,53 +186,26 @@ struct SettingsView: View {
 
     var body: some View {
         List {
-            if page == nil {
+            if page == .appData {
                 Section {
                     NavigationLink {
                         SettingsView(page: .connections)
                     } label: {
                         NwSettingsNavigationRow(
-                            "Accounts & Sync",
-                            subtitle: "Banking, investments, and data refresh",
-                            icon: .accounts,
+                            "Connections & Sync",
+                            subtitle: "Plaid connections and data refresh",
+                            icon: .sync,
                             value: "Plaid"
                         )
                     }
 
-                    Button {
-                        showingSpendingGroups = true
-                    } label: {
-                        HStack(spacing: NwSpacing.sm) {
-                            NwSettingsNavigationRow(
-                                "Spending Plan",
-                                subtitle: "Groups, budgets, and display order",
-                                icon: .budget
-                            )
-                            NwIcon.chevron.image
-                                .foregroundStyle(NwAppColors.textSecondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-
                     NavigationLink {
-                        SettingsView(page: .budget)
+                        SettingsView(page: .organization)
                     } label: {
                         NwSettingsNavigationRow(
-                            "Projections",
-                            subtitle: "Cash accounts and card timing",
-                            icon: .projections,
-                            value: "\(settings?.projectionHorizonDays ?? 90)d"
-                        )
-                    }
-
-                    NavigationLink {
-                        SettingsView(page: .assets)
-                    } label: {
-                        NwSettingsNavigationRow(
-                            "Manual Assets",
-                            subtitle: "Property and manually tracked values",
-                            icon: .otherAsset,
-                            value: "\(activeManualAssetCount)"
+                            "Contacts & Categories",
+                            subtitle: "Transaction names and organization",
+                            icon: .categories
                         )
                     }
 
@@ -137,7 +214,7 @@ struct SettingsView: View {
                     } label: {
                         NwSettingsNavigationRow(
                             "Privacy & App",
-                            subtitle: "Face ID, Claude access, and tutorial",
+                            subtitle: "Face ID, notifications, and Claude access",
                             icon: .faceID,
                             value: settings?.faceIDEnabled == true ? "Locked" : nil
                         )
@@ -171,9 +248,30 @@ struct SettingsView: View {
                 } header: {
                     Text("Authentication")
                 }
+
+                Section {
+                    Toggle(isOn: reviewNotificationBinding) {
+                        Label {
+                            Text("Transaction Reviews")
+                        } icon: {
+                            NwIcon.notification.image
+                                .foregroundStyle(NwAppColors.primary)
+                        }
+                    }
+                    if container.reviewNotificationsDenied {
+                        Button("Open iPhone Settings") {
+                            guard let url = URL(
+                                string: UIApplication.openSettingsURLString
+                            ) else { return }
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                } header: {
+                    Text("Notifications")
+                }
             }
 
-            if page == .connections {
+            if page == .organization {
                 Section {
                     NavigationLink {
                         CanonicalPayeeListView()
@@ -254,7 +352,7 @@ struct SettingsView: View {
                 }
             }
 
-            if page == .connections, hasTransactionConnection {
+            if page == .privacy, hasTransactionConnection {
                 Section {
                     HStack {
                         Label {
@@ -276,7 +374,7 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text("Transaction Import")
+                    Text("Transaction Review")
                 } footer: {
                     Text("Networth learns names and categories from reviewed history and future corrections.")
                 }
@@ -657,8 +755,23 @@ struct SettingsView: View {
                 }
             }
         }
-            .navigationTitle(page?.title ?? "Settings")
-            .navigationBarTitleDisplayMode(page == nil ? .large : .inline)
+            .navigationTitle(page.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .task {
+                if page == .privacy {
+                    await container.refreshReviewNotificationPreference()
+                }
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UIApplication.didBecomeActiveNotification
+                )
+            ) { _ in
+                guard page == .privacy else { return }
+                Task {
+                    await container.refreshReviewNotificationPreference()
+                }
+            }
             .sheet(isPresented: $showingNewAsset) {
                 ManualAssetForm(asset: nil)
                     .environment(container)
@@ -685,10 +798,6 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingCashBuffer) {
                 MinimumCashBufferSheet().environment(container)
-            }
-            .sheet(isPresented: $showingSpendingGroups) {
-                SpendingGroupManagementSheet(allowsReordering: true)
-                    .environment(container)
             }
             .sheet(isPresented: $showingPlaidConnection) {
                 PlaidConnectionSheet().environment(container)
@@ -963,6 +1072,17 @@ struct SettingsView: View {
         )
     }
 
+    private var reviewNotificationBinding: Binding<Bool> {
+        Binding(
+            get: { container.reviewNotificationsEnabled },
+            set: { enabled in
+                Task {
+                    await container.setReviewNotificationsEnabled(enabled)
+                }
+            }
+        )
+    }
+
     private var cardSettingsTargets: [CardSettingsTarget] {
         financialAccounts
             .filter { !$0.deleted && $0.type == .creditCard }
@@ -1015,15 +1135,12 @@ struct SettingsView: View {
 private struct ProjectionCashAccountsSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
-    @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
+    @Query(sort: \CachedFinancialAccount.name)
+    private var financialAccounts: [CachedFinancialAccount]
     @Query private var overrides: [DurableProjectionCashAccountOverride]
     @Query private var goalReserves: [DurableGoalReserveAccount]
     @Query private var accountNicknames: [DurableAccountNickname]
 
-    /// Accounts actively backing Goals are excluded from the pool by
-    /// derivation; the toggle locks so the user changes this in Goals, not
-    /// here, and their underlying preference is preserved for when the
-    /// account stops backing goals.
     private var goalReserveIds: Set<String> {
         Set(goalReserves.filter(\.active).map(\.canonicalAccountId))
     }
@@ -1034,7 +1151,7 @@ private struct ProjectionCashAccountsSheet: View {
                 Text("Choose cash available for projections.")
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
-                if plaidCashAccounts.isEmpty {
+                if cashAccounts.isEmpty {
                     NwEmptyState(
                         title: "No cash accounts",
                         message: "Sync Plaid to load checking, savings, and cash accounts.",
@@ -1042,44 +1159,52 @@ private struct ProjectionCashAccountsSheet: View {
                     )
                 } else {
                     VStack(spacing: 0) {
-                        ForEach(plaidCashAccounts) { account in
+                        ForEach(cashAccounts) { account in
                             HStack(spacing: NwSpacing.sm) {
                                 NwIcon.forAccountKind(account.kind.rawValue).image
                                     .foregroundStyle(NwAppColors.primary)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(accountNameResolver.name(for: account))
                                         .foregroundStyle(NwAppColors.textPrimary)
-                                    Text(isGoalReserve(account)
-                                        ? "Backs goals — managed in Goals"
-                                        : account.institutionName ?? "Plaid")
-                                        .font(NwTypography.caption)
-                                        .foregroundStyle(.secondary)
+                                    Text(
+                                        isGoalReserve(account)
+                                            ? "Backs goals"
+                                            : account.institutionName ?? "Plaid"
+                                    )
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 if isGoalReserve(account) {
-                                    Toggle("", isOn: .constant(false))
-                                        .labelsHidden()
-                                        .disabled(true)
+                                    Text("Goals")
+                                        .font(NwTypography.footnote)
+                                        .foregroundStyle(.secondary)
                                 } else {
                                     Toggle("", isOn: binding(for: account))
                                         .labelsHidden()
                                 }
                             }
                             .padding(.vertical, NwSpacing.sm)
-                            if account.canonicalAccountId != plaidCashAccounts.last?.canonicalAccountId {
+                            if account.canonicalAccountId
+                                != cashAccounts.last?.canonicalAccountId {
                                 Divider()
                             }
                         }
                     }
                     .padding(.horizontal, NwSpacing.md)
                     .background(NwAppColors.cardSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: NwCornerRadius.md,
+                            style: .continuous
+                        )
+                    )
                 }
             }
         }
     }
 
-    private var plaidCashAccounts: [CachedFinancialAccount] {
+    private var cashAccounts: [CachedFinancialAccount] {
         financialAccounts
             .filter { !$0.deleted && $0.type.isCashLike }
             .sorted {

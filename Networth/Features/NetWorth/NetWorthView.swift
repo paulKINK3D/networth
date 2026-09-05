@@ -194,6 +194,9 @@ struct NetWorthView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     NwTopLevelMenu(
                         canRefresh: hasPrimaryConnection,
+                        onAccounts: {
+                            SettingsRouter.open(SettingsPage.accounts)
+                        },
                         onRefresh: {
                             Task { await container.syncNow() }
                         },
@@ -873,4 +876,7 @@ extension Notification.Name {
     public static let selectTab = Notification.Name("NetworthSelectTab")
     public static let showTutorial = Notification.Name("NetworthShowTutorial")
     public static let openSettings = Notification.Name("NetworthOpenSettings")
+    public static let openTransactionReview = Notification.Name(
+        "NetworthOpenTransactionReview"
+    )
 }

@@ -67,53 +67,43 @@ public struct NwDestructiveButtonStyle: ButtonStyle {
     }
 }
 
-struct NwTopLevelMenuAction: Identifiable {
-    let title: String
-    let systemImage: String
-    let action: () -> Void
-
-    var id: String { title }
-}
-
-/// Shared management menu for every top-level tab. Settings and Refresh stay
-/// in the same position; each tab may append its own management actions.
+/// Shared management menu for every top-level tab. Account management and
+/// Settings are stable destinations; manual refresh is the fallback action
+/// now that normal refresh happens automatically when the app opens.
 struct NwTopLevelMenu: View {
     let canRefresh: Bool
-    let contextualActions: [NwTopLevelMenuAction]
+    let onAccounts: () -> Void
     let onRefresh: () -> Void
     let onSettings: () -> Void
 
     init(
         canRefresh: Bool,
-        contextualActions: [NwTopLevelMenuAction] = [],
+        onAccounts: @escaping () -> Void,
         onRefresh: @escaping () -> Void,
         onSettings: @escaping () -> Void
     ) {
         self.canRefresh = canRefresh
-        self.contextualActions = contextualActions
+        self.onAccounts = onAccounts
         self.onRefresh = onRefresh
         self.onSettings = onSettings
     }
 
     var body: some View {
         Menu {
+            Button(action: onAccounts) {
+                Label("Accounts", systemImage: NwIcon.accounts.rawValue)
+            }
+
             Button(action: onSettings) {
                 Label("Settings", systemImage: NwIcon.settings.rawValue)
             }
 
+            Divider()
+
             Button(action: onRefresh) {
-                Label("Refresh", systemImage: NwIcon.sync.rawValue)
+                Label("Refresh Data", systemImage: NwIcon.sync.rawValue)
             }
             .disabled(!canRefresh)
-
-            if !contextualActions.isEmpty {
-                Divider()
-                ForEach(contextualActions) { item in
-                    Button(action: item.action) {
-                        Label(item.title, systemImage: item.systemImage)
-                    }
-                }
-            }
         } label: {
             Image(systemName: "ellipsis.circle")
         }

@@ -404,8 +404,6 @@ struct GoalReservePickerSheet: View {
     @Query(sort: \DurableManualAsset.name)
     private var manualAssets: [DurableManualAsset]
     @Query private var reserveRows: [DurableGoalReserveAccount]
-    let model: GoalsModel?
-
     @State private var failure: String?
 
     /// Investment accounts use the dedicated Plaid investments cache.
@@ -638,7 +636,14 @@ struct GoalReservePickerSheet: View {
 
     @ViewBuilder
     private var unavailableSection: some View {
-        let unavailable = model?.unavailableReserves ?? []
+        let availableIDs = Set(eligibleAccounts.map(\.canonicalAccountId))
+            .union(eligibleInvestmentAccounts.map(\.id))
+            .union(eligibleManualAccounts.map {
+                GoalReserveAccountEligibility.reserveID(for: $0)
+            })
+        let unavailable = reserveRows.filter {
+            $0.active && !availableIDs.contains($0.canonicalAccountId)
+        }
         if !unavailable.isEmpty {
             Section("Unavailable") {
                 ForEach(unavailable) { reserve in
@@ -649,7 +654,7 @@ struct GoalReservePickerSheet: View {
     }
 
     private func unavailableRow(
-        _ reserve: GoalsModel.ReserveItem
+        _ reserve: DurableGoalReserveAccount
     ) -> some View {
         // Re-attach suggestions: same institution+mask among connected
         // accounts not already backing goals. User-confirmed, never
@@ -662,7 +667,10 @@ struct GoalReservePickerSheet: View {
         return VStack(alignment: .leading, spacing: NwSpacing.xs) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(reserve.displayName)
+                    Text(
+                        reserve.accountName.isEmpty
+                            ? "Account" : reserve.accountName
+                    )
                         .font(NwTypography.body)
                     Text("Unavailable · counted as $0")
                         .font(NwTypography.caption)
@@ -779,30 +787,22 @@ struct GoalReservePickerSheet: View {
         }
     }
 
-    private func remove(_ reserve: GoalsModel.ReserveItem) {
+    private func remove(_ reserve: DurableGoalReserveAccount) {
         do {
-            if let row = reserveRows.first(
-                where: { $0.id == reserve.rowId }
-            ) {
-                try GoalLedgerService(context: context)
-                    .removeReserveAccount(row)
-            }
+            try GoalLedgerService(context: context)
+                .removeReserveAccount(reserve)
         } catch {
             failure = error.localizedDescription
         }
     }
 
     private func reattach(
-        _ reserve: GoalsModel.ReserveItem,
+        _ reserve: DurableGoalReserveAccount,
         to account: CachedFinancialAccount
     ) {
         do {
-            if let row = reserveRows.first(
-                where: { $0.id == reserve.rowId }
-            ) {
-                try GoalLedgerService(context: context)
-                    .reattachReserveAccount(row, to: account)
-            }
+            try GoalLedgerService(context: context)
+                .reattachReserveAccount(reserve, to: account)
         } catch {
             failure = error.localizedDescription
         }

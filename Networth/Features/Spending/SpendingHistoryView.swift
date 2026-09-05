@@ -208,6 +208,11 @@ struct SpendingHistoryView: View {
 
     private let calendar = Calendar.current
     private let visibleMonthCount = 24
+    private let reviewRequestID: Int
+
+    init(reviewRequestID: Int = 0) {
+        self.reviewRequestID = reviewRequestID
+    }
 
     var body: some View {
         NavigationStack {
@@ -240,13 +245,9 @@ struct SpendingHistoryView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     NwTopLevelMenu(
                         canRefresh: container.hasPlaidBackendToken,
-                        contextualActions: [
-                            NwTopLevelMenuAction(
-                                title: "Reserves",
-                                systemImage: "tray.full",
-                                action: { showingSinkingFunds = true }
-                            )
-                        ],
+                        onAccounts: {
+                            SettingsRouter.open(SettingsPage.accounts)
+                        },
                         onRefresh: {
                             Task { await container.syncNow() }
                         },
@@ -257,6 +258,11 @@ struct SpendingHistoryView: View {
         }
         .task {
             await rebuild()
+        }
+        .task(id: reviewRequestID) {
+            if reviewRequestID > 0 {
+                showingIndividualReview = true
+            }
         }
         .onReceive(
             NotificationCenter.default

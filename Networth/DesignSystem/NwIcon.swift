@@ -8,6 +8,7 @@ public enum NwIcon: String, Sendable {
     case projections  = "calendar.badge.clock"
     case goals        = "target"
     case accounts     = "building.columns"
+    case categories   = "tag"
     case settings     = "gearshape"
 
     // Account types
@@ -46,6 +47,7 @@ public enum NwIcon: String, Sendable {
     case faceID       = "faceid"
     case keychain     = "key.fill"
     case cloud        = "icloud"
+    case notification = "bell.fill"
     case connected    = "link.circle.fill"
     case history      = "clock.arrow.circlepath"
     case chevron      = "chevron.right"

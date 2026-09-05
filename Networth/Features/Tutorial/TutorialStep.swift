@@ -35,7 +35,7 @@ enum TutorialContent {
             title: "Connect Your Accounts",
             lede: "Plaid supplies balances and transaction activity through your private backend.",
             bullets: [
-                "Open Settings → Accounts & Sync.",
+                "Open Settings → Connections & Sync.",
                 "Connect banking and investment institutions.",
                 "Review each account before it contributes to Net Worth."
             ],

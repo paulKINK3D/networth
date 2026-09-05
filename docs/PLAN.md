@@ -193,17 +193,47 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 - [x] **Phase 8 — Local IBR bridge:** Opt-in App Group student-loan summary, current liability reporting, local chart overlay, Accounts detail, and deep link back to BL IBR.
 - [x] **Phase 9 — Plaid Investments:** Private backend contract, native Link flow, local investment cache, explicit duplicate reconciliation, holding-level reporting, and reconciled contribution to Net Worth.
 - [x] **Phase 10 — Plaid Transactions foundation:** Product-aware Items, 24-month cursor sync, canonical account identity, local learning rules, opt-in privacy-bounded Claude fallback, and review inbox. The completed YNAB migration tooling was retired by the 2026-08-20 decision.
+- [x] **Phase 11 — Account management:** One shared Accounts destination, consistent top-level menus, role controls on account detail, and separated connection, transaction-organization, and app settings.
 
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
-## Future Work
-- **Consolidate account management.** Account controls are currently scattered
-  across Net Worth drill-downs, Settings → Accounts & Sync, Projection
-  settings, Goal reserve setup, investment review, and per-account Spending
-  visibility. Design one clear management entry point while preserving the
-  focused account-detail screens and the fixed four-tab structure.
-
 ## Key Decisions Log
+- **2026-09-05** — Accounts is the authoritative management destination without
+  becoming a fifth tab. Every top-level overflow uses the same order: Accounts,
+  Settings, then the exceptional manual Refresh Data action. Spending Reserves,
+  Projection Settings, Goal Accounts, and investment-account management no
+  longer create tab-specific overflow variants. Financial account detail owns
+  Spending visibility, projection-cash inclusion, Goal backing, card payment
+  forecast access, source status, and connection access; investment detail owns
+  Net Worth treatment, Goal backing where eligible, and connection access.
+  Feature-level assignment remains a set-based Settings task: the main Settings
+  list uses the tab-aligned Spending, Projections, and Goals labels. Goals opens
+  Goal Accounts with direct selection checkmarks, while Projection settings
+  keeps its focused Cash Accounts selector. Goals itself has no account
+  management action; a small info control beside Available for Goals identifies
+  Settings → Goal Accounts as the source of that balance. The global Accounts
+  route remains the place for inspecting and editing one account at a time.
+  Settings groups its first level into Planning (Spending, Projections, Goals),
+  Financial Data (Accounts, Manual Assets), and App. The single App & Data
+  destination contains the lower-frequency Connections & Sync, Contacts &
+  Categories, and Privacy & App pages. Goal-backed cash continues to be derived
+  as excluded from projection cash. This supersedes the 2026-08-11
+  tab-specific-management-menu decision and requires no persistence or schema
+  migration.
+- **2026-09-05** — Networth requests opportunistic background refresh through
+  iOS `BGAppRefreshTask`. A successful background pass refreshes the same
+  read-only Plaid investment and transaction caches and records the normal
+  snapshots. iOS owns the execution time, so foreground stale-data refresh
+  remains the guaranteed fallback. Review notifications are device-local,
+  off by default, and enabled from Privacy & App; only newly imported posted
+  transactions that require review generate a summary notification. Tapping
+  it opens Spending's one-by-one Review Transactions flow after any required
+  Face ID unlock. Background execution never enters the interactive biometric
+  bootstrap. The private backend token retains `WhenUnlocked` Keychain
+  protection, so a task launched while the device is locked fails closed and
+  retries through a later background or foreground opportunity. Foreground
+  bootstrap is single-flight, and notification authorization state is loaded
+  only when Privacy & App is opened so neither can delay the launch splash.
 - **2026-08-30** — Up to four checking, savings, cash, or credit-card accounts
   may be explicitly shown on Spending. Selection uses a text-labeled account
   detail toggle rather than a favorite symbol and persists only canonical

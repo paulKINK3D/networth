@@ -102,6 +102,103 @@ struct AppContainerTests {
         #expect(container.unlocked == true)
     }
 
+    @Test func backgroundRefreshNotifiesOnlyForNewReviewTransactions()
+        async throws {
+        let item = PlaidItemDTO(
+            id: "background-item",
+            institutionName: "Recorded Bank",
+            status: "healthy",
+            lastSyncedAt: .now,
+            products: ["transactions"]
+        )
+        let account = PlaidAccountDTO(
+            id: "background-account",
+            itemId: item.id,
+            institutionName: item.institutionName,
+            name: "Checking",
+            officialName: nil,
+            mask: "1234",
+            type: "depository",
+            subtype: "checking",
+            currentBalance: 1_000,
+            availableBalance: 900,
+            isoCurrencyCode: "USD",
+            unofficialCurrencyCode: nil
+        )
+        let transaction = PlaidTransactionDTO(
+            id: "background-transaction",
+            accountId: account.id,
+            date: "2026-09-05",
+            amount: 24.50,
+            name: "RECORDED MARKET",
+            merchantName: "Recorded Market"
+        )
+        let client = RecordedPlaidClient(
+            items: .init(items: [item]),
+            transactions: .init(
+                item: item,
+                accounts: [account],
+                added: [transaction],
+                modified: [],
+                removed: [],
+                nextCursor: "background-cursor-2",
+                hasMore: false,
+                updateStatus: "HISTORICAL_UPDATE_COMPLETE"
+            )
+        )
+        let notificationService = InMemoryReviewNotificationService(
+            enabled: true
+        )
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        let settings = DurableUserSettings()
+        settings.plaidTransactionsEnabled = true
+        context.insert(settings)
+        context.insert(PlaidTransactionCursor(
+            itemId: item.id,
+            cursor: "background-cursor-1",
+            updateStatus: "HISTORICAL_UPDATE_COMPLETE",
+            historicalReconciliationVersion:
+                PlaidTransactionSyncCoordinator
+                    .currentHistoricalReconciliationVersion
+        ))
+        try context.save()
+        let container = AppContainerController(
+            secretStore: InMemorySecretStore(seed: [
+                .plaidBackendBearerToken: "background-token"
+            ]),
+            biometricGate: ScriptableBiometricGate(isAvailable: false),
+            plaidClient: client,
+            modelContainer: modelContainer,
+            reviewNotificationService: notificationService
+        )
+
+        #expect(await container.performBackgroundRefresh())
+        #expect(notificationService.postedCounts == [1])
+
+        #expect(await container.performBackgroundRefresh())
+        #expect(notificationService.postedCounts == [1])
+    }
+
+    @Test func notificationReviewRouteIsConsumedOnce() throws {
+        let suiteName = "AppContainerTests.notificationRoute.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(!ReviewNotificationRoute.consumePendingRequest(
+            defaults: defaults
+        ))
+        ReviewNotificationRoute.storePendingRequest(defaults: defaults)
+        #expect(ReviewNotificationRoute.consumePendingRequest(
+            defaults: defaults
+        ))
+        #expect(!ReviewNotificationRoute.consumePendingRequest(
+            defaults: defaults
+        ))
+    }
+
     @Test func bootstrapConfiguresPlaidBackendTokenWithoutExposingPlaidSecrets() async {
         let plaidClient = RecordedPlaidClient()
         let container = AppContainerController(

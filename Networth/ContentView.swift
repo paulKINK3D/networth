@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showingTutorial = false
     @State private var showingSettings = false
     @State private var settingsPage: SettingsPage?
+    @State private var transactionReviewRequestID = 0
     /// Minimum hold time for the launch splash so it always shows long enough
     /// to read — matches the WorkoutApp splash pause (1.2 s) before fading.
     @State private var splashMinimumElapsed = false
@@ -46,6 +47,13 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .showTutorial)) { _ in
             showingTutorial = true
         }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: .openTransactionReview
+            )
+        ) { _ in
+            openTransactionReview()
+        }
         .onChange(of: container.lastPersistenceError) { _, new in
             alertPayload = new
         }
@@ -55,6 +63,9 @@ struct ContentView: View {
             }
         }
         .task {
+            if ReviewNotificationRoute.consumePendingRequest() {
+                openTransactionReview()
+            }
             if container.unlocked, !(userSettings.first?.hasSeenTutorial ?? false) {
                 showingTutorial = true
             }
@@ -74,13 +85,21 @@ struct ContentView: View {
             settingsPage = nil
         }) {
             NavigationStack {
-                SettingsView(page: settingsPage)
-                    .environment(container)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("Done") { showingSettings = false }
-                        }
+                Group {
+                    if settingsPage == .accounts {
+                        AccountsView(embedded: true)
+                    } else if let settingsPage {
+                        SettingsView(page: settingsPage)
+                    } else {
+                        SettingsHomeView()
                     }
+                }
+                .environment(container)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { showingSettings = false }
+                    }
+                }
             }
         }
         .alert("Save failed",
@@ -105,7 +124,9 @@ struct ContentView: View {
 
     private var tabs: some View {
         TabView(selection: $selection) {
-            SpendingHistoryView()
+            SpendingHistoryView(
+                reviewRequestID: transactionReviewRequestID
+            )
                 .tabItem { Label("Spending", systemImage: NwIcon.budget.rawValue) }
                 .tag(0)
             ProjectionsView()
@@ -118,6 +139,12 @@ struct ContentView: View {
                 .tabItem { Label("Net Worth", systemImage: NwIcon.netWorth.rawValue) }
                 .tag(3)
         }
+    }
+
+    private func openTransactionReview() {
+        _ = ReviewNotificationRoute.consumePendingRequest()
+        selection = 0
+        transactionReviewRequestID &+= 1
     }
 }
 
