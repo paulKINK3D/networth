@@ -261,10 +261,37 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   Future contains the secondary Savings and Reserves cards without a shared
   colored container; Savings displays its two components as `$X + $Y`, while
   Reserves displays only its balance beside its reserve columns. Funded and
-  Retained are integrated into the monthly hero. Plan display order remains a
-  durable group preference and is managed from Settings → Spending Plan.
+  Retained are integrated into the monthly hero. Pending transaction reviews
+  no longer insert a separate card above that hero. A compact amber `Review X`
+  action appears beneath the monthly-budget total without changing the hero's
+  footprint and preserves both grouped and one-by-one review paths. Days left
+  moves inside the progress arc, the hero uses a tighter three-level type
+  hierarchy, and the month picker omits its redundant chevron. The Accounts
+  heading, account name, and balance use the matching compact hierarchy. Plan
+  display order remains a durable group preference and is managed from
+  Settings → Spending Plan.
   This supersedes the 2026-08-30 two-column budget-grid placement while
   preserving its color semantics, calculations, and drill-down behavior.
+- **2026-09-04** — Review Transactions is a compact action queue. Section
+  headings include their loaded counts, while each row prioritizes merchant
+  and amount, shows the exact missing value or confirmed classification in the
+  second line, and keeps account plus date as secondary context. Repeated
+  status badges are removed. Ready transactions may be confirmed together;
+  each keeps its own displayed classification and the batch uses one final
+  classifier/save pass. Rows that fail validation remain available for
+  individual review. The individual editor presents merchant and amount first,
+  followed by date, payment account, and original description on separate
+  scannable lines. Type, Contact, Category, Source, and Split share one compact
+  Classification card. When an identified merchant has several confirmed
+  category patterns, up to three local-history choices appear under
+  `Categories`; frequency ranks first and most recent use breaks ties. A quick
+  choice fills Category without weakening the existing unambiguous-only
+  automatic prefill rule. The same ranked choices appear in a `Common` section
+  at the top of the full category picker, including for split legs, and are
+  omitted from their usual groups there to avoid duplicates. The small toolbar
+  checkmark is replaced by an always-visible full-width bottom confirmation
+  button. It remains visibly disabled until every required field and split
+  validation is complete.
 - **2026-09-02** — Reserves are distinct from Goals and ordinary monthly
   budgets. Spending presents one aggregate Reserves card; individual reserves
   carry their balances forward and require only a name. Target, due date,

@@ -5,7 +5,8 @@ import NetworthCore
 /// never reach for raw milliunits.
 public struct NwAmountText: View {
     public enum Variant {
-        case hero, large, metricSmall, body, compact, signed
+        case hero, dashboardHero, large, metricSmall, body, compact,
+             dashboardMetric, signed
     }
 
     public let amount: Money
@@ -32,7 +33,8 @@ public struct NwAmountText: View {
     private var text: String {
         switch variant {
         case .signed:  return CurrencyFormatter.signedDelta(amount)
-        case .compact: return CurrencyFormatter.compact(amount)
+        case .compact, .dashboardMetric:
+            return CurrencyFormatter.compact(amount)
         default:       return CurrencyFormatter.currency(amount, showCents: showCents)
         }
     }
@@ -40,10 +42,12 @@ public struct NwAmountText: View {
     private var font: Font {
         switch variant {
         case .hero:    return NwTypography.displayLarge
+        case .dashboardHero: return NwTypography.dashboardHero
         case .large:   return NwTypography.display
         case .metricSmall: return NwTypography.metricSmall
         case .body:    return NwTypography.bodyEmphasis
         case .compact: return NwTypography.headline
+        case .dashboardMetric: return NwTypography.bodyEmphasis
         case .signed:  return NwTypography.bodyEmphasis
         }
     }

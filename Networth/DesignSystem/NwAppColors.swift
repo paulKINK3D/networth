@@ -89,6 +89,14 @@ public enum NwAppColors {
         light: 0xF4C36A,
         dark: 0xE2AE55
     )
+    public static let dashboardHeroReviewSurface = adaptiveColor(
+        light: 0xF7E8CA,
+        dark: 0x493512
+    )
+    public static let dashboardHeroReviewText = adaptiveColor(
+        light: 0x8B4C00,
+        dark: 0xFFD58B
+    )
     public static let dashboardHeroLiability = adaptiveColor(
         light: 0xFF9C7A,
         dark: 0xFF9271

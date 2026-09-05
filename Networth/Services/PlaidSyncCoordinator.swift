@@ -3494,6 +3494,49 @@ public final class PlaidTransactionSyncCoordinator {
         return approvedRows.count
     }
 
+    /// Approves each selected transaction using its own currently displayed
+    /// classification, then runs the expensive classifier/save pass once.
+    /// Invalid rows stay in review while valid rows are committed together.
+    public func approveTransactionsAsShown(ids: [String]) -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let selectedIDs = Array(Set(ids))
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                selectedIDs.contains($0.id)
+                    && $0.requiresReview
+                    && !$0.deleted
+                    && !$0.pending
+            }
+        )
+        guard let rows = try? mainContext.fetch(descriptor),
+              !rows.isEmpty else {
+            return 0
+        }
+
+        var approvedTotal = 0
+        for row in rows {
+            if row.isSplit {
+                approvedTotal += approveSuggestedSplitTransactions(
+                    ids: [row.id],
+                    finalize: false
+                )
+            } else {
+                approvedTotal += approveTransactions(
+                    ids: [row.id],
+                    displayName: row.displayName,
+                    payeeCanonicalId: row.payeeCanonicalId,
+                    categoryName: row.categoryName,
+                    categoryCanonicalId: row.categoryCanonicalId,
+                    treatment: row.forecastTreatment,
+                    finalize: false
+                )
+            }
+        }
+
+        guard approvedTotal > 0 else { return 0 }
+        return finalizeBatchApprovals() ? approvedTotal : 0
+    }
+
     /// Re-applies alias/decision/suggestion state and refreshes review
     /// counts after a YNAB reference import rebuilt the suggestion table.
     public func reapplyCanonicalStateAfterReferenceImport() {

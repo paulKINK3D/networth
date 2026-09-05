@@ -165,10 +165,11 @@ private struct SpendingTrendChart: View {
 
 /// Spending History — the Spending tab (Phase 1 step 3).
 ///
-/// Month navigation, the review card for posted transactions awaiting
-/// approval, the selected month's total and per-group columns, and a compact
-/// link to the dedicated Spending Trends detail. Only approved activity
-/// counts; the current month is month-to-date, completed months are final.
+/// Month navigation, the selected month's total and per-group columns, and a
+/// compact link to the dedicated Spending Trends detail. Posted transactions
+/// awaiting approval are surfaced inside the stable monthly hero. Only
+/// approved activity counts; the current month is month-to-date, completed
+/// months are final.
 struct SpendingHistoryView: View {
     private enum OverviewSection: String, CaseIterable, Identifiable {
         case plan
@@ -200,6 +201,7 @@ struct SpendingHistoryView: View {
     @State private var showingSinkingFunds = false
     @State private var showingGroupedReview = false
     @State private var showingIndividualReview = false
+    @State private var showingReviewOptions = false
     @State private var showingGroupManager = false
     @State private var rebuildTask: Task<Void, Never>?
     @State private var overviewSection: OverviewSection = .plan
@@ -211,9 +213,6 @@ struct SpendingHistoryView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                    if pendingReviewCount > 0 {
-                        reviewCard
-                    }
                     if let model {
                         if let period = displayedPeriod(model) {
                             monthOverviewCard(period, model: model)
@@ -294,6 +293,15 @@ struct SpendingHistoryView: View {
         .sheet(isPresented: $showingIndividualReview) {
             PlaidClassificationReviewSheet().environment(container)
         }
+        .confirmationDialog(
+            "Review Transactions",
+            isPresented: $showingReviewOptions,
+            titleVisibility: .visible
+        ) {
+            Button("Review groups") { showingGroupedReview = true }
+            Button("One by one") { showingIndividualReview = true }
+            Button("Cancel", role: .cancel) {}
+        }
         .sheet(isPresented: $showingGroupManager) {
             SpendingGroupManagementSheet().environment(container)
         }
@@ -309,31 +317,10 @@ struct SpendingHistoryView: View {
         }
     }
 
-    // MARK: - Review card
+    // MARK: - Transaction review
 
     private var pendingReviewCount: Int {
         container.plaidTransactionSyncCoordinator.pendingTransactionReviewCount
-    }
-
-    private var reviewCard: some View {
-        NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                HStack {
-                    NwIcon.warning.image
-                        .foregroundStyle(NwAppColors.caution)
-                    Text("\(pendingReviewCount) transactions to review")
-                        .font(NwTypography.body.weight(.semibold))
-                    Spacer()
-                }
-                HStack(spacing: NwSpacing.md) {
-                    Button("Review groups") { showingGroupedReview = true }
-                        .buttonStyle(.borderedProminent)
-                        .tint(NwAppColors.primary)
-                    Button("One by one") { showingIndividualReview = true }
-                        .buttonStyle(.bordered)
-                }
-            }
-        }
     }
 
     // MARK: - Month navigation
@@ -384,17 +371,13 @@ struct SpendingHistoryView: View {
                 }
             }
         } label: {
-            HStack(spacing: NwSpacing.xs) {
-                Text(
-                    current?.month.formatted(
-                        .dateTime.month(.abbreviated).year()
-                    ) ?? "Select Month"
-                )
-                .font(NwTypography.bodyEmphasis)
-                .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(NwTypography.caption)
-            }
+            Text(
+                current?.month.formatted(
+                    .dateTime.month(.abbreviated).year()
+                ) ?? "Select Month"
+            )
+            .font(NwTypography.bodyEmphasis)
+            .lineLimit(1)
             .foregroundStyle(NwAppColors.textPrimary)
             .contentShape(Rectangle())
         }
@@ -533,39 +516,37 @@ struct SpendingHistoryView: View {
         month: Date
     ) -> some View {
         let displayedProgress = min(max(budget.progress, 0), 1)
+        let remainingDays = daysLeft(in: month)
         return NwDashboardHero {
-            VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                HStack(alignment: .center, spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
+                HStack(alignment: .bottom, spacing: NwSpacing.md) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("MONTHLY BUDGET")
                             .font(NwTypography.caption)
                             .foregroundStyle(
                                 NwAppColors.dashboardHeroSecondary
                             )
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.9)
+                            .frame(width: 126, alignment: .leading)
                         NwAmountText(
                             budget.remaining.absolute,
-                            variant: .hero,
+                            variant: .dashboardHero,
                             showCents: false,
                             color: budget.isOver
                                 ? NwAppColors.dashboardHeroOver
                                 : NwAppColors.dashboardHeroText
                         )
+                        if pendingReviewCount > 0 {
+                            reviewTransactionsButton
+                        }
                     }
                     Spacer(minLength: NwSpacing.sm)
                     spendingBudgetArc(
                         progress: displayedProgress,
-                        isOver: budget.isOver
+                        isOver: budget.isOver,
+                        daysLeft: remainingDays
                     )
-                }
-
-                if let days = daysLeft(in: month) {
-                    Text("\(days) day\(days == 1 ? "" : "s")")
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .font(NwTypography.footnoteEm)
-                        .foregroundStyle(
-                            NwAppColors.dashboardHeroSecondary
-                        )
                 }
 
                 Rectangle()
@@ -589,11 +570,39 @@ struct SpendingHistoryView: View {
                 }
             }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Monthly budget")
         .accessibilityValue(
             "\(budgetStatusText(budget.remaining)), "
                 + "\(budgetAmountProgressText(spent: budget.spent, target: budget.target))"
+                + (remainingDays.map { ", \($0) days left" } ?? "")
+        )
+    }
+
+    private var reviewTransactionsButton: some View {
+        Button {
+            showingReviewOptions = true
+        } label: {
+            HStack(spacing: NwSpacing.xs) {
+                NwIcon.attention.image
+                    .font(NwTypography.micro)
+                Text("Review \(pendingReviewCount)")
+            }
+            .font(NwTypography.micro)
+            .foregroundStyle(NwAppColors.dashboardHeroReviewText)
+            .frame(width: 126, height: 22)
+            .background(
+                Capsule()
+                    .fill(NwAppColors.dashboardHeroReviewSurface)
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .frame(width: 126, height: 44, alignment: .bottom)
+        .contentShape(Rectangle())
+        .accessibilityLabel(
+            "Review \(pendingReviewCount) transaction"
+                + (pendingReviewCount == 1 ? "" : "s")
         )
     }
 
@@ -605,12 +614,12 @@ struct SpendingHistoryView: View {
     ) -> some View {
         VStack(alignment: alignment, spacing: 2) {
             Text(title)
-                .font(NwTypography.caption)
+                .font(NwTypography.captionSmall)
                 .foregroundStyle(NwAppColors.dashboardHeroSecondary)
             if let amount {
                 NwAmountText(
                     amount,
-                    variant: .compact,
+                    variant: .dashboardMetric,
                     showCents: false,
                     color: color
                 )
@@ -631,7 +640,8 @@ struct SpendingHistoryView: View {
 
     private func spendingBudgetArc(
         progress: Double,
-        isOver: Bool
+        isOver: Bool,
+        daysLeft: Int?
     ) -> some View {
         ZStack {
             Circle()
@@ -650,6 +660,15 @@ struct SpendingHistoryView: View {
                     style: StrokeStyle(lineWidth: 12, lineCap: .round)
                 )
                 .rotationEffect(.degrees(90))
+            if let daysLeft {
+                VStack(spacing: 1) {
+                    Text("\(daysLeft)")
+                        .font(NwTypography.bodyEmphasis)
+                    Text("days left")
+                        .font(NwTypography.micro)
+                }
+                .foregroundStyle(NwAppColors.dashboardHeroSecondary)
+            }
         }
         .frame(width: 118, height: 118)
         .accessibilityHidden(true)
@@ -841,7 +860,7 @@ struct SpendingHistoryView: View {
                         metric.amount,
                         showCents: false
                     ))
-                    .font(NwTypography.metricSmall)
+                    .font(NwTypography.metricCompact)
                     .foregroundStyle(metric.color)
                     .monospacedDigit()
                     .lineLimit(1)

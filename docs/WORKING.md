@@ -1,9 +1,57 @@
 # WORKING
 
+## Current handoff — Spending hero stability (2026-09-04)
+
+- The separate transaction-review card no longer appears above the Spending
+  hero, so pending reviews do not move the rest of the screen.
+- A compact amber `Review X` action sits beneath the monthly-budget total. Its
+  22-point visible strip and the single-line heading share a 126-point width,
+  while the action retains a 44-point tap area. A circular attention mark keeps
+  the treatment light, and the strip's lower edge aligns with the budget arc.
+  Tapping it offers both `Review groups` and `One by one`.
+- Days left now appears inside the budget arc. The hero uses a 38-point primary
+  total, 17-point supporting values, and 11–13-point labels within a tighter
+  fixed visual hierarchy.
+- The month picker no longer shows a chevron. Accounts uses a 22-point heading,
+  17-point account names, and 19-point balances.
+- Generic-device Debug and Release builds pass, and the app-test target
+  compiles. Simulator execution was not requested.
+
+## Current handoff — Review Transactions hierarchy (2026-09-04)
+
+- Active branch: `feature/ux-ui-improvements`.
+- Review Transactions now uses compact action-queue rows. Merchant and amount
+  lead, the second line shows `No contact`, `No category`, `Fix split`, or the
+  ready classification, and account plus short date remain secondary.
+- Needs Attention and Ready to Confirm headings include counts. Repeated status
+  badges are removed.
+- `Confirm All` approves every currently ready transaction using its own
+  displayed classification. The coordinator batches those decisions into one
+  final classifier/save pass; invalid rows remain in review and the screen
+  reports partial or total failure.
+- The individual editor now leads with merchant and amount, then places date,
+  payment account, and the provider's original description on separate lines.
+  All primary fields share one compact Classification card; the uncommon Split
+  toggle sits last. A full-width bottom `Confirm Transaction` action replaces
+  the toolbar checkmark; it remains muted and disabled until every required
+  field and any split validation is complete, then turns favorable green.
+- When Category is empty, up to three `Categories` shortcuts are ranked from
+  confirmed decisions for the same contact, transaction type, and direction.
+  Frequency ranks first, recency breaks ties, duplicate decision rows count
+  only once, and hidden or otherwise unavailable categories are excluded.
+  Choosing a shortcut fills the normal Category field; ambiguous history is
+  never auto-applied. The full picker also puts these choices in a deduplicated
+  `Common` section above the category groups. Split-leg pickers use the same
+  merchant history, restricted to ordinary-spending categories.
+- A focused app test covers preserving distinct ready transactions through the
+  new batch path, and a pure ranking test covers frequency, recency, duplicate,
+  and scope behavior. Generic-device Debug and Release builds pass, and the
+  app-test target compiles. Simulator execution was not requested.
+
 ## Current handoff — Spending Plan/Future hierarchy (2026-09-04)
 
-- Active branch: `feature/ux-ui-improvements`; the implementation is not yet
-  committed.
+- The implementation is committed at `d6afd10` on
+  `feature/ux-ui-improvements`.
 - Funded and Retained now live inside the monthly Spending hero. Accounts use
   compact full-width rows beneath the `Accounts` heading.
 - A local `Plan | Future` switch changes the middle section only and defaults

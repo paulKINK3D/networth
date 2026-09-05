@@ -2,10 +2,12 @@ import SwiftUI
 
 public enum NwTypography {
     public static let displayLarge = Font.system(size: 44, weight: .bold,    design: .rounded)
+    public static let dashboardHero = Font.system(size: 38, weight: .bold,   design: .rounded)
     public static let display      = Font.system(size: 34, weight: .bold,    design: .rounded)
     public static let title        = Font.system(size: 28, weight: .bold,    design: .rounded)
     public static let titleSmall   = Font.system(size: 22, weight: .semibold,design: .rounded)
     public static let metricSmall  = Font.system(size: 20, weight: .semibold,design: .rounded)
+    public static let metricCompact = Font.system(size: 19, weight: .semibold, design: .rounded)
     public static let headline     = Font.system(size: 18, weight: .semibold,design: .rounded)
     public static let body         = Font.system(size: 17, weight: .regular, design: .rounded)
     public static let bodyEmphasis = Font.system(size: 17, weight: .semibold,design: .rounded)
@@ -13,5 +15,7 @@ public enum NwTypography {
     public static let footnote     = Font.system(size: 14, weight: .regular, design: .rounded)
     public static let footnoteEm   = Font.system(size: 14, weight: .semibold,design: .rounded)
     public static let caption      = Font.system(size: 13, weight: .semibold,design: .rounded)
+    public static let captionSmall = Font.system(size: 12, weight: .semibold, design: .rounded)
+    public static let micro        = Font.system(size: 11, weight: .semibold, design: .rounded)
     public static let monoMetric   = Font.system(size: 28, weight: .bold,    design: .monospaced)
 }

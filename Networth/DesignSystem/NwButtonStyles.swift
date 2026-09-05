@@ -1,7 +1,12 @@
 import SwiftUI
 
 public struct NwPrimaryButtonStyle: ButtonStyle {
-    public init() {}
+    public var tint: Color
+
+    public init(tint: Color = NwAppColors.primary) {
+        self.tint = tint
+    }
+
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(NwTypography.bodyEmphasis)
@@ -9,7 +14,7 @@ public struct NwPrimaryButtonStyle: ButtonStyle {
             .padding(.vertical, NwSpacing.md)
             .padding(.horizontal, NwSpacing.xl)
             .frame(maxWidth: .infinity)
-            .background(NwAppColors.primary)
+            .background(tint)
             .clipShape(RoundedRectangle(cornerRadius: NwCornerRadius.md, style: .continuous))
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed ? 0.99 : 1)

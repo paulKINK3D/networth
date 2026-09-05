@@ -30,6 +30,7 @@ public enum NwIcon: String, Sendable {
 
     // Status
     case success      = "checkmark.circle.fill"
+    case attention    = "exclamationmark.circle.fill"
     case warning      = "exclamationmark.triangle.fill"
     case error        = "xmark.octagon.fill"
     case info         = "info.circle.fill"

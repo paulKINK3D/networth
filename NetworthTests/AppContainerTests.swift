@@ -3227,6 +3227,152 @@ struct AppContainerTests {
         })
     }
 
+    @Test func approveAsShownPreservesEachReadyTransaction() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(
+            inMemory: true
+        )
+        let context = modelContainer.mainContext
+        context.insert(DurableCategoryGroup(
+            groupIdentity: "networth:spending:user:food",
+            name: "Food",
+            reportingRole: .spending
+        ))
+        context.insert(DurableCanonicalCategory(
+            canonicalId: "networth:category:dining",
+            name: "Dining",
+            groupName: "Food",
+            categoryGroupIdentity: "networth:spending:user:food"
+        ))
+
+        var ids: [String] = []
+        for (index, merchant) in ["Bright Coffee", "Sweet Adeline"]
+            .enumerated() {
+            let payeeID = "networth:payee:\(index)"
+            context.insert(DurableCanonicalPayee(
+                canonicalId: payeeID,
+                name: merchant,
+                sourceName: merchant
+            ))
+            let summary = try #require(
+                PlaidTransactionDTO(
+                    id: "ready-\(index)",
+                    accountId: "card-1",
+                    date: "2026-09-03",
+                    amount: Decimal(10 + index),
+                    name: merchant,
+                    merchantName: merchant
+                ).financialSummary(canonicalAccountId: "canonical-card")
+            )
+            let row = CachedFinancialTransaction(
+                summary: summary,
+                classification: TransactionClassifier().classify(
+                    summary,
+                    rules: []
+                )
+            )
+            row.displayName = merchant
+            row.payeeCanonicalId = payeeID
+            row.categoryCanonicalId = "networth:category:dining"
+            row.categoryName = "Dining"
+            row.forecastTreatmentRaw =
+                ForecastTreatment.ordinarySpending.rawValue
+            row.requiresReview = true
+            context.insert(row)
+            ids.append(row.id)
+        }
+        try context.save()
+
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(),
+            mainContext: context
+        )
+
+        let approved = coordinator.approveTransactionsAsShown(ids: ids)
+
+        #expect(approved == 2)
+        let rows = try context.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )
+        #expect(rows.allSatisfy { !$0.requiresReview })
+        let decisions = try context.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )
+        #expect(Set(decisions.map(\.payeeNameSnapshot)) == [
+            "Bright Coffee",
+            "Sweet Adeline"
+        ])
+        #expect(decisions.allSatisfy {
+            $0.reviewed
+                && $0.categoryNameSnapshot == "Dining"
+                && $0.provenanceRaw == ClassificationProvenance.user.rawValue
+        })
+    }
+
+    @Test func merchantCategorySuggestionsFavorFrequencyThenRecency() {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        func record(
+            _ transactionID: String,
+            category: String,
+            day: Int,
+            payee: String = "merchant-1",
+            amountSign: Int = -1,
+            reviewed: Bool = true
+        ) -> MerchantCategoryHistoryRecord {
+            MerchantCategoryHistoryRecord(
+                transactionID: transactionID,
+                payeeCanonicalID: payee,
+                categoryCanonicalID: category,
+                treatment: .ordinarySpending,
+                amountSign: amountSign,
+                reviewed: reviewed,
+                isSplit: false,
+                updatedAt: start.addingTimeInterval(
+                    TimeInterval(day * 86_400)
+                )
+            )
+        }
+        let records = [
+            record("one", category: "dining", day: 1),
+            record("two", category: "coffee", day: 2),
+            record("three", category: "dining", day: 3),
+            record("four", category: "travel", day: 4),
+            record("five", category: "travel", day: 5),
+            // The newest decision for one transaction replaces its older
+            // category instead of counting the same purchase twice.
+            record("one", category: "coffee", day: 6),
+            record(
+                "other-payee",
+                category: "dining",
+                day: 7,
+                payee: "merchant-2"
+            ),
+            record(
+                "incoming",
+                category: "dining",
+                day: 8,
+                amountSign: 1
+            ),
+            record(
+                "unreviewed",
+                category: "dining",
+                day: 9,
+                reviewed: false
+            )
+        ]
+
+        let ranked = MerchantCategorySuggestionRanker.rank(
+            records,
+            payeeCanonicalID: "merchant-1",
+            treatment: .ordinarySpending,
+            amountSign: -1,
+            availableCategoryIDs: ["coffee", "travel", "dining"],
+            limit: 3
+        )
+
+        #expect(ranked == ["coffee", "travel", "dining"])
+    }
+
     @Test func spendingHistoryUsesOnlyUserGroupsAndMarksYNABAssignmentsUnassigned() async throws {
         let modelContainer = try ModelContainerFactory.makeContainer(
             inMemory: true
