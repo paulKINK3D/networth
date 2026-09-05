@@ -199,9 +199,7 @@ struct SpendingHistoryView: View {
     @State private var savingsTransferPromptSelection:
         SavingsTransferPromptSelection?
     @State private var showingSinkingFunds = false
-    @State private var showingGroupedReview = false
     @State private var showingIndividualReview = false
-    @State private var showingReviewOptions = false
     @State private var showingGroupManager = false
     @State private var rebuildTask: Task<Void, Never>?
     @State private var overviewSection: OverviewSection = .plan
@@ -237,11 +235,6 @@ struct SpendingHistoryView: View {
             .navigationTitle("Spending")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if let model {
-                        monthMenu(model)
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NwTopLevelMenu(
                         canRefresh: container.hasPlaidBackendToken,
@@ -293,20 +286,8 @@ struct SpendingHistoryView: View {
         .sheet(item: $savingsTransferPromptSelection) { selection in
             SavingsTransferPromptDetailSheet(selection: selection)
         }
-        .sheet(isPresented: $showingGroupedReview) {
-            GroupedHistoricalReviewSheet().environment(container)
-        }
         .sheet(isPresented: $showingIndividualReview) {
             PlaidClassificationReviewSheet().environment(container)
-        }
-        .confirmationDialog(
-            "Review Transactions",
-            isPresented: $showingReviewOptions,
-            titleVisibility: .visible
-        ) {
-            Button("Review groups") { showingGroupedReview = true }
-            Button("One by one") { showingIndividualReview = true }
-            Button("Cancel", role: .cancel) {}
         }
         .sheet(isPresented: $showingGroupManager) {
             SpendingGroupManagementSheet().environment(container)
@@ -377,16 +358,37 @@ struct SpendingHistoryView: View {
                 }
             }
         } label: {
-            Text(
-                current?.month.formatted(
-                    .dateTime.month(.abbreviated).year()
-                ) ?? "Select Month"
+            HStack(spacing: NwSpacing.sm) {
+                Text(
+                    current?.month.formatted(
+                        .dateTime.month(.wide).year()
+                    ) ?? "Select Month"
+                )
+                .lineLimit(1)
+
+                Image(systemName: "chevron.down")
+                    .font(NwTypography.micro)
+                    .foregroundStyle(NwAppColors.dashboardHeroSecondary)
+            }
+            .font(NwTypography.footnoteEm)
+            .foregroundStyle(NwAppColors.dashboardHeroText)
+            .padding(.horizontal, NwSpacing.md)
+            .frame(height: 32)
+            .background(
+                Capsule()
+                    .fill(NwAppColors.dashboardHeroTrack)
             )
-            .font(NwTypography.bodyEmphasis)
-            .lineLimit(1)
-            .foregroundStyle(NwAppColors.textPrimary)
-            .contentShape(Rectangle())
+            .overlay {
+                Capsule()
+                    .stroke(
+                        NwAppColors.dashboardHeroSecondary.opacity(0.35),
+                        lineWidth: NwStrokeWidth.thin
+                    )
+            }
+            .contentShape(Capsule())
         }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44, alignment: .leading)
         .accessibilityLabel("Spending month")
         .accessibilityHint("Selects the month to review")
     }
@@ -443,13 +445,14 @@ struct SpendingHistoryView: View {
             : budget.fundingDisplay(fundedBy: funded)
         return VStack(spacing: NwSpacing.md) {
             if budget.groups.isEmpty {
-                noBudgetHero(display, month: month.month)
+                noBudgetHero(display, month: month.month, model: model)
                 retainedStrip(display)
             } else {
                 spendingBudgetHero(
                     budget,
                     display: display,
-                    month: month.month
+                    month: month.month,
+                    model: model
                 )
             }
         }
@@ -476,10 +479,13 @@ struct SpendingHistoryView: View {
 
     private func noBudgetHero(
         _ display: SpendingHistoryFundingDisplay,
-        month: Date
+        month: Date,
+        model: SpendingHistoryModel
     ) -> some View {
         NwDashboardHero {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                monthMenu(model)
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text(isCurrentMonth(month) ? "SPENT THIS MONTH" : "SPENT")
                         .font(NwTypography.caption)
@@ -519,32 +525,37 @@ struct SpendingHistoryView: View {
     private func spendingBudgetHero(
         _ budget: SpendingBudgetSummary,
         display: SpendingHistoryFundingDisplay,
-        month: Date
+        month: Date,
+        model: SpendingHistoryModel
     ) -> some View {
         let displayedProgress = min(max(budget.progress, 0), 1)
         let remainingDays = daysLeft(in: month)
         return NwDashboardHero {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
-                HStack(alignment: .bottom, spacing: NwSpacing.md) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("MONTHLY BUDGET")
-                            .font(NwTypography.caption)
-                            .foregroundStyle(
-                                NwAppColors.dashboardHeroSecondary
+                HStack(alignment: .top, spacing: NwSpacing.md) {
+                    VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                        monthMenu(model)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("MONTHLY BUDGET")
+                                .font(NwTypography.caption)
+                                .foregroundStyle(
+                                    NwAppColors.dashboardHeroSecondary
+                                )
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.9)
+                                .frame(width: 126, alignment: .leading)
+                            NwAmountText(
+                                budget.remaining.absolute,
+                                variant: .dashboardHero,
+                                showCents: false,
+                                color: budget.isOver
+                                    ? NwAppColors.dashboardHeroOver
+                                    : NwAppColors.dashboardHeroText
                             )
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.9)
-                            .frame(width: 126, alignment: .leading)
-                        NwAmountText(
-                            budget.remaining.absolute,
-                            variant: .dashboardHero,
-                            showCents: false,
-                            color: budget.isOver
-                                ? NwAppColors.dashboardHeroOver
-                                : NwAppColors.dashboardHeroText
-                        )
-                        if pendingReviewCount > 0 {
-                            reviewTransactionsButton
+                            if pendingReviewCount > 0 {
+                                reviewTransactionsButton
+                            }
                         }
                     }
                     Spacer(minLength: NwSpacing.sm)
@@ -587,7 +598,7 @@ struct SpendingHistoryView: View {
 
     private var reviewTransactionsButton: some View {
         Button {
-            showingReviewOptions = true
+            showingIndividualReview = true
         } label: {
             HStack(spacing: NwSpacing.xs) {
                 NwIcon.attention.image

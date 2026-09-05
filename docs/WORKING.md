@@ -49,7 +49,7 @@
 - The existing `WhenUnlocked` Keychain protection is unchanged. A background
   launch while the phone is locked cannot load the private backend token and
   therefore exits safely; foreground refresh remains the guaranteed fallback.
-- Privacy & App has a device-local Transaction Reviews toggle, off by default.
+- Privacy & App has a device-local Review Notifications toggle, off by default.
   Enabling it requests alert and sound permission. If iOS permission is
   denied, the screen offers a direct path to iPhone Settings.
 - A successful background sync compares stable transaction IDs before and
@@ -73,7 +73,7 @@
   22-point visible strip and the single-line heading share a 126-point width,
   while the action retains a 44-point tap area. A circular attention mark keeps
   the treatment light, and the strip's lower edge aligns with the budget arc.
-  Tapping it offers both `Review groups` and `One by one`.
+  Tapping it opens the one-by-one Review Transactions screen directly.
 - Days left now appears inside the budget arc. The hero uses a 38-point primary
   total, 17-point supporting values, and 11–13-point labels within a tighter
   fixed visual hierarchy.

@@ -252,7 +252,7 @@ struct SettingsView: View {
                 Section {
                     Toggle(isOn: reviewNotificationBinding) {
                         Label {
-                            Text("Transaction Reviews")
+                            Text("Review Notifications")
                         } icon: {
                             NwIcon.notification.image
                                 .foregroundStyle(NwAppColors.primary)
