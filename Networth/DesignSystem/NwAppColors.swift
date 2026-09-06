@@ -1,8 +1,9 @@
 import SwiftUI
 import UIKit
 
-/// Sanzo Wada-inspired palette. Deep blue primary and positive, parchment
-/// highlight, amber caution, and rust for liabilities.
+/// Sanzo Wada-inspired palette. Deep blue for brand and interaction, olive
+/// for protected or allocated money, parchment highlights, green favorable
+/// outcomes, amber caution, and rust liabilities.
 public enum NwAppColors {
     // Brand
     public static let primary = adaptiveColor(
@@ -16,7 +17,14 @@ public enum NwAppColors {
     public static let accent = primary
 
     // Semantic
-    public static let positive = primary
+    public static let positive = adaptiveColor(
+        light: 0x007A46,
+        dark: 0x67DFA4
+    )
+    public static let protected = adaptiveColor(
+        light: 0x505423,
+        dark: 0xAEB46E
+    )
     public static let gold = adaptiveColor(
         light: 0xEBD999,
         dark: 0xD6C27F
@@ -29,10 +37,7 @@ public enum NwAppColors {
         light: 0xA93400,
         dark: 0xFF9271
     )
-    public static let favorableText = adaptiveColor(
-        light: 0x007A46,
-        dark: 0x67DFA4
-    )
+    public static let favorableText = positive
     public static let favorableFill = adaptiveColor(
         light: 0x23C17C,
         dark: 0x33D991
@@ -41,22 +46,24 @@ public enum NwAppColors {
         light: 0xD50C42,
         dark: 0xFF7399
     )
-    public static let budgetReallocated = adaptiveColor(
-        light: 0x6FA4D9,
-        dark: 0xA9CCF0
-    )
+    public static let budgetRemaining = protected
+    public static let budgetReallocated = gold
     public static let info = adaptiveColor(
         light: 0x4C8AEA,
         dark: 0x78A8FF
     )
 
     // Budget pace
-    public static let budgetOnTrack = positive
+    public static let budgetOnTrack = primary
     public static let budgetWatch = caution
     public static let budgetAtRisk = liability
     public static let featuredSurface = adaptiveColor(
         light: 0xEBD999,
         dark: 0x453D21
+    )
+    public static let planningSurface = adaptiveColor(
+        light: 0xF3F0DF,
+        dark: 0x2F3024
     )
     public static let featuredText = primary
 
@@ -106,6 +113,10 @@ public enum NwAppColors {
     public static let cardSurface      = Color(.secondarySystemGroupedBackground)
     public static let cardSurfaceAlt   = Color(.tertiarySystemGroupedBackground)
     public static let strokeSubtle     = Color(white: 0.5).opacity(0.18)
+    public static let surfaceHighlight = adaptiveColor(
+        light: 0xFFFFFF,
+        dark: 0x454548
+    )
 
     // Text
     public static let textPrimary   = Color.primary

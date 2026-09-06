@@ -141,17 +141,26 @@ When at least four complete monthly samples are available, Safe to Spend also sh
 
 ### Design Language
 - **Theme:** "Deep Slate" — the primary navy (`#003E83`), parchment
-  (`#EBD999`), and rust (`#A93400`) derive from the third combination in the
-  sixth row of page 11 of the local Sanzo Wada reference. Navy is also used for
-  positive/on-track and accent treatments; a derived amber (`#9A5700`) means
-  watch, parchment highlights the featured Spending group, and rust means
-  liability/at-risk. Interactive semantic colors use explicit light/dark
-  variants; fixed navy is not used as a dark-mode foreground. The BlueLava
-  launch/lock gradient remains a separate shared cross-app brand treatment.
+  (`#EBD999`), olive (`#505423`), and rust (`#A93400`) derive from the third
+  combination in the sixth row of page 11 of the local Sanzo Wada reference.
+  Navy means brand, interaction, and informational/on-track progress; olive
+  means protected or allocated money; parchment highlights protected or
+  reallocated money and supplies the warm planning surface; green means an
+  actual favorable outcome such as Retained or an inflow; a derived amber
+  (`#9A5700`) means watch; and rust means liability/at-risk. Interactive
+  semantic colors use explicit light/dark variants; fixed navy is not used as
+  a dark-mode foreground. The BlueLava launch/lock gradient remains a separate
+  shared cross-app brand treatment.
 - Daily dashboards lead with one bold adaptive Deep Slate hero, one large
   whole-dollar answer, and a single supporting visual. Secondary numbers use
   softly tinted surfaces and progressive disclosure rather than competing
   card boundaries.
+- Physical hierarchy comes from relative elevation and grouping rather than
+  decorative motion or widespread translucency. Heroes use a close contact
+  shadow plus the strongest ambient shadow, standalone tappable cards use the
+  standard card elevation, and repeated peer rows share one solid surface with
+  internal dividers. Custom Liquid Glass and animated backgrounds are excluded
+  from financial content surfaces and custom planning selectors.
 - Spending overview colors follow familiar semantics: blue is informational
   under-budget progress, green is positive Retained, and clear red is
   overspending or negative Retained. Brown/amber and pale yellow are not used
@@ -176,7 +185,7 @@ When at least four complete monthly samples are available, Safe to Spend also sh
 Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 - **Tokens:** `NwSpacing`, `NwCornerRadius`, `NwTypography`, `NwShadow`, `NwOpacity`, `NwStrokeWidth`.
 - **Colors:** `NwAppColors` — semantic (`positive`, `caution`, `liability`), neutral base, theme accent.
-- **Card variants:** primary, secondary, glass, inset (via `.nwCardStyle(...)` modifier).
+- **Card variants:** primary, secondary, planning, glass, inset (via `.nwCardStyle(...)` modifier).
 - **Buttons:** primary, secondary, tinted, destructive.
 - **Reusable views:** `NwCard`, `NwSectionHeader`, `NwMetricCapsule`, `NwStatusBadge`, `NwEmptyState`, `NwLoadingState`, `NwInlineNotice`, `NwBanner`, `NwModalLayout`.
 - **Iconography:** SF Symbols only, mapped via `NwIcon` enum.
@@ -198,6 +207,20 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-09-05** — The Deep Slate palette restores its source olive
+  (`#505423`) as the semantic color for protected or allocated money. Navy is
+  reserved for brand, interaction, and informational/on-track progress;
+  favorable outcomes and inflows use green, parchment marks protected or
+  reallocated money, and ordinary factual balances remain neutral. Spending's
+  Plan budgets sit inside one warm planning sheet with flat tappable rows and
+  dividers rather than separate peer cards. Heroes carry the strongest shared
+  elevation, while standalone cards use the standard elevation. A tested
+  animated Wada background and custom Liquid Glass treatment on the month and
+  Plan/Future controls were rejected because the motion read as haze, the
+  adjacent glass controls produced unwanted blue spill, and neither created a
+  useful physical hierarchy. This supersedes the individual Plan-card
+  placement in the 2026-09-04 overview decision while preserving its data,
+  navigation, and drill-down behavior.
 - **2026-09-05** — Accounts is the authoritative management destination without
   becoming a fifth tab. Every top-level overflow uses the same order: Accounts,
   Settings, then the exceptional manual Refresh Data action. Spending Reserves,

@@ -1,3 +1,5 @@
+Status: active
+
 # Networth Agent Guide
 
 ## Project Overview
@@ -160,13 +162,22 @@ cd PlaidWorker && npm test && npm run check
 - Avoid duplicating cross-cutting helpers across views; prefer one shared utility so
   fixes apply globally.
 - **Theme:** "Deep Slate" — the primary navy (`#003E83`), parchment
-  (`#EBD999`), and rust (`#A93400`) derive from the third combination in the
-  sixth row of page 11 of the local Sanzo Wada reference. Navy is also the
-  positive/on-track and accent color; a derived amber (`#9A5700`) means watch,
-  parchment highlights the featured Spending group, and rust means
-  liability/at-risk. Defined in `NwAppColors`. Brand and semantic colors must
-  use adaptive light/dark definitions there; never use a fixed navy as an
-  interactive foreground in dark mode.
+  (`#EBD999`), olive (`#505423`), and rust (`#A93400`) derive from the third
+  combination in the sixth row of page 11 of the local Sanzo Wada reference.
+  Navy means brand, interaction, and informational/on-track progress; olive
+  means protected or allocated money; parchment highlights protected or
+  reallocated money and supplies the warm planning surface; green means an
+  actual favorable outcome such as Retained or an inflow; a derived amber
+  (`#9A5700`) means watch; and rust means liability/at-risk. Defined in
+  `NwAppColors`. Brand and semantic colors must use adaptive light/dark
+  definitions there; never use a fixed navy as an interactive foreground in
+  dark mode.
+- **Depth:** Keep financial content on solid, legible surfaces. Heroes use the
+  strongest elevation, standalone tappable cards use moderate elevation, and
+  repeated peer rows share one grouped surface with internal dividers. Do not
+  apply custom Liquid Glass to content cards or segmented planning controls,
+  and do not add decorative moving screen backgrounds. System navigation and
+  controls may retain the platform's native glass treatment.
 - The BlueLava launch/lock gradient is a shared cross-app brand treatment, not
   part of Networth's screen palette. Do not change it during Networth palette
   work without explicit user approval.
@@ -198,7 +209,7 @@ cd PlaidWorker && npm test && npm run check
   user-visible Archived Reserves area, where it can be reviewed or restored.
   Delete permanently removes the Reserve plus every associated assignment and
   purchase-link record, but never removes or rewrites imported transactions.
-  The aggregate Spending card shows up to three lighter-blue Reserve columns
+  The aggregate Spending card shows up to three parchment Reserve columns
   on one shared balance scale, ranked by nearest due date, then highest
   percentage complete, then largest saved balance. Targeted Reserves add a
   subtle target outline; open-ended Reserves show only their saved balance.

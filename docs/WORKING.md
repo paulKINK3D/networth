@@ -1,5 +1,30 @@
 # WORKING
 
+## Current handoff — Deep Slate color and depth hierarchy (2026-09-05)
+
+- Active branch: `codex/olive-color-story`.
+- The source Wada olive (`#505423`) is restored as the semantic color for
+  protected or allocated money. Navy remains the hero, brand, interaction,
+  and informational/on-track color; green now means actual favorable outcomes
+  and inflows; parchment marks protected or reallocated money; ordinary
+  positive account balances and other factual totals are neutral.
+- Spending keeps its navy monthly hero. Ordinary Plan budgets now share one
+  warm parchment-tinted planning sheet with flat tappable rows and internal
+  dividers. Their remaining amounts and draining columns are olive, while
+  reallocated Savings/Reserve segments are parchment. Future retains its
+  separate Savings and Reserves cards.
+- Spending Room now separates the projected-low composition into olive cash
+  buffer, parchment Spending Reserves, and green extra room. Its projected-low
+  total remains neutral when protected; a gap remains red.
+- Shared standalone cards use a more visible standard shadow and subtle edge
+  highlight. Dashboard heroes add a close contact shadow plus the strongest
+  ambient shadow. The tested animated Wada background and custom Liquid Glass
+  month/Plan controls were removed after physical-device review: the movement
+  read as haze, adjacent controls showed unwanted blue spill, and the screen
+  still lacked meaningful depth.
+- Validation: generic-device Debug builds pass. Simulator execution was not
+  requested.
+
 ## Current handoff — Account and menu management (2026-09-05)
 
 - The Settings landing screen is now a separate query-free view. Opening the

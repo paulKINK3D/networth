@@ -726,7 +726,7 @@ struct SpendingHistoryView: View {
                     fundingMetric(
                         title: "Funded",
                         amount: display.fundedHeadline,
-                        color: NwAppColors.primary,
+                        color: NwAppColors.protected,
                         alignment: .leading
                     )
                     Spacer(minLength: NwSpacing.md)
@@ -931,13 +931,13 @@ struct SpendingHistoryView: View {
             return (
                 amount,
                 amount.isNegative
-                    ? NwAppColors.liability : NwAppColors.primary
+                    ? NwAppColors.liability : NwAppColors.textPrimary
             )
         }
         return (
             account.balance,
             account.balance.isNegative
-                ? NwAppColors.liability : NwAppColors.primary
+                ? NwAppColors.liability : NwAppColors.textPrimary
         )
     }
 
@@ -1029,16 +1029,24 @@ struct SpendingHistoryView: View {
                         }
                     }
                 } else {
-                    VStack(spacing: NwSpacing.sm) {
-                        ForEach(ordinaryBudgets) { budget in
+                    VStack(spacing: 0) {
+                        ForEach(
+                            Array(ordinaryBudgets.enumerated()),
+                            id: \.element.id
+                        ) { index, budget in
                             budgetCard(
                                 budget,
                                 month: month,
                                 periodStartMonth: period.startMonth,
                                 model: model
                             )
+                            if index < ordinaryBudgets.count - 1 {
+                                Divider()
+                                    .padding(.leading, NwSpacing.md)
+                            }
                         }
                     }
+                    .nwCardStyle(.planning, padding: 0)
                 }
             }
         }
@@ -1073,7 +1081,9 @@ struct SpendingHistoryView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityAddTraits(
+                    isSelected ? .isSelected : []
+                )
             }
         }
         .padding(NwSpacing.xs)
@@ -1196,7 +1206,7 @@ struct SpendingHistoryView: View {
                     .font(NwTypography.headline)
                     .foregroundStyle(
                         balance.isNegative
-                            ? NwAppColors.budgetOver : NwAppColors.primary
+                            ? NwAppColors.budgetOver : NwAppColors.protected
                     )
                     .monospacedDigit()
                     .lineLimit(1)
@@ -1372,7 +1382,7 @@ struct SpendingHistoryView: View {
                 .foregroundStyle(
                     budget.isOver
                         ? NwAppColors.budgetOver
-                        : NwAppColors.primary
+                        : NwAppColors.protected
                 )
                 .monospacedDigit()
                 .lineLimit(1)
@@ -1394,14 +1404,6 @@ struct SpendingHistoryView: View {
         }
         .padding(NwSpacing.md)
         .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
-        .background(
-            RoundedRectangle(
-                cornerRadius: NwCornerRadius.card,
-                style: .continuous
-            )
-            .fill(NwAppColors.cardSurface)
-        )
-        .nwShadow(NwShadow.card)
         .contentShape(Rectangle())
     }
 
@@ -1425,14 +1427,7 @@ struct SpendingHistoryView: View {
         }
         .padding(NwSpacing.md)
         .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
-        .background(
-            RoundedRectangle(
-                cornerRadius: NwCornerRadius.card,
-                style: .continuous
-            )
-            .fill(NwAppColors.cardSurface)
-        )
-        .nwShadow(NwShadow.card)
+        .nwCardStyle(.planning, padding: 0)
         .contentShape(Rectangle())
     }
 

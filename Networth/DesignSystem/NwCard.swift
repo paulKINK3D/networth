@@ -3,6 +3,7 @@ import SwiftUI
 public enum NwCardStyle {
     case primary
     case secondary
+    case planning
     case glass
     case inset
 }
@@ -33,6 +34,9 @@ public struct NwCardModifier: ViewModifier {
         case .secondary:
             RoundedRectangle(cornerRadius: NwCornerRadius.card, style: .continuous)
                 .fill(NwAppColors.cardSurfaceAlt)
+        case .planning:
+            RoundedRectangle(cornerRadius: NwCornerRadius.card, style: .continuous)
+                .fill(NwAppColors.planningSurface)
         case .glass:
             RoundedRectangle(cornerRadius: NwCornerRadius.card, style: .continuous)
                 .fill(NwAppColors.primary.opacity(NwOpacity.glassFill))
@@ -46,18 +50,24 @@ public struct NwCardModifier: ViewModifier {
 
     @ViewBuilder private var border: some View {
         switch style {
-        case .inset, .glass:
+        case .inset:
             RoundedRectangle(cornerRadius: NwCornerRadius.card, style: .continuous)
                 .stroke(NwAppColors.strokeSubtle, lineWidth: NwStrokeWidth.thin)
-        case .primary, .secondary:
+        case .glass:
             EmptyView()
+        case .primary, .secondary, .planning:
+            RoundedRectangle(cornerRadius: NwCornerRadius.card, style: .continuous)
+                .stroke(
+                    NwAppColors.surfaceHighlight,
+                    lineWidth: NwStrokeWidth.hairline
+                )
         }
     }
 
     private var shadow: NwShadow.Spec {
         switch style {
         case .primary:   return NwShadow.card
-        case .secondary: return NwShadow.card
+        case .secondary, .planning: return NwShadow.card
         case .glass, .inset: return NwShadow.none
         }
     }
@@ -108,12 +118,23 @@ public struct NwDashboardHero<Content: View>: View {
                 )
                 .fill(NwAppColors.dashboardHeroSurface)
             )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: NwCornerRadius.card,
+                    style: .continuous
+                )
+                .stroke(
+                    Color.white.opacity(0.16),
+                    lineWidth: NwStrokeWidth.hairline
+                )
+            }
             .clipShape(
                 RoundedRectangle(
                     cornerRadius: NwCornerRadius.card,
                     style: .continuous
                 )
             )
-            .nwShadow(NwShadow.card)
+            .nwShadow(NwShadow.heroContact)
+            .nwShadow(NwShadow.elevated)
     }
 }

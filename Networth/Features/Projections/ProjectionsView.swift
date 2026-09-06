@@ -1202,7 +1202,9 @@ private struct SafeToSpendDetailSheet: View {
                             estimate.projectedLowBalance,
                             variant: .large,
                             showCents: false,
-                            color: lowPointStatusColor
+                            color: estimate.protectedCashGap.isZero
+                                ? NwAppColors.textPrimary
+                                : NwAppColors.liability
                         )
                     }
 
@@ -1212,7 +1214,7 @@ private struct SafeToSpendDetailSheet: View {
                         compositionLegend(
                             "Cash buffer",
                             amount: estimate.minimumCashBuffer,
-                            color: NwAppColors.primary
+                            color: NwAppColors.protected
                         )
                         if estimate.spendingReserve > .zero {
                             compositionLegend(
@@ -1256,19 +1258,35 @@ private struct SafeToSpendDetailSheet: View {
             let width = geometry.size.width
             if estimate.protectedCashGap.isZero {
                 let total = max(estimate.projectedLowBalance.doubleValue, 0.01)
-                let protectedShare = min(max(
-                    estimate.protectedCashMinimum.doubleValue / total,
+                let segmentCount = 1
+                    + (estimate.spendingReserve > .zero ? 1 : 0)
+                    + (!estimate.amount.isZero ? 1 : 0)
+                let contentWidth = max(
+                    width - (CGFloat(segmentCount - 1) * 2),
                     0
-                ), 1)
-                let protectedWidth = width * protectedShare
+                )
                 HStack(spacing: 2) {
                     Capsule()
-                        .fill(NwAppColors.primary)
-                        .frame(width: protectedWidth)
+                        .fill(NwAppColors.protected)
+                        .frame(width: contentWidth * min(
+                            max(estimate.minimumCashBuffer.doubleValue / total, 0),
+                            1
+                        ))
+                    if estimate.spendingReserve > .zero {
+                        Capsule()
+                            .fill(NwAppColors.gold)
+                            .frame(width: contentWidth * min(
+                                max(estimate.spendingReserve.doubleValue / total, 0),
+                                1
+                            ))
+                    }
                     if !estimate.amount.isZero {
                         Capsule()
                             .fill(NwAppColors.positive)
-                            .frame(width: max(width - protectedWidth - 2, 0))
+                            .frame(width: contentWidth * min(
+                                max(estimate.amount.doubleValue / total, 0),
+                                1
+                            ))
                     }
                 }
             } else {
@@ -1508,7 +1526,7 @@ private struct SafeToSpendDetailSheet: View {
 
     private var lowPointStatusColor: Color {
         if !estimate.protectedCashGap.isZero { return NwAppColors.liability }
-        return NwAppColors.positive
+        return NwAppColors.protected
     }
 
     private var cashMovements: [CashMovement] {

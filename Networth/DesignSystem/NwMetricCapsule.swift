@@ -193,7 +193,7 @@ public struct NwDrainingBudgetColumn: View {
                         .fill(NwAppColors.budgetReallocated)
                         .frame(height: geometry.size.height * reallocated)
                     Rectangle()
-                        .fill(NwAppColors.budgetOnTrack)
+                        .fill(NwAppColors.budgetRemaining)
                         .frame(height: geometry.size.height * remaining)
                 }
                 .clipShape(Capsule())

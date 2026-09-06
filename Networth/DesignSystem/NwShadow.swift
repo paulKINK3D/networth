@@ -8,8 +8,24 @@ public enum NwShadow {
         public let y: CGFloat
     }
 
-    public static let card    = Spec(color: .black.opacity(0.06), radius: 8,  x: 0, y: 4)
-    public static let elevated = Spec(color: .black.opacity(0.12), radius: 16, x: 0, y: 8)
+    public static let card = Spec(
+        color: .black.opacity(0.10),
+        radius: 12,
+        x: 0,
+        y: 6
+    )
+    public static let elevated = Spec(
+        color: .black.opacity(0.16),
+        radius: 18,
+        x: 0,
+        y: 10
+    )
+    public static let heroContact = Spec(
+        color: .black.opacity(0.16),
+        radius: 3,
+        x: 0,
+        y: 2
+    )
     public static let none    = Spec(color: .clear, radius: 0, x: 0, y: 0)
 }
 
