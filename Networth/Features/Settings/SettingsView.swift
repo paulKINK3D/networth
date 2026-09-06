@@ -124,6 +124,7 @@ struct SettingsHomeView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.large)
         .sheet(isPresented: $showingGoalAccounts) {
@@ -755,6 +756,7 @@ struct SettingsView: View {
                 }
             }
         }
+            .nwScreenBackground()
             .navigationTitle(page.title)
             .navigationBarTitleDisplayMode(.inline)
             .task {
@@ -1510,6 +1512,7 @@ private struct PlaidBankingConnectionSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Banking Connections")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1766,7 +1769,7 @@ struct PlaidClassificationReviewSheet: View {
             }
         }
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
+        .nwScreenBackground()
     }
 
     private func reviewSectionHeader(
@@ -2232,6 +2235,7 @@ struct GroupedHistoricalReviewSheet: View {
                             clusterRow(cluster)
                         }
                     }
+                    .nwScreenBackground()
                     .listStyle(.insetGrouped)
                 }
             }
@@ -2536,6 +2540,7 @@ struct ClusterTransactionsDetail: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(cluster.displayName.isEmpty
             ? "Transactions"
             : cluster.displayName)
@@ -2669,6 +2674,7 @@ struct TransactionSearchReclassifySheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .searchable(
                 text: $searchText,
                 placement: .navigationBarDrawer(displayMode: .always),
@@ -2881,6 +2887,7 @@ struct ClusterBatchEditSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Edit Group")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -4618,6 +4625,7 @@ private struct CanonicalPayeePicker: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Contact")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
@@ -4823,6 +4831,7 @@ private struct PlaidCategoryPicker: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Category")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
@@ -4943,6 +4952,7 @@ private struct PlaidNewCategorySheet: View {
                         .onSubmit(save)
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("New Category")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
@@ -5072,6 +5082,7 @@ private struct PlaidConnectionSheet: View {
                     .disabled(isWorking || (!container.hasPlaidBackendToken && backendToken.trimmed.isEmpty))
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Connect Investments")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -5270,6 +5281,7 @@ struct PlaidAccountReviewSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Review Accounts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -5503,6 +5515,7 @@ private struct PlaidMatchSourceSheet: View {
                 }
                 .buttonStyle(.plain)
             }
+            .nwScreenBackground()
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -5621,6 +5634,7 @@ private struct ClaudeDataAccessView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Claude.ai Access")
         .navigationBarTitleDisplayMode(.inline)
         .alert(
@@ -5962,6 +5976,7 @@ struct RecurringExpectationForm: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle(
                 expectation == nil ? "New Recurring" : "Edit Recurring"
             )

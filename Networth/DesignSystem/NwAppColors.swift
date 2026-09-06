@@ -61,9 +61,16 @@ public enum NwAppColors {
         light: 0xEBD999,
         dark: 0x453D21
     )
+    /// Parchment reads as mud when darkened, so dark mode uses the neutral
+    /// card surface and lets `planningStroke` carry the planning identity.
     public static let planningSurface = adaptiveColor(
-        light: 0xF3F0DF,
-        dark: 0x2F3024
+        light: 0xF8F5E3,
+        dark: 0x1C1C1E
+    )
+    /// Gold edge that defines the planning surface against the warm field.
+    public static let planningStroke = adaptiveColor(
+        light: 0xE0D097,
+        dark: 0x6E6238
     )
     public static let featuredText = primary
 
@@ -71,6 +78,16 @@ public enum NwAppColors {
     public static let dashboardHeroSurface = adaptiveColor(
         light: 0x003E83,
         dark: 0x102A4D
+    )
+    /// Lit-surface gradient endpoints for the hero; midpoint stays on
+    /// `dashboardHeroSurface` so foreground contrast is unchanged.
+    public static let dashboardHeroSurfaceTop = adaptiveColor(
+        light: 0x0B4C97,
+        dark: 0x16345C
+    )
+    public static let dashboardHeroSurfaceBottom = adaptiveColor(
+        light: 0x00356E,
+        dark: 0x0A1F3D
     )
     public static let dashboardHeroText = adaptiveColor(
         light: 0xFFFFFF,
@@ -81,8 +98,8 @@ public enum NwAppColors {
         dark: 0xC7D8EB
     )
     public static let dashboardHeroTrack = adaptiveColor(
-        light: 0x164D82,
-        dark: 0x244363
+        light: 0x2E5F9E,
+        dark: 0x33567E
     )
     public static let dashboardHeroProgress = adaptiveColor(
         light: 0xC7E1FA,
@@ -109,7 +126,12 @@ public enum NwAppColors {
         dark: 0xFF9271
     )
     // Surfaces
-    public static let background       = Color(.systemGroupedBackground)
+    /// Warm neutral field from the parchment family — sits below every card
+    /// surface in value and keeps a hue gap from `planningSurface`.
+    public static let background = adaptiveColor(
+        light: 0xEFEDE6,
+        dark: 0x131210
+    )
     public static let cardSurface      = Color(.secondarySystemGroupedBackground)
     public static let cardSurfaceAlt   = Color(.tertiarySystemGroupedBackground)
     public static let strokeSubtle     = Color(white: 0.5).opacity(0.18)

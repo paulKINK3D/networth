@@ -70,6 +70,7 @@ struct GoalSheetShell<Content: View>: View {
     var body: some View {
         NavigationStack {
             List { content }
+                .nwScreenBackground()
                 .navigationTitle(title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -224,6 +225,7 @@ struct GoalEditorSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle(editedRow == nil ? "New Goal" : "Edit Goal")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -950,6 +952,7 @@ struct GoalAllocateSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Goal Allocations")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1269,6 +1272,7 @@ struct GoalTransferRequestSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Pending Transfer")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

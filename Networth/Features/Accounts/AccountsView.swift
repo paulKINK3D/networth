@@ -243,6 +243,7 @@ struct AccountsView: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Accounts")
             .sheet(isPresented: $showingPlaidReview) {
                 PlaidAccountReviewSheet().environment(container)
@@ -1706,6 +1707,7 @@ struct FinancialAccountTransactionHistoryView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(
             categoryFilter?.name
                 ?? (account == nil ? "All Transactions" : "Transactions")
@@ -1831,6 +1833,7 @@ private struct TransactionCategoryFilterSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Category")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Search categories")
@@ -2409,6 +2412,7 @@ struct CanonicalPayeeListView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Contacts")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search contacts")
@@ -2551,6 +2555,7 @@ private struct CanonicalPayeeEditor: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(payee == nil ? "New Contact" : "Edit Contact")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -2617,6 +2622,7 @@ private struct CanonicalAliasEditor: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Edit Alias")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -2668,6 +2674,7 @@ struct CanonicalCategoryListView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Categories")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Search categories")
@@ -2773,6 +2780,7 @@ private struct CanonicalCategoryEditor: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(
             category == nil ? "New Category" : "Edit Category"
         )

@@ -1674,6 +1674,7 @@ private struct ProjectionAssumptionsSheet: View {
                         .font(NwTypography.callout)
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Projection Details")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -1807,6 +1808,7 @@ private struct MonthlySpendSampleDetail: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(sample.month.formatted(.dateTime.month(.wide).year()))
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -1859,6 +1861,7 @@ private struct MonthlySpendCategoryDetail: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(category.categoryName)
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -2532,6 +2535,7 @@ private struct PaycheckScheduleSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Paycheck Schedule")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

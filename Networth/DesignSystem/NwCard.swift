@@ -55,7 +55,13 @@ public struct NwCardModifier: ViewModifier {
                 .stroke(NwAppColors.strokeSubtle, lineWidth: NwStrokeWidth.thin)
         case .glass:
             EmptyView()
-        case .primary, .secondary, .planning:
+        case .planning:
+            RoundedRectangle(cornerRadius: NwCornerRadius.card, style: .continuous)
+                .stroke(
+                    NwAppColors.planningStroke,
+                    lineWidth: NwStrokeWidth.thin
+                )
+        case .primary, .secondary:
             RoundedRectangle(cornerRadius: NwCornerRadius.card, style: .continuous)
                 .stroke(
                     NwAppColors.surfaceHighlight,
@@ -76,6 +82,14 @@ public struct NwCardModifier: ViewModifier {
 extension View {
     public func nwCardStyle(_ style: NwCardStyle, padding: CGFloat = NwSpacing.cardPadding) -> some View {
         modifier(NwCardModifier(style: style, padding: padding))
+    }
+
+    /// Places scrollable content (List, Form) on the warm theme field instead
+    /// of the cool system grouped background.
+    public func nwScreenBackground() -> some View {
+        self
+            .scrollContentBackground(.hidden)
+            .background(NwAppColors.background.ignoresSafeArea())
     }
 }
 
@@ -116,7 +130,28 @@ public struct NwDashboardHero<Content: View>: View {
                     cornerRadius: NwCornerRadius.card,
                     style: .continuous
                 )
-                .fill(NwAppColors.dashboardHeroSurface)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            NwAppColors.dashboardHeroSurfaceTop,
+                            NwAppColors.dashboardHeroSurfaceBottom
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(alignment: .topTrailing) {
+                    Circle()
+                        .stroke(Color.white.opacity(0.05), lineWidth: 44)
+                        .frame(width: 300, height: 300)
+                        .offset(x: 90, y: -90)
+                }
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: NwCornerRadius.card,
+                        style: .continuous
+                    )
+                )
             )
             .overlay {
                 RoundedRectangle(

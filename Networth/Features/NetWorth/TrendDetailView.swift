@@ -252,6 +252,7 @@ struct TrendDetailView: View {
 #endif
 
             }
+            .nwScreenBackground()
             .navigationTitle("About Net Worth")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -496,6 +497,7 @@ struct AccountTrendDetailView: View {
                 Text("Account not found.").foregroundStyle(.secondary)
             }
         }
+        .nwScreenBackground()
         .navigationTitle(accountName)
         .navigationBarTitleDisplayMode(.inline)
     }

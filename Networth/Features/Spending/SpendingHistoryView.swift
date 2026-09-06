@@ -1940,6 +1940,7 @@ struct SpendingGroupManagementSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Spending Groups")
             .navigationBarTitleDisplayMode(.inline)
             .alert(item: $activeAlert) { alert in
@@ -2243,6 +2244,7 @@ private struct SpendingGroupEditorSheet: View {
                     TextField("Group name", text: $name)
                 }
             }
+            .nwScreenBackground()
             .navigationTitle(target.identity == nil ? "Add Group" : "Rename Group")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2455,6 +2457,7 @@ private struct SpendingGroupCategoryList: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(group.name)
         .navigationBarTitleDisplayMode(.inline)
         .alert(
@@ -2870,6 +2873,7 @@ private struct CategoryGroupPickerSheet: View {
                     .disabled(group.identity == currentGroupIdentity)
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Move \(category.name)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -3469,6 +3473,7 @@ private struct SavingsTransferPromptDetailSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Savings transfer")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -3620,7 +3625,7 @@ private struct SavingsBucketDetailSheet: View {
                 NwSpacing.screenPadding,
                 for: .scrollContent
             )
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwScreenBackground()
             .safeAreaInset(edge: .bottom) {
                 Button("Add Savings") {
                     choiceEditor = SavingsChoiceEditorTarget(
@@ -4027,6 +4032,7 @@ private struct SavingsChoiceEditorSheet: View {
                     TextField("What did you skip?", text: $note)
                 }
             }
+            .nwScreenBackground()
             .navigationTitle(
                 target.choiceID == nil ? "Add Savings" : "Edit Savings"
             )
@@ -4690,8 +4696,7 @@ private struct SpendingArchivedSinkingFundsView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwScreenBackground()
         .navigationTitle("Archived Reserves")
         .navigationBarTitleDisplayMode(.inline)
         .alert(item: $deleteTarget) { target in
@@ -4817,6 +4822,7 @@ private struct SpendingSinkingFundEditorSheet: View {
                     )
                 }
             }
+            .nwScreenBackground()
             .navigationTitle(fundID == nil ? "Add Reserve" : "Edit Reserve")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -5413,6 +5419,7 @@ private struct SpendingSinkingFundDetailView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(
             activityMonth.startDate().formatted(
                 .dateTime.month(.wide).year()
@@ -5733,6 +5740,7 @@ private struct SpendingReserveAssignmentSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle(fundName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -5858,6 +5866,7 @@ private struct SpendingSinkingFundPurchasePicker: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle("Choose Purchase")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -6086,6 +6095,7 @@ struct SpendingGroupDetailSheet: View {
                     }
                 }
             }
+            .nwScreenBackground()
             .navigationTitle(
                 "\(selection.group.name) · \(selection.periodLabel)"
             )
@@ -6134,6 +6144,7 @@ private struct SavingsChoiceMonthDetailView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Savings Choices")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -6159,6 +6170,7 @@ private struct ReserveAssignmentMonthDetailView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle("Reserve Assignments")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -6220,6 +6232,7 @@ private struct SpendingCategoryMonthDetailView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(category.name)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadRows)

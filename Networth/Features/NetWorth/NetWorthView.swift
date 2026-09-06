@@ -848,6 +848,7 @@ private struct NetWorthCategoryDetailView: View {
                 }
             }
         }
+        .nwScreenBackground()
         .navigationTitle(category.title)
         .navigationBarTitleDisplayMode(.inline)
     }
