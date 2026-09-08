@@ -138,6 +138,17 @@ When at least four complete monthly samples are available, Safe to Spend also sh
 - **Settings** opens from the shared top-right management menu on every tab (backend access, Face ID toggle, sync controls, manual asset CRUD) — not a tab. The freed tab slot remains intentionally empty.
 - No transactions tab; transaction detail remains available through existing account and Spending drill-downs.
 - No privacy mode (tap-to-blur amounts) in v1.
+- **Known inconsistency — sub-view presentation (noted 2026-09-07):** detail
+  and editor surfaces currently appear at least three different ways:
+  full-page pushes (swipe-from-right), full-height bottom sheets (some
+  containing their own internal navigation, e.g. Settings), and partial-height
+  detent sheets. No rule says which context gets which, so similar actions
+  present differently across the app. A future pass should define the mapping
+  (e.g. drill-into-data pushes; create/edit tasks sheet; quick adjustments
+  detent) and migrate outliers. Until then, match the presentation style of
+  the nearest similar existing flow rather than choosing freely. The full
+  site-by-site audit, rule refinements, and suggested execution order are
+  recorded in `docs/2026-09-07-presentation-style-audit.md`.
 
 ### Design Language
 - **Theme:** "Deep Slate" — the primary navy (`#003E83`), parchment

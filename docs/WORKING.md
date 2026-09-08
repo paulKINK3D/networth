@@ -1,5 +1,41 @@
 # WORKING
 
+## Current handoff — Overlay glass and presentation audit (2026-09-07)
+
+- **Surface hierarchy is now: tabs show the crisp washed photo; pushed
+  drill-downs show a frosted echo of it; every sheet is translucent system
+  glass over the presenting screen and never paints its own field.** The
+  frosted echo is a real blur with user controls (Detail Blur, Detail Fade)
+  beside the tab Fade slider in Settings → Privacy & App → Background Photo;
+  those two sliders affect only pushed screens. Sheets have no knobs.
+- Implementation is design-system-centered: the field photo travels through
+  the environment from the app root; `nwFrostedFieldBackground()` derives the
+  frosted field; `nwGlassSheet()` (material + suppression of interior field
+  backgrounds) and `nwHalfSheet()` (glass + medium/large detents) mark
+  overlays. The two shared scaffolds (`NwModalLayout`, `GoalSheetShell`)
+  apply glass automatically; the remaining sheet-root views apply it
+  directly. The two dual-presented editors (contact/category) are glassed at
+  their sheet call sites only so their pushed form keeps the frosted field.
+- Six quick-adjustment sheets became half-height: account rename, Minimum
+  Cash Buffer, Cash Accounts, Goal Accounts, move-category picker, and the
+  monthly budget amount editor. The currency keypad keeps its fixed height
+  but is now glass.
+- A full presentation-style audit (115 sites) is recorded in
+  `docs/2026-09-07-presentation-style-audit.md`: place → push, task → sheet,
+  quick adjustment → partial sheet; ~22 outliers, dominated by dashboard
+  cards opening sheets over drill-down places. `PLAN.md` links it from
+  Information Architecture.
+- **Next up (user-confirmed on device):** the Settings Planning rows expose
+  the audit's worst inconsistency directly — Spending opens a full sheet,
+  Projections pushes, Goals opens a half sheet. Unify these first (audit
+  recommendation: push within the Settings stack), then take the dashboard
+  sheet→push batch (Spending group/Savings/Reserves cards; Projection
+  Details, Spending Room, card-payment detail; goal detail).
+- Validation: generic-device Debug builds pass and the build is installed on
+  the physical iPhone. Glass sheets and half-height sheets confirmed on
+  device; the Settings Planning inconsistency above was found during that
+  review. Simulator execution was not requested.
+
 ## Current handoff — Optional background photo (2026-09-07)
 
 - The four top-level tabs can show an optional user-chosen photo behind their
