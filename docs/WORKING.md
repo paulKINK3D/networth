@@ -1,5 +1,28 @@
 # WORKING
 
+## Current handoff — Optional background photo (2026-09-07)
+
+- The four top-level tabs can show an optional user-chosen photo behind their
+  scrolling content. The photo is pinned (content scrolls over it, which keeps
+  scrolling visibly obvious in the gaps between cards) and sits under a
+  field-color wash whose strength the user tunes with a slider (20–95%,
+  default 60%). Both appearances adapt automatically because the wash uses the
+  adaptive field color.
+- Settings → Privacy & App → Background Photo holds Choose/Replace Photo (the
+  system photo picker), the Wash slider, and Remove Photo. The picked photo is
+  downscaled and stored device-locally in the app container only — it is
+  re-pickable presentation preference, never CloudKit data. The wash strength
+  persists in UserDefaults.
+- Implementation: `BackgroundPhotoStore` service plus the shared
+  `nwFieldBackground(photo:wash:)` design-system modifier applied on each
+  tab root's scroll view. Drill-down screens intentionally keep the flat
+  field for now.
+- The direction was chosen on device after rejecting hosted and local HTML
+  mockups of tonal-patch, geometric, contour, and dot textures; the
+  user-photo wash was confirmed directly in the installed app.
+- Validation: generic-device Debug build passes and the build was installed
+  and approved on the physical iPhone. Simulator execution was not requested.
+
 ## Current handoff — Review badge and locked-device refresh (2026-09-07)
 
 - The app icon badge now mirrors the review-inbox count (everything requiring
