@@ -3462,6 +3462,10 @@ struct PlaidTransactionReviewEditor: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .tint(NwAppColors.textSecondary)
+            // Menu pickers wrap long selected values ("Investment
+            // contribution") even with room to spare; ideal width keeps
+            // the label on one line.
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(NwSpacing.md)
         .onChange(of: treatment) {
@@ -3962,6 +3966,7 @@ struct PlaidTransactionReviewEditor: View {
                             .labelsHidden()
                             .pickerStyle(.menu)
                             .tint(NwAppColors.textSecondary)
+                            .fixedSize(horizontal: true, vertical: false)
                             .onChange(of: draft.treatment) {
                                 if draft.treatment != .ordinarySpending {
                                     draft.expenseFunding = .monthlyBudget
