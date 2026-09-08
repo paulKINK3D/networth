@@ -32,7 +32,7 @@ public struct NwModalLayout<Content: View>: View {
                 .padding(NwSpacing.screenPadding)
             }
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwGlassSheet()
     }
 }
 
@@ -78,7 +78,6 @@ public struct NwModalHeaderView: View {
         }
         .padding(.horizontal, NwSpacing.screenPadding)
         .padding(.vertical, NwSpacing.md)
-        .background(NwAppColors.background)
     }
 }
 
@@ -98,7 +97,6 @@ public struct NwModalActionBar<Leading: View, Trailing: View>: View {
         }
         .padding(.horizontal, NwSpacing.screenPadding)
         .padding(.vertical, NwSpacing.md)
-        .background(NwAppColors.background)
     }
 }
 

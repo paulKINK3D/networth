@@ -79,7 +79,9 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showingTutorial) {
-            TutorialView().environment(container)
+            TutorialView()
+                .environment(container)
+                .nwGlassSheet()
         }
         .sheet(isPresented: $showingSettings, onDismiss: {
             settingsPage = nil
@@ -101,6 +103,7 @@ struct ContentView: View {
                     }
                 }
             }
+            .nwGlassSheet()
         }
         .alert("Save failed",
                isPresented: Binding(get: { alertPayload != nil }, set: { if !$0 { alertPayload = nil } })) {
@@ -108,6 +111,14 @@ struct ContentView: View {
         } message: {
             Text(alertPayload?.message ?? "")
         }
+        // Outermost so sheets attached in this chain (Settings, Tutorial)
+        // inherit the photo; applied inside them it never reaches the sheet
+        // content.
+        .environment(\.nwFieldPhoto, container.backgroundPhotoStore.image)
+        .environment(\.nwFieldFrost, NwFrostStyle(
+            blur: container.backgroundPhotoStore.frostBlur,
+            wash: container.backgroundPhotoStore.frostWash
+        ))
     }
 
     /// The app's single data-refresh trigger: unlock and foregrounding both

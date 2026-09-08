@@ -303,7 +303,7 @@ struct SettingsView: View {
                     }
                     if container.backgroundPhotoStore.hasPhoto {
                         HStack(spacing: NwSpacing.md) {
-                            Text("Wash")
+                            Text("Fade")
                             Slider(
                                 value: Binding(
                                     get: {
@@ -316,6 +316,38 @@ struct SettingsView: View {
                                     }
                                 ),
                                 in: 0.2...0.95
+                            )
+                        }
+                        HStack(spacing: NwSpacing.md) {
+                            Text("Detail Blur")
+                            Slider(
+                                value: Binding(
+                                    get: {
+                                        container.backgroundPhotoStore
+                                            .frostBlur
+                                    },
+                                    set: {
+                                        container.backgroundPhotoStore
+                                            .frostBlur = $0
+                                    }
+                                ),
+                                in: 0...40
+                            )
+                        }
+                        HStack(spacing: NwSpacing.md) {
+                            Text("Detail Fade")
+                            Slider(
+                                value: Binding(
+                                    get: {
+                                        container.backgroundPhotoStore
+                                            .frostWash
+                                    },
+                                    set: {
+                                        container.backgroundPhotoStore
+                                            .frostWash = $0
+                                    }
+                                ),
+                                in: 0...0.9
                             )
                         }
                         Button("Remove Photo", role: .destructive) {
@@ -1259,6 +1291,7 @@ private struct ProjectionCashAccountsSheet: View {
                 }
             }
         }
+        .nwHalfSheet()
     }
 
     private var cashAccounts: [CachedFinancialAccount] {
@@ -1343,6 +1376,7 @@ private struct MinimumCashBufferSheet: View {
             let amount = Money(milliunits: settingsList.first?.dipThresholdMilliunits ?? 500_000)
             amountText = CurrencyInputFormatter.text(for: amount)
         }
+        .nwHalfSheet()
     }
 
     private func save() {
@@ -1429,7 +1463,7 @@ private struct PlaidBackendTokenSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .nwHalfSheet()
     }
 
     private var trimmedToken: String {
@@ -1596,6 +1630,7 @@ private struct PlaidBankingConnectionSheet: View {
                 Text("Disconnects \(item.institutionName) from Networth only.")
             }
         }
+        .nwGlassSheet()
     }
 
     private func prepareBackendToken() async throws {
@@ -1723,7 +1758,7 @@ struct PlaidClassificationReviewSheet: View {
                     reviewInbox
                 }
             }
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwFrostedFieldBackground()
             .navigationTitle("Review Transactions")
             .navigationBarTitleDisplayMode(.inline)
             .task {
@@ -1754,6 +1789,7 @@ struct PlaidClassificationReviewSheet: View {
                 Text(confirmError ?? "Try again.")
             }
         }
+        .nwGlassSheet()
     }
 
     private var reviewInbox: some View {
@@ -2980,6 +3016,7 @@ struct ClusterBatchEditSheet: View {
                 rebuildOptionCaches()
             }
         }
+        .nwGlassSheet()
     }
 
     private var canApprove: Bool {
@@ -3238,7 +3275,7 @@ struct PlaidTransactionReviewEditor: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .navigationTitle(
             transaction.requiresReview
                 ? "Review Transaction"
@@ -5045,6 +5082,7 @@ private struct PlaidNewCategorySheet: View {
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     private func save() {
@@ -5156,6 +5194,7 @@ private struct PlaidConnectionSheet: View {
             }
             .interactiveDismissDisabled(isWorking)
         }
+        .nwGlassSheet()
     }
 
     private func beginConnection() {
@@ -5369,6 +5408,7 @@ struct PlaidAccountReviewSheet: View {
                 )
             }
         }
+        .nwGlassSheet()
     }
 
     private var accountNameResolver: AccountDisplayNameResolver {
@@ -5588,7 +5628,7 @@ private struct PlaidMatchSourceSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .nwHalfSheet()
     }
 }
 
@@ -6064,6 +6104,7 @@ struct RecurringExpectationForm: View {
             }
             .onAppear(perform: load)
         }
+        .nwGlassSheet()
     }
 
     private var parsedAmount: Money? {

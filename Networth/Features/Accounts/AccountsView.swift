@@ -825,7 +825,7 @@ struct LinkedIBRLoanDetailView: View {
             .padding(.horizontal, NwSpacing.screenPadding)
             .padding(.vertical, NwSpacing.lg)
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .navigationTitle("Student Loans")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadHistoryDatesIfNeeded)
@@ -971,6 +971,7 @@ struct AccountNicknameSheet: View {
                 .buttonStyle(NwSecondaryButtonStyle())
             }
         }
+        .presentationDetents([.medium, .large])
     }
 
     private var cleanedName: String {
@@ -1180,7 +1181,7 @@ struct FinancialAccountDetailView: View {
             .padding(.horizontal, NwSpacing.screenPadding)
             .padding(.vertical, NwSpacing.lg)
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1849,6 +1850,7 @@ private struct TransactionCategoryFilterSheet: View {
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     private func filterButton(
@@ -2143,7 +2145,7 @@ struct AccountDetailView: View {
             .padding(.horizontal, NwSpacing.screenPadding)
             .padding(.vertical, NwSpacing.lg)
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .navigationTitle(account.name)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: account.id) {
@@ -2319,7 +2321,7 @@ struct ManualAssetDetailView: View {
             .padding(.horizontal, NwSpacing.screenPadding)
             .padding(.vertical, NwSpacing.lg)
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .navigationTitle(asset.name)
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showingUpdate) {
@@ -2430,6 +2432,7 @@ struct CanonicalPayeeListView: View {
             NavigationStack {
                 CanonicalPayeeEditor(payee: nil)
             }
+            .nwGlassSheet()
         }
     }
 
@@ -2692,6 +2695,7 @@ struct CanonicalCategoryListView: View {
             NavigationStack {
                 CanonicalCategoryEditor(category: nil)
             }
+            .nwGlassSheet()
         }
     }
 

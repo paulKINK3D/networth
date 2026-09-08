@@ -248,7 +248,7 @@ private struct NwCurrencyEntryPadSheet: View {
         .padding(.horizontal, NwSpacing.screenPadding)
         .padding(.top, NwSpacing.xxl)
         .padding(.bottom, NwSpacing.md)
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwGlassSheet()
         .onAppear {
             draft = precision.formatted(value)
             replaceOnNextNumber = !draft.isEmpty

@@ -261,6 +261,7 @@ struct TrendDetailView: View {
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     @ViewBuilder

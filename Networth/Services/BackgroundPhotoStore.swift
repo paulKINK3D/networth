@@ -19,7 +19,23 @@ public final class BackgroundPhotoStore {
         }
     }
 
+    /// Blur radius for the frosted echo on drill-down and sheet screens.
+    public var frostBlur: Double {
+        didSet {
+            UserDefaults.standard.set(frostBlur, forKey: Self.frostBlurKey)
+        }
+    }
+
+    /// Field-color wash strength over the frosted echo.
+    public var frostWash: Double {
+        didSet {
+            UserDefaults.standard.set(frostWash, forKey: Self.frostWashKey)
+        }
+    }
+
     private static let washKey = "networth.backgroundPhotoWash"
+    private static let frostBlurKey = "networth.backgroundPhotoFrostBlur"
+    private static let frostWashKey = "networth.backgroundPhotoFrostWash"
     private let fileURL: URL?
     @ObservationIgnored
     private let logger = Logger(
@@ -29,9 +45,12 @@ public final class BackgroundPhotoStore {
 
     /// Pass `persisted: false` for previews and tests to stay in memory.
     public init(persisted: Bool = true) {
-        let storedWash = UserDefaults.standard
-            .object(forKey: Self.washKey) as? Double
-        washOpacity = storedWash ?? 0.6
+        let defaults = UserDefaults.standard
+        washOpacity = defaults.object(forKey: Self.washKey) as? Double ?? 0.6
+        frostBlur = defaults
+            .object(forKey: Self.frostBlurKey) as? Double ?? 18
+        frostWash = defaults
+            .object(forKey: Self.frostWashKey) as? Double ?? 0.25
         if persisted,
            let support = try? FileManager.default.url(
                for: .applicationSupportDirectory,

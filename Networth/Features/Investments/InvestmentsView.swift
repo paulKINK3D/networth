@@ -231,7 +231,7 @@ struct InvestmentsView: View {
             .padding(.horizontal, NwSpacing.screenPadding)
             .padding(.vertical, NwSpacing.lg)
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .navigationTitle(scopeTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -630,7 +630,7 @@ struct PlaidInvestmentAccountDetailView: View {
             .padding(.horizontal, NwSpacing.screenPadding)
             .padding(.vertical, NwSpacing.lg)
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

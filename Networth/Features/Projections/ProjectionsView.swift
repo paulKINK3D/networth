@@ -1157,7 +1157,7 @@ private struct SafeToSpendDetailSheet: View {
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.lg)
             }
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwFrostedFieldBackground()
             .navigationTitle("Spending Room")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1168,6 +1168,7 @@ private struct SafeToSpendDetailSheet: View {
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     private var spendingRoomHero: some View {
@@ -1688,6 +1689,7 @@ private struct ProjectionAssumptionsSheet: View {
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     @ViewBuilder
@@ -2570,6 +2572,7 @@ private struct PaycheckScheduleSheet: View {
                 Button("Cancel", role: .cancel) {}
             }
         }
+        .nwGlassSheet()
     }
 
     private func save() {

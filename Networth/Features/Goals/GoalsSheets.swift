@@ -83,6 +83,7 @@ struct GoalSheetShell<Content: View>: View {
                     }
                 }
         }
+        .nwGlassSheet()
     }
 }
 
@@ -256,6 +257,7 @@ struct GoalEditorSheet: View {
                 closingButtons
             }
         }
+        .nwGlassSheet()
     }
 
     @ViewBuilder
@@ -516,6 +518,7 @@ struct GoalReservePickerSheet: View {
                 }
             }
         }
+        .presentationDetents([.medium, .large])
     }
 
     private func accountRow(
@@ -993,6 +996,7 @@ struct GoalAllocateSheet: View {
             }
         }
         .presentationDetents([.large])
+        .nwGlassSheet()
     }
 
     private func allocation(for goalId: UUID) -> Money {
@@ -1308,9 +1312,11 @@ struct GoalTransferRequestSheet: View {
                             onSaved: { dismiss() }
                         )
                     }
+                    .nwGlassSheet()
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     private var accountNameResolver: AccountDisplayNameResolver {

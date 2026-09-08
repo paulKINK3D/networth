@@ -85,11 +85,12 @@ extension View {
     }
 
     /// Places scrollable content (List, Form) on the warm theme field instead
-    /// of the cool system grouped background.
+    /// of the cool system grouped background. When a field photo is set, the
+    /// screen gets its frosted echo rather than the crisp tab treatment.
     public func nwScreenBackground() -> some View {
         self
             .scrollContentBackground(.hidden)
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwFrostedFieldBackground()
     }
 }
 

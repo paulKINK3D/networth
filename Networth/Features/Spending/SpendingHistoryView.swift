@@ -1597,7 +1597,7 @@ private struct SpendingTrendsView: View {
             .padding(.horizontal, NwSpacing.screenPadding)
             .padding(.vertical, NwSpacing.lg)
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .navigationTitle("Spending Trends")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $detailSelection) { selection in
@@ -1988,6 +1988,7 @@ struct SpendingGroupManagementSheet: View {
             }
             .environment(container)
         }
+        .nwGlassSheet()
     }
 
     private var groups: [ManagedSpendingGroup] {
@@ -2276,6 +2277,7 @@ private struct SpendingGroupEditorSheet: View {
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     private var cleanedName: String {
@@ -2832,6 +2834,7 @@ private struct SpendingGroupBudgetEditorSheet: View {
                 }
             }
         }
+        .nwHalfSheet()
     }
 
     private var target: Money? {
@@ -2891,6 +2894,7 @@ private struct CategoryGroupPickerSheet: View {
                 }
             }
         }
+        .nwHalfSheet()
     }
 }
 
@@ -3491,6 +3495,7 @@ private struct SavingsTransferPromptDetailSheet: View {
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     private var monthLabel: String {
@@ -3686,6 +3691,7 @@ private struct SavingsBucketDetailSheet: View {
         } message: {
             Text(persistenceError ?? "Please try again.")
         }
+        .nwGlassSheet()
     }
 
     private var budgetMonth: BudgetMonth {
@@ -4077,6 +4083,7 @@ private struct SavingsChoiceEditorSheet: View {
                 Text(persistenceError ?? "Please try again.")
             }
         }
+        .nwGlassSheet()
     }
 
     private var amount: Money? {
@@ -4378,7 +4385,7 @@ private struct SpendingSinkingFundsSheet: View {
                 .padding(.top, NwSpacing.xl)
                 .padding(.bottom, NwSpacing.xl)
             }
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwFrostedFieldBackground()
             .navigationTitle("Reserves")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -4462,6 +4469,7 @@ private struct SpendingSinkingFundsSheet: View {
             SpendingSinkingFundEditorSheet(fundID: target.fundID)
                 .environment(container)
         }
+        .nwGlassSheet()
     }
 
     private var activeFunds: [DurableSpendingSinkingFund] {
@@ -4864,6 +4872,7 @@ private struct SpendingSinkingFundEditorSheet: View {
             }
         }
         .onAppear(perform: load)
+        .nwGlassSheet()
     }
 
     private var cleanedName: String {
@@ -5047,7 +5056,7 @@ private struct SpendingSinkingFundDetailView: View {
                     .frame(maxWidth: .infinity, minHeight: 240)
             }
         }
-        .background(NwAppColors.background.ignoresSafeArea())
+        .nwFrostedFieldBackground()
         .safeAreaInset(edge: .bottom) {
             if fund?.archived == false {
                 reserveActionCards
@@ -5779,6 +5788,7 @@ private struct SpendingReserveAssignmentSheet: View {
                 Text(persistenceError ?? "Please try again.")
             }
         }
+        .nwGlassSheet()
     }
 
     private var amount: Money {
@@ -5907,6 +5917,7 @@ private struct SpendingSinkingFundPurchasePicker: View {
                 Text(persistenceError ?? "Please try again.")
             }
         }
+        .nwGlassSheet()
     }
 
     private var fundName: String {
@@ -6115,6 +6126,7 @@ struct SpendingGroupDetailSheet: View {
                 }
             }
         }
+        .nwGlassSheet()
     }
 
     private var savingsChoiceTotal: Money {
