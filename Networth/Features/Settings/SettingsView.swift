@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import PhotosUI
 import NetworthCore
 import struct LinkKit.LinkTokenConfiguration
 import struct LinkKit.Plaid
@@ -176,6 +177,7 @@ struct SettingsView: View {
     @State private var manualAssetToDelete: DurableManualAsset?
     @State private var showingRemovePlaidConfirm = false
     @State private var plaidActionError: String?
+    @State private var backgroundPhotoItem: PhotosPickerItem?
 
     private let page: SettingsPage
 
@@ -269,6 +271,59 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("Notifications")
+                }
+
+                Section {
+                    PhotosPicker(
+                        selection: $backgroundPhotoItem,
+                        matching: .images
+                    ) {
+                        Label {
+                            Text(
+                                container.backgroundPhotoStore.hasPhoto
+                                    ? "Replace Photo"
+                                    : "Choose Photo"
+                            )
+                        } icon: {
+                            NwIcon.photo.image
+                                .foregroundStyle(NwAppColors.primary)
+                        }
+                    }
+                    .onChange(of: backgroundPhotoItem) { _, item in
+                        guard let item else { return }
+                        Task {
+                            if let data = try? await item.loadTransferable(
+                                type: Data.self
+                            ) {
+                                container.backgroundPhotoStore
+                                    .setPhoto(data: data)
+                            }
+                            backgroundPhotoItem = nil
+                        }
+                    }
+                    if container.backgroundPhotoStore.hasPhoto {
+                        HStack(spacing: NwSpacing.md) {
+                            Text("Wash")
+                            Slider(
+                                value: Binding(
+                                    get: {
+                                        container.backgroundPhotoStore
+                                            .washOpacity
+                                    },
+                                    set: {
+                                        container.backgroundPhotoStore
+                                            .washOpacity = $0
+                                    }
+                                ),
+                                in: 0.2...0.95
+                            )
+                        }
+                        Button("Remove Photo", role: .destructive) {
+                            container.backgroundPhotoStore.removePhoto()
+                        }
+                    }
+                } header: {
+                    Text("Background Photo")
                 }
             }
 

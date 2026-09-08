@@ -22,6 +22,7 @@ public final class AppContainerController {
     public let ibrLoanHistorySettingsStore: any IBRLoanHistorySettingsStore
     public let reviewNotificationService:
         any ReviewNotificationScheduling
+    public let backgroundPhotoStore = BackgroundPhotoStore()
 
     public var unlocked: Bool = false
     public var bootstrapped: Bool = false

@@ -147,7 +147,10 @@ struct ProjectionsView: View {
                     // a placeholder until the first cache fill lands.
                     NwLoadingState("Building projections…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(NwAppColors.background.ignoresSafeArea())
+                        .nwFieldBackground(
+                            photo: container.backgroundPhotoStore.image,
+                            wash: container.backgroundPhotoStore.washOpacity
+                        )
                         .navigationTitle("Projections")
                 }
             }
@@ -247,7 +250,10 @@ struct ProjectionsView: View {
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.lg)
             }
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwFieldBackground(
+                photo: container.backgroundPhotoStore.image,
+                wash: container.backgroundPhotoStore.washOpacity
+            )
             .navigationTitle("Projections")
             .refreshable { await container.syncNow() }
             .sheet(

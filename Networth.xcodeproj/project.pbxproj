@@ -35,6 +35,8 @@
 		87720F33E363A78B86DD9F18 /* NwCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31B717C7AC171203E3E7B365 /* NwCard.swift */; };
 		8B9F5A11520C943DFC50D116 /* PlaidClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82874A066698E71B6954CECE /* PlaidClient.swift */; };
 		905A9CF8744CAACA046F3E4A /* BiometricGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45A47DBE9CC8F8A78C358517 /* BiometricGate.swift */; };
+		A7B10C02000000000000F002 /* BackgroundPhotoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B10C01000000000000F001 /* BackgroundPhotoStore.swift */; };
+		A7B10C04000000000000F004 /* NwPhotoField.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B10C03000000000000F003 /* NwPhotoField.swift */; };
 		9642C4CEA19AACF74E2912E1 /* NwOpacity.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8C1A997FB5850B75A958DC6 /* NwOpacity.swift */; };
 		96C93BE57140EAAA73D0A9F2 /* NwMetricCapsule.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1494F096231BE331CA16038 /* NwMetricCapsule.swift */; };
 		9DBC96FBA2CA0EFA7C9987CC /* NwTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52297C05613F92A328100ACC /* NwTypography.swift */; };
@@ -98,6 +100,8 @@
 		3A988782B660CD247AC4D6D5 /* ManualAssetForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualAssetForm.swift; sourceTree = "<group>"; };
 		42FB5FDDDD46ED86502D6E77 /* AppContainerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContainerController.swift; sourceTree = "<group>"; };
 		45A47DBE9CC8F8A78C358517 /* BiometricGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BiometricGate.swift; sourceTree = "<group>"; };
+		A7B10C01000000000000F001 /* BackgroundPhotoStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPhotoStore.swift; sourceTree = "<group>"; };
+		A7B10C03000000000000F003 /* NwPhotoField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwPhotoField.swift; sourceTree = "<group>"; };
 		46AEE1E8769FD0365DCFDACD /* SecretStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretStore.swift; sourceTree = "<group>"; };
 		52297C05613F92A328100ACC /* NwTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwTypography.swift; sourceTree = "<group>"; };
 		7A3ACC0B9996D2E60E099AC7 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -222,6 +226,7 @@
 				B1494F096231BE331CA16038 /* NwMetricCapsule.swift */,
 				B66EA7CEF2BC6F62A7993567 /* NwModalLayout.swift */,
 				B8C1A997FB5850B75A958DC6 /* NwOpacity.swift */,
+				A7B10C03000000000000F003 /* NwPhotoField.swift */,
 				D75EBC64A5ACE3D8F8759B9D /* NwSectionHeader.swift */,
 				2061551C22EB23F2FF7357D1 /* NwShadow.swift */,
 				300932C2BAB1914688FD35B9 /* NwSpacing.swift */,
@@ -329,6 +334,7 @@
 		EA5325EC93F61A9335612E77 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				A7B10C01000000000000F001 /* BackgroundPhotoStore.swift */,
 				45A47DBE9CC8F8A78C358517 /* BiometricGate.swift */,
 				35CD0B8D2A7E4D60A18E0001 /* CanonicalDirectoryService.swift */,
 				E3C821A49A8355A2751B47DC /* ConnectivityMonitor.swift */,
@@ -458,6 +464,8 @@
 				1A234079B2796F4093178A28 /* AccountsView.swift in Sources */,
 				8614121B6B87ABFFECC4F72E /* AppContainerController.swift in Sources */,
 				905A9CF8744CAACA046F3E4A /* BiometricGate.swift in Sources */,
+				A7B10C02000000000000F002 /* BackgroundPhotoStore.swift in Sources */,
+				A7B10C04000000000000F004 /* NwPhotoField.swift in Sources */,
 				35CD0B8D2A7E4D60A18E0002 /* CanonicalDirectoryService.swift in Sources */,
 				59DC4BA6A3F6BF7CF6CB39C6 /* LocalCacheModels.swift in Sources */,
 				5B9406B5529A3ADDF1C837C8 /* CardSettingsForm.swift in Sources */,

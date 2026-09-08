@@ -231,7 +231,10 @@ struct SpendingHistoryView: View {
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.md)
             }
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwFieldBackground(
+                photo: container.backgroundPhotoStore.image,
+                wash: container.backgroundPhotoStore.washOpacity
+            )
             .navigationTitle("Spending")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

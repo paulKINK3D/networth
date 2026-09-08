@@ -43,7 +43,10 @@ struct GoalsView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwFieldBackground(
+                photo: container.backgroundPhotoStore.image,
+                wash: container.backgroundPhotoStore.washOpacity
+            )
             .navigationTitle("Goals")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -48,6 +48,7 @@ public enum NwIcon: String, Sendable {
     case keychain     = "key.fill"
     case cloud        = "icloud"
     case notification = "bell.fill"
+    case photo        = "photo"
     case connected    = "link.circle.fill"
     case history      = "clock.arrow.circlepath"
     case chevron      = "chevron.right"

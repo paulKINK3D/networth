@@ -187,7 +187,10 @@ struct NetWorthView: View {
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.lg)
             }
-            .background(NwAppColors.background.ignoresSafeArea())
+            .nwFieldBackground(
+                photo: container.backgroundPhotoStore.image,
+                wash: container.backgroundPhotoStore.washOpacity
+            )
             .navigationTitle("Net Worth")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
