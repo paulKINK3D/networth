@@ -1,5 +1,30 @@
 # WORKING
 
+## Current handoff — Review badge and locked-device refresh (2026-09-07)
+
+- The app icon badge now mirrors the review-inbox count (everything requiring
+  review, regardless of origin). It refreshes after every sync, when the app
+  enters the background, and when the Review Notifications toggle changes;
+  disabling the toggle clears the badge. Badge permission is requested
+  alongside alerts and sound, and an existing alert-and-sound-only grant
+  upgrades silently on the next badge update without re-prompting.
+- The private backend token's Keychain protection changed from `WhenUnlocked`
+  to `AfterFirstUnlock` so opportunistic background app refresh can sync while
+  the device is locked (after the first unlock since boot). Saves now
+  re-apply the accessibility class, and a one-time migration re-saves the
+  existing token on the next foreground configuration. This supersedes the
+  2026-09-05 statement below that Keychain accessibility was unchanged.
+- A background sync still posts a notification only when it discovers newly
+  imported review transactions, but the banner and its badge now report the
+  full outstanding review count so the replaced notification never
+  understates the queue. Copy: `N transactions are waiting for your review.`
+- The transaction Type menu pickers in the review editor and split-line rows
+  no longer wrap long values such as `Investment contribution`; the selected
+  label stays on one line.
+- Validation: generic-device Debug and Release builds pass and the app-test
+  target compiles, including extended badge coverage in the background-refresh
+  test. Simulator execution was not requested.
+
 ## Current handoff — Deep Slate color and depth hierarchy (2026-09-05)
 
 - Active branch: `codex/olive-color-story`.
