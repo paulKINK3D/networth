@@ -20,6 +20,7 @@ public protocol ReviewNotificationScheduling: Sendable {
     func preference() async -> ReviewNotificationPreference
     func setEnabled(_ enabled: Bool) async -> ReviewNotificationPreference
     func postNewReviewNotification(count: Int) async
+    func updateBadge(pendingReviewCount: Int) async
 }
 
 @MainActor
@@ -53,7 +54,9 @@ public final class SystemReviewNotificationService:
     ) async -> ReviewNotificationPreference {
         if enabled {
             let granted = (try? await UNUserNotificationCenter.current()
-                .requestAuthorization(options: [.alert, .sound])) ?? false
+                .requestAuthorization(
+                    options: [.alert, .sound, .badge]
+                )) ?? false
             defaults.set(granted, forKey: Self.enabledKey)
         } else {
             defaults.set(false, forKey: Self.enabledKey)
@@ -69,9 +72,10 @@ public final class SystemReviewNotificationService:
         let content = UNMutableNotificationContent()
         content.title = "Transactions ready to review"
         content.body = count == 1
-            ? "1 new transaction needs your review."
-            : "\(count) new transactions need your review."
+            ? "1 transaction is waiting for your review."
+            : "\(count) transactions are waiting for your review."
         content.sound = .default
+        content.badge = NSNumber(value: count)
         content.userInfo = [Self.routeKey: Self.reviewRoute]
         let request = UNNotificationRequest(
             identifier: Self.requestIdentifier,
@@ -79,6 +83,23 @@ public final class SystemReviewNotificationService:
             trigger: nil
         )
         try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    public func updateBadge(pendingReviewCount: Int) async {
+        let center = UNUserNotificationCenter.current()
+        let target = (await preference()).enabled ? pendingReviewCount : 0
+        if target > 0 {
+            // Grants issued before badges were requested lack the badge
+            // setting; re-requesting while already authorized upgrades the
+            // grant without showing a prompt.
+            let settings = await center.notificationSettings()
+            if settings.badgeSetting != .enabled {
+                _ = try? await center.requestAuthorization(
+                    options: [.alert, .sound, .badge]
+                )
+            }
+        }
+        try? await center.setBadgeCount(target)
     }
 
     private static func isAuthorized(
@@ -100,6 +121,7 @@ public final class InMemoryReviewNotificationService:
     ReviewNotificationScheduling {
     public var currentPreference: ReviewNotificationPreference
     public var postedCounts: [Int] = []
+    public var badgeCounts: [Int] = []
 
     public init(
         enabled: Bool = false,
@@ -128,6 +150,12 @@ public final class InMemoryReviewNotificationService:
     public func postNewReviewNotification(count: Int) async {
         guard currentPreference.enabled, count > 0 else { return }
         postedCounts.append(count)
+    }
+
+    public func updateBadge(pendingReviewCount: Int) async {
+        badgeCounts.append(
+            currentPreference.enabled ? pendingReviewCount : 0
+        )
     }
 }
 
@@ -272,6 +300,9 @@ struct NetworthApp: App {
                         // long the app has been away.
                         container.markBackgrounded()
                         NetworthBackgroundRefresh.schedule()
+                        // Reviews completed this session must reach the icon
+                        // badge before the app leaves the foreground.
+                        Task { await container.refreshReviewBadge() }
                     case .inactive:
                         break
                     @unknown default:

@@ -801,27 +801,39 @@ public final class AppContainerController {
         if let settings = try? modelContainer.mainContext.fetch(descriptor).first {
             selectedBudgetId = settings.selectedBudgetId
         }
+        await refreshReviewBadge()
         return allSucceeded
     }
 
     /// Runs the same read-only Plaid refresh without entering the interactive
-    /// Face ID bootstrap path. Keychain access remains `WhenUnlocked`; if iOS
-    /// launches this task while the device is locked, configuration fails
-    /// closed and the normal foreground refresh remains the fallback.
+    /// Face ID bootstrap path. The backend token is keychain-protected as
+    /// `AfterFirstUnlock`, so this works on a locked device after the first
+    /// unlock since boot; before that, configuration fails closed and the
+    /// normal foreground refresh remains the fallback.
     @discardableResult
     public func performBackgroundRefresh() async -> Bool {
         guard await configurePlaidBackendAccess() else { return false }
         let priorReviewIDs = pendingNewReviewTransactionIDs()
         guard await syncNow(), !Task.isCancelled else { return false }
-        let newReviewCount = pendingNewReviewTransactionIDs()
+        let discoveredNewReviews = pendingNewReviewTransactionIDs()
             .subtracting(priorReviewIDs)
-            .count
-        if newReviewCount > 0 {
+        // A newly discovered transaction triggers the notification, but the
+        // count reflects everything still waiting so the replaced banner
+        // never understates the queue.
+        if !discoveredNewReviews.isEmpty {
             await reviewNotificationService.postNewReviewNotification(
-                count: newReviewCount
+                count: pendingReviewInboxCount()
             )
         }
         return true
+    }
+
+    /// Mirrors the review-inbox count onto the app icon. The service clears
+    /// the badge whenever review notifications are disabled.
+    public func refreshReviewBadge() async {
+        await reviewNotificationService.updateBadge(
+            pendingReviewCount: pendingReviewInboxCount()
+        )
     }
 
     public func refreshReviewNotificationPreference() async {
@@ -834,6 +846,7 @@ public final class AppContainerController {
         applyReviewNotificationPreference(
             await reviewNotificationService.setEnabled(enabled)
         )
+        await refreshReviewBadge()
     }
 
     private func applyReviewNotificationPreference(
@@ -841,6 +854,17 @@ public final class AppContainerController {
     ) {
         reviewNotificationsEnabled = preference.enabled
         reviewNotificationsDenied = preference.denied
+    }
+
+    /// Everything the review inbox lists, regardless of review origin —
+    /// the badge must match what the user sees when they open the inbox.
+    private func pendingReviewInboxCount() -> Int {
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.requiresReview && !$0.deleted && !$0.pending
+            }
+        )
+        return (try? modelContainer.mainContext.fetchCount(descriptor)) ?? 0
     }
 
     private func pendingNewReviewTransactionIDs() -> Set<String> {
@@ -944,6 +968,12 @@ public final class AppContainerController {
         return URL(string: trimmed)
     }
 
+    /// One-time flag: the stored backend token predates the
+    /// `AfterFirstUnlock` keychain protection and must be re-saved once so
+    /// background refresh can read it on a locked device.
+    private static let tokenAccessibilityMigrationKey =
+        "networth.plaidTokenAfterFirstUnlockMigrated"
+
     @discardableResult
     private func configurePlaidBackendAccess() async -> Bool {
         let plaidToken: String?
@@ -954,6 +984,17 @@ public final class AppContainerController {
                 "Plaid backend secret load failed: \(error.localizedDescription, privacy: .public)"
             )
             plaidToken = nil
+        }
+        if let plaidToken, !plaidToken.isEmpty,
+           !UserDefaults.standard.bool(
+               forKey: Self.tokenAccessibilityMigrationKey
+           ),
+           (try? secretStore.save(
+               plaidToken, for: .plaidBackendBearerToken
+           )) != nil {
+            UserDefaults.standard.set(
+                true, forKey: Self.tokenAccessibilityMigrationKey
+            )
         }
         plaidBackendBaseURL = Self.configuredPlaidBackendBaseURL
         await plaidClient.configure(

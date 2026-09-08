@@ -37,19 +37,28 @@ public struct KeychainSecretStore: SecretStore {
 
     public func save(_ secret: String, for key: SecretKey) throws {
         guard let data = secret.data(using: .utf8) else { throw SecretStoreError.invalidData }
+        // `AfterFirstUnlock` (not `WhenUnlocked`) so background app refresh
+        // can read the token while the device is locked — the common state
+        // when iOS grants opportunistic refresh time.
         var attrs: [String: Any] = [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key.rawValue,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
         if synchronizable {
             attrs[kSecAttrSynchronizable as String] = kCFBooleanTrue
         }
 
-        // Update if present, otherwise add.
-        let query = attrs
-        let update: [String: Any] = [kSecValueData as String: data]
+        // Update if present, otherwise add. The update dictionary repeats the
+        // accessibility class so re-saving an existing item migrates it off
+        // the old `WhenUnlocked` protection.
+        var query = attrs
+        query.removeValue(forKey: kSecAttrAccessible as String)
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
         let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         switch updateStatus {
         case errSecSuccess:

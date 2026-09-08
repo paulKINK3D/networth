@@ -177,9 +177,19 @@ struct AppContainerTests {
 
         #expect(await container.performBackgroundRefresh())
         #expect(notificationService.postedCounts == [1])
+        #expect(notificationService.badgeCounts.last == 1)
 
         #expect(await container.performBackgroundRefresh())
         #expect(notificationService.postedCounts == [1])
+        #expect(notificationService.badgeCounts.last == 1)
+
+        let reviewed = try context.fetch(
+            FetchDescriptor<CachedFinancialTransaction>()
+        )
+        for row in reviewed { row.requiresReview = false }
+        try context.save()
+        await container.refreshReviewBadge()
+        #expect(notificationService.badgeCounts.last == 0)
     }
 
     @Test func notificationReviewRouteIsConsumedOnce() throws {
