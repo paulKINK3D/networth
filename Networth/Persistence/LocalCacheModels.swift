@@ -619,6 +619,10 @@ public final class CachedFinancialTransaction {
     public var requiresNameReview: Bool = false
     /// `historical` for the initial Plaid import; `new` thereafter.
     public var reviewOriginRaw: String = "historical"
+    /// The matched opposite leg of this transfer or card payment on another
+    /// monitored account. Derived data: recomputed every sync, cleared when
+    /// no counterpart matches.
+    public var counterpartTransactionId: String? = nil
     public var deleted: Bool
     public var updatedAt: Date
 

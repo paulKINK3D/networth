@@ -2532,29 +2532,194 @@ public final class PlaidTransactionSyncCoordinator {
         return result
     }
 
+    private struct CounterpartMatchContext {
+        let rows: [CachedFinancialTransaction]
+        let rowsByID: [String: CachedFinancialTransaction]
+        let pairs: [CounterpartPair]
+        let accountNames: [String: String]
+        let decisionByID: [String: DurableCanonicalTransactionDecision]
+    }
+
+    /// One shared computation of counterpart pairs across the full cached
+    /// history, used by the per-sync prefill pass and the user-triggered
+    /// backfill. Pure lookup — mutates nothing.
+    private func counterpartMatchContext() -> CounterpartMatchContext? {
+        let rows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate { !$0.deleted && !$0.pending }
+            )
+        )) ?? []
+        guard !rows.isEmpty else { return nil }
+        let accounts = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialAccount>(
+                predicate: #Predicate { !$0.deleted }
+            )
+        )) ?? []
+        let nicknames = (try? mainContext.fetch(
+            FetchDescriptor<DurableAccountNickname>()
+        )) ?? []
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        let nameResolver = AccountDisplayNameResolver(nicknames: nicknames)
+
+        var accountKinds: [String: FinancialAccountType] = [:]
+        var accountNames: [String: String] = [:]
+        for account in accounts {
+            guard let kind = FinancialAccountType(rawValue: account.typeRaw)
+            else { continue }
+            accountKinds[account.canonicalAccountId] = kind
+            accountNames[account.canonicalAccountId] =
+                nameResolver.name(for: account)
+        }
+
+        let candidates = rows.map { row in
+            CounterpartCandidate(
+                id: row.id,
+                accountId: row.canonicalAccountId,
+                amountMilliunits: row.amountMilliunits,
+                postedDate: row.postedDate,
+                providerDefaultTreatment:
+                    classifier.forecastTreatment(for: row.toSummary())
+            )
+        }
+        return CounterpartMatchContext(
+            rows: rows,
+            rowsByID: Dictionary(
+                uniqueKeysWithValues: rows.map { ($0.id, $0) }
+            ),
+            pairs: TransferCounterpartMatcher().matches(
+                candidates: candidates,
+                accountKinds: accountKinds
+            ),
+            accountNames: accountNames,
+            decisionByID: latestCanonicalDecisionsByTransactionID(decisions)
+        )
+    }
+
+    /// The identity a matched pair implies for one leg: the transfer-family
+    /// type plus a label naming the twin's account.
+    private func counterpartIdentity(
+        kind: CounterpartPair.Kind,
+        isOutflow: Bool,
+        twinAccountName: String
+    ) -> (treatment: TransactionType, label: String) {
+        switch kind {
+        case .cardPayment:
+            return (.cardPayment, "Payment · \(twinAccountName)")
+        case .internalTransfer:
+            return (
+                .internalTransfer,
+                isOutflow
+                    ? "Transfer to \(twinAccountName)"
+                    : "Transfer from \(twinAccountName)"
+            )
+        }
+    }
+
+    /// Pairs the two legs of transfers and card payments across monitored
+    /// accounts. Runs every sync after the canonical directory pass so the
+    /// pair identity — the correct type plus a label naming the twin's
+    /// account — wins over the generic payee prefill for rows the user has
+    /// not reviewed. Reviewed rows only receive the twin pointer.
+    private func applyCounterpartMatches() {
+        guard let context = counterpartMatchContext() else { return }
+        var pairedIds: Set<String> = []
+        for pair in context.pairs {
+            guard let outflow = context.rowsByID[pair.outflowId],
+                  let inflow = context.rowsByID[pair.inflowId]
+            else { continue }
+            pairedIds.insert(outflow.id)
+            pairedIds.insert(inflow.id)
+            outflow.counterpartTransactionId = inflow.id
+            inflow.counterpartTransactionId = outflow.id
+            applyCounterpartPrefill(
+                to: outflow, twin: inflow, kind: pair.kind,
+                isOutflow: true, context: context
+            )
+            applyCounterpartPrefill(
+                to: inflow, twin: outflow, kind: pair.kind,
+                isOutflow: false, context: context
+            )
+        }
+        for row in context.rows where row.counterpartTransactionId != nil
+            && !pairedIds.contains(row.id) {
+            row.counterpartTransactionId = nil
+        }
+    }
+
+    private func applyCounterpartPrefill(
+        to row: CachedFinancialTransaction,
+        twin: CachedFinancialTransaction,
+        kind: CounterpartPair.Kind,
+        isOutflow: Bool,
+        context: CounterpartMatchContext
+    ) {
+        guard row.requiresReview,
+              row.classificationProvenanceRaw
+                  != ClassificationProvenance.user.rawValue,
+              row.classificationProvenanceRaw
+                  != ClassificationProvenance.confirmedRule.rawValue,
+              context.decisionByID[row.externalId] == nil
+        else { return }
+        guard let twinAccountName =
+            context.accountNames[twin.canonicalAccountId]
+        else { return }
+        let identity = counterpartIdentity(
+            kind: kind,
+            isOutflow: isOutflow,
+            twinAccountName: twinAccountName
+        )
+        // The pair identity also owns the contact link. Alias evidence from
+        // generic bank descriptors ("Online Transfer / Payment: Debit")
+        // points at whichever payee was confirmed last, so the directory's
+        // resolution must not survive on matched rows — the review screen
+        // titles from the payee, not the raw display name.
+        guard let payee = resolveOrCreateCanonicalPayee(
+            named: identity.label,
+            preferredCanonicalId: nil
+        ) else { return }
+        row.payeeCanonicalId = payee.canonicalId
+        row.requiresNameReview = false
+        row.forecastTreatmentRaw = identity.treatment.rawValue
+        row.displayName = payee.name
+        row.categoryCanonicalId = nil
+        row.categoryName = nil
+        row.goalId = nil
+        row.classificationConfidenceRaw =
+            ClassificationConfidence.high.rawValue
+        row.classificationProvenanceRaw =
+            ClassificationProvenance.counterpartMatch.rawValue
+    }
+
     private func applyCurrentCanonicalState(
         reapplyDecisions: Bool = true
     ) {
         let payees = (try? mainContext.fetch(
             FetchDescriptor<DurableCanonicalPayee>()
         )) ?? []
-        guard !payees.isEmpty else { return }
-        let aliases = (try? mainContext.fetch(
-            FetchDescriptor<DurablePayeeAlias>()
-        )) ?? []
-        let decisions = (try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalTransactionDecision>()
-        )) ?? []
-        let rows = (try? mainContext.fetch(
-            FetchDescriptor<CachedFinancialTransaction>()
-        )) ?? []
-        applyCanonicalDirectory(
-            to: rows,
-            payees: payees,
-            aliasesByKey: Dictionary(grouping: aliases, by: \.aliasKey),
-            decisions: decisions,
-            reapplyDecisions: reapplyDecisions
-        )
+        if !payees.isEmpty {
+            let aliases = (try? mainContext.fetch(
+                FetchDescriptor<DurablePayeeAlias>()
+            )) ?? []
+            let decisions = (try? mainContext.fetch(
+                FetchDescriptor<DurableCanonicalTransactionDecision>()
+            )) ?? []
+            let rows = (try? mainContext.fetch(
+                FetchDescriptor<CachedFinancialTransaction>()
+            )) ?? []
+            applyCanonicalDirectory(
+                to: rows,
+                payees: payees,
+                aliasesByKey: Dictionary(grouping: aliases, by: \.aliasKey),
+                decisions: decisions,
+                reapplyDecisions: reapplyDecisions
+            )
+        }
+        // Counterpart identities re-apply after every directory pass —
+        // confirms rerun the directory without a sync, and the alias-driven
+        // prefill would otherwise revert matched rows until the next sync.
+        applyCounterpartMatches()
     }
 
     private func refreshCanonicalReviewCounts() {
@@ -2758,7 +2923,16 @@ public final class PlaidTransactionSyncCoordinator {
             return false
         }
 
-        assignAliases(for: [row], to: payee)
+        // A matched transfer's identity comes from the account relationship,
+        // not its descriptor. Generic bank descriptors ("Online Transfer /
+        // Payment: Debit") are shared by payments to many destinations, so
+        // aliasing one to a card-specific payee would mislabel every future
+        // transfer that lacks a monitored twin.
+        let identityFromCounterpart = row.counterpartTransactionId != nil
+            && (treatment == .cardPayment || treatment == .internalTransfer)
+        if !identityFromCounterpart {
+            assignAliases(for: [row], to: payee)
+        }
         let externalId = row.externalId
         let decisions = (try? mainContext.fetch(
             FetchDescriptor<DurableCanonicalTransactionDecision>(
@@ -3271,6 +3445,20 @@ public final class PlaidTransactionSyncCoordinator {
                $0.canonicalId == preferredCanonicalId
            }) {
             if payee.name != name {
+                // A name that exactly matches a different existing contact
+                // links to that contact instead of renaming this one. A
+                // stale editor otherwise renames a shared contact into a
+                // duplicate, relabeling every transaction attached to it.
+                let requested =
+                    FinancialTransactionSummary.normalizedDescription(name)
+                let existing = payees.filter {
+                    $0.canonicalId != preferredCanonicalId
+                        && !$0.archived
+                        && FinancialTransactionSummary.normalizedDescription(
+                            $0.name
+                        ) == requested
+                }
+                if existing.count == 1 { return existing[0] }
                 payee.name = name
                 payee.userEdited = true
                 payee.updatedAt = .now

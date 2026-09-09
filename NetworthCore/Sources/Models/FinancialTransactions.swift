@@ -168,6 +168,9 @@ public enum ClassificationProvenance: String, Codable, Sendable {
     case user
     case confirmedRule
     case historicalMatch
+    /// Prefilled from the opposite side of a matched two-account movement
+    /// (card payment or internal transfer).
+    case counterpartMatch
     case plaidEnrichment
     case appleModel
     case claude

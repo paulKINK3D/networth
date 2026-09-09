@@ -3394,6 +3394,43 @@ struct PlaidTransactionReviewEditor: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            if let twin = counterpartTwin {
+                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                    reviewSectionTitle("Matched Transaction")
+                    NwCard(style: .primary) {
+                        VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(twin.displayName)
+                                    .font(NwTypography.bodyEmphasis)
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                                    .lineLimit(1)
+                                Spacer()
+                                NwAmountText(
+                                    Money(milliunits: twin.amountMilliunits),
+                                    variant: .body,
+                                    showCents: true,
+                                    color: twin.amountMilliunits < 0
+                                        ? NwAppColors.liability
+                                        : NwAppColors.positive
+                                )
+                            }
+
+                            Text(twin.postedDate.formatted(
+                                date: .abbreviated,
+                                time: .omitted
+                            ))
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(NwAppColors.textSecondary)
+
+                            Text(accountLabel(for: twin))
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+
             VStack(alignment: .leading, spacing: NwSpacing.sm) {
                 reviewSectionTitle("Classification")
                 classificationControls
@@ -4587,6 +4624,7 @@ struct PlaidTransactionReviewEditor: View {
                     "The transaction could not be saved. Check its classification, then try again."
                 return
             }
+            confirmCounterpartIfEligible(savedTreatment: storedTreatment)
         }
         onSaved()
         if dismissAfterSave {
@@ -4601,6 +4639,43 @@ struct PlaidTransactionReviewEditor: View {
             for: item,
             financialAccounts: financialAccounts,
             accountNicknames: accountNicknames
+        )
+    }
+
+    /// The matched opposite leg of this transfer or card payment, when the
+    /// sync pass linked one.
+    private var counterpartTwin: CachedFinancialTransaction? {
+        guard let twinId = transaction.counterpartTransactionId else {
+            return nil
+        }
+        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate { $0.id == twinId && !$0.deleted }
+        )
+        descriptor.fetchLimit = 1
+        return try? container.modelContainer.mainContext
+            .fetch(descriptor).first
+    }
+
+    /// Confirming one leg of a matched pair confirms the twin with its own
+    /// prefilled identity, so the movement leaves the review queue together.
+    /// Skipped when the user reclassified away from the transfer family or
+    /// the twin's prefill disagrees — the pair was wrong, so the twin keeps
+    /// its own review. Best-effort: a failure leaves the twin queued.
+    private func confirmCounterpartIfEligible(
+        savedTreatment: ForecastTreatment
+    ) {
+        guard savedTreatment == .cardPayment
+                || savedTreatment == .internalTransfer,
+              let twin = counterpartTwin,
+              twin.requiresReview,
+              twin.forecastTreatment == savedTreatment
+        else { return }
+        _ = container.confirmPlaidTransaction(
+            id: twin.id,
+            displayName: twin.displayName,
+            payeeCanonicalId: twin.payeeCanonicalId,
+            categoryName: nil,
+            treatment: savedTreatment
         )
     }
 
