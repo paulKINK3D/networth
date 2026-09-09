@@ -24,7 +24,7 @@ enum SpendingGroupSetup {
     static let unassignedName = "Unassigned"
     static let investmentReportingIdentity =
         "networth:investment-contributions"
-    static let investmentReportingName = "Investment Contributions"
+    static let investmentReportingName = "Investing"
 
     private struct RetiredDefault {
         let identity: String
