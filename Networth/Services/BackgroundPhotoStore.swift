@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import CoreImage
 import os
 
 /// Device-local store for the optional user-chosen field photo shown behind
@@ -10,6 +11,12 @@ import os
 @Observable
 public final class BackgroundPhotoStore {
     public private(set) var image: UIImage?
+
+    /// Frosted echo rendered once per photo/blur change. Screens must show
+    /// this bitmap directly — a live SwiftUI `.blur` background modifier
+    /// re-renders every frame and can wedge the layout pass into an
+    /// unbounded loop.
+    public private(set) var frostedImage: UIImage?
 
     /// Field-color wash strength over the photo (0 = full photo, 1 = flat
     /// field). Device-local preference alongside the photo itself.
@@ -23,6 +30,7 @@ public final class BackgroundPhotoStore {
     public var frostBlur: Double {
         didSet {
             UserDefaults.standard.set(frostBlur, forKey: Self.frostBlurKey)
+            refreshFrostedImage()
         }
     }
 
@@ -65,6 +73,7 @@ public final class BackgroundPhotoStore {
         if let fileURL, let data = try? Data(contentsOf: fileURL) {
             image = UIImage(data: data)
         }
+        refreshFrostedImage()
     }
 
     public var hasPhoto: Bool { image != nil }
@@ -74,6 +83,7 @@ public final class BackgroundPhotoStore {
         guard let picked = UIImage(data: data) else { return }
         let processed = Self.downscaled(picked, maxDimension: 1600)
         image = processed
+        refreshFrostedImage()
         guard let fileURL,
               let jpeg = processed.jpegData(compressionQuality: 0.85) else {
             return
@@ -89,8 +99,45 @@ public final class BackgroundPhotoStore {
 
     public func removePhoto() {
         image = nil
+        frostedImage = nil
         guard let fileURL else { return }
         try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    private static let frostContext = CIContext()
+
+    private func refreshFrostedImage() {
+        guard let image else {
+            frostedImage = nil
+            return
+        }
+        frostedImage = Self.frosted(image, radius: frostBlur)
+    }
+
+    /// Clamping extends the edge pixels before blurring so the crop back to
+    /// the original extent has no soft transparent border.
+    private static func frosted(
+        _ source: UIImage,
+        radius: Double
+    ) -> UIImage {
+        guard radius > 0, let input = CIImage(image: source) else {
+            return source
+        }
+        let blurred = input
+            .clampedToExtent()
+            .applyingGaussianBlur(sigma: radius)
+            .cropped(to: input.extent)
+        guard let rendered = frostContext.createCGImage(
+            blurred,
+            from: blurred.extent
+        ) else {
+            return source
+        }
+        return UIImage(
+            cgImage: rendered,
+            scale: source.scale,
+            orientation: source.imageOrientation
+        )
     }
 
     private static func downscaled(

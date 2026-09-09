@@ -1036,10 +1036,14 @@ struct FinancialAccountDetailView: View {
     init(account: CachedFinancialAccount) {
         self.account = account
         let id = account.canonicalAccountId
+        // Quantized to start-of-day so re-inits build an IDENTICAL query.
+        // A `.now`-based cutoff changes on every init, so SwiftUI re-registers
+        // the @Query each time the parent re-creates this view — on iOS 27
+        // that invalidation cycle never settles and freezes the screen.
         let cutoff = Calendar.current.date(
             byAdding: .day,
             value: -30,
-            to: .now
+            to: Calendar.current.startOfDay(for: .now)
         ) ?? .distantPast
         var recentDescriptor = FetchDescriptor<CachedFinancialTransaction>(
             predicate: #Predicate<CachedFinancialTransaction> {
@@ -1136,7 +1140,7 @@ struct FinancialAccountDetailView: View {
                         } else {
                             ForEach(visible) { transaction in
                                 NavigationLink {
-                                    PlaidTransactionReviewEditor(
+                                    PlaidTransactionReviewDestination(
                                         transaction: transaction,
                                         dismissAfterSave: true,
                                         onSaved: {}
@@ -1241,6 +1245,13 @@ struct FinancialAccountDetailView: View {
             && account.currentBalanceMilliunits != nil
         let canUseForProjections = account.type.isCashLike
         let hasCardForecast = account.type == .creditCard
+        // Capture the toggle states as plain values here. A Binding whose
+        // get reads @Query results is re-invoked during SwiftUI's own graph
+        // update, and on iOS 27 that read re-dirties the graph, wedging the
+        // screen in an endless update loop.
+        let shownOnSpending = isShownOnSpending
+        let goalsBacked = backsGoals
+        let projectionsIncluded = includedInProjections
 
         if canShowOnSpending || canBackGoals || canUseForProjections
             || hasCardForecast {
@@ -1253,7 +1264,7 @@ struct FinancialAccountDetailView: View {
                             Toggle(
                                 "Show on Spending",
                                 isOn: Binding(
-                                    get: { isShownOnSpending },
+                                    get: { shownOnSpending },
                                     set: { setShownOnSpending($0) }
                                 )
                             )
@@ -1271,7 +1282,7 @@ struct FinancialAccountDetailView: View {
                             Toggle(
                                 "Back Goals",
                                 isOn: Binding(
-                                    get: { backsGoals },
+                                    get: { goalsBacked },
                                     set: { setBacksGoals($0) }
                                 )
                             )
@@ -1284,7 +1295,7 @@ struct FinancialAccountDetailView: View {
                         }
 
                         if canUseForProjections {
-                            if backsGoals {
+                            if goalsBacked {
                                 LabeledContent(
                                     "Projection Cash",
                                     value: "Excluded by Goals"
@@ -1294,7 +1305,7 @@ struct FinancialAccountDetailView: View {
                                 Toggle(
                                     "Include in Projections",
                                     isOn: Binding(
-                                        get: { includedInProjections },
+                                        get: { projectionsIncluded },
                                         set: { setIncludedInProjections($0) }
                                     )
                                 )
@@ -1663,7 +1674,7 @@ struct FinancialAccountTransactionHistoryView: View {
 
             ForEach(transactions) { transaction in
                 NavigationLink {
-                    PlaidTransactionReviewEditor(
+                    PlaidTransactionReviewDestination(
                         transaction: transaction,
                         dismissAfterSave: true,
                         onSaved: restartLoad
@@ -2028,10 +2039,12 @@ struct AccountDetailView: View {
     init(account: CachedAccount) {
         self.account = account
         let id = account.id
+        // Start-of-day cutoff keeps the @Query identical across re-inits;
+        // see FinancialAccountDetailView.init.
         let cutoff = Calendar.current.date(
             byAdding: .day,
             value: -30,
-            to: .now
+            to: Calendar.current.startOfDay(for: .now)
         ) ?? .distantPast
         var recentDescriptor = FetchDescriptor<CachedTransaction>(
             predicate: #Predicate<CachedTransaction> {

@@ -2349,10 +2349,16 @@ private struct SpendingGroupCategoryList: View {
         List {
             if !isUnassignedList {
                 Section {
+                    // Capture toggle states as plain values: a Binding get
+                    // that reads @Query results re-runs during SwiftUI's own
+                    // graph update and can wedge iOS 27 in an endless loop.
+                    let budgetEnabled = activeBudgetRule?.enabled == true
+                    let automaticRemainder = isAutomaticRemainder
+                    let savingsBucket = isSavingsBucket
                     Toggle(
                         "Include in Budget",
                         isOn: Binding(
-                            get: { activeBudgetRule?.enabled == true },
+                            get: { budgetEnabled },
                             set: { enabled in
                                 setBudgetEnabled(enabled)
                             }
@@ -2390,7 +2396,7 @@ private struct SpendingGroupCategoryList: View {
                         Toggle(
                             "Automatic Remainder",
                             isOn: Binding(
-                                get: { isAutomaticRemainder },
+                                get: { automaticRemainder },
                                 set: { enabled in
                                     setAutomaticRemainder(enabled)
                                 }
@@ -2400,7 +2406,7 @@ private struct SpendingGroupCategoryList: View {
                         Toggle(
                             "Use as Savings Bucket",
                             isOn: Binding(
-                                get: { isSavingsBucket },
+                                get: { savingsBucket },
                                 set: { enabled in
                                     setSavingsBucket(enabled)
                                 }
@@ -6225,7 +6231,7 @@ private struct SpendingCategoryMonthDetailView: View {
             Section(periodLabel) {
                 ForEach(monthTransactions, id: \.id) { row in
                     NavigationLink {
-                        PlaidTransactionReviewEditor(
+                        PlaidTransactionReviewDestination(
                             transaction: row,
                             dismissAfterSave: true,
                             onSaved: loadRows

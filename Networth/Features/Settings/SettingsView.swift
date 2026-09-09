@@ -1902,7 +1902,7 @@ struct PlaidClassificationReviewSheet: View {
     ) -> some View {
         let readiness = reviewReadiness(for: transaction)
         return NavigationLink {
-            PlaidTransactionReviewEditor(
+            PlaidTransactionReviewDestination(
                 transaction: transaction,
                 dismissAfterSave: true,
                 onSaved: {
@@ -2610,7 +2610,7 @@ struct ClusterTransactionsDetail: View {
                     }
                     .buttonStyle(.borderless)
                     NavigationLink {
-                        PlaidTransactionReviewEditor(
+                        PlaidTransactionReviewDestination(
                             transaction: row,
                             dismissAfterSave: true,
                             onSaved: {
@@ -3117,6 +3117,24 @@ private enum ExpenseFundingChoice: Hashable {
     case goal(UUID)
 }
 
+/// Lazy stand-in for list rows: NavigationLink builds its destination value
+/// inside every row, and the editor's many queries and drafts make that value
+/// expensive enough to hang long lists. Rows carry this wrapper instead; the
+/// editor itself is only built when a row is pushed.
+struct PlaidTransactionReviewDestination: View {
+    let transaction: CachedFinancialTransaction
+    var dismissAfterSave = false
+    let onSaved: () -> Void
+
+    var body: some View {
+        PlaidTransactionReviewEditor(
+            transaction: transaction,
+            dismissAfterSave: dismissAfterSave,
+            onSaved: onSaved
+        )
+    }
+}
+
 struct PlaidTransactionReviewEditor: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     @SwiftUI.Environment(AppContainerController.self) private var container
@@ -3141,7 +3159,6 @@ struct PlaidTransactionReviewEditor: View {
         [DurableSavingsTransferAssignment]
     @Query private var canonicalDecisions:
         [DurableCanonicalTransactionDecision]
-    @Query private var allTransactions: [CachedFinancialTransaction]
     let transaction: CachedFinancialTransaction
     let dismissAfterSave: Bool
     let canMovePrevious: Bool
@@ -3872,14 +3889,24 @@ struct PlaidTransactionReviewEditor: View {
     private func recognizedSavingsByMonth(
         groupIdentity: String
     ) -> [BudgetMonth: Money] {
-        let transactionByID = Dictionary(
-            uniqueKeysWithValues: allTransactions.map { ($0.id, $0) }
+        let assignments = latestSavingsAssignments.values.filter {
+            $0.active && $0.savingsGroupIdentity == groupIdentity
+        }
+        guard !assignments.isEmpty else { return [:] }
+        // Targeted fetch, not a standing @Query: the editor must stay cheap
+        // to construct, and only assignment-referenced rows matter here.
+        let ids = Array(Set(assignments.map(\.transactionId)))
+        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate { ids.contains($0.id) }
         )
-        return latestSavingsAssignments.values.reduce(into: [:]) {
+        let rows = (try? container.modelContainer.mainContext
+            .fetch(descriptor)) ?? []
+        let transactionByID = Dictionary(
+            uniqueKeysWithValues: rows.map { ($0.id, $0) }
+        )
+        return assignments.reduce(into: [:]) {
             result, assignment in
-            guard assignment.active,
-                  assignment.savingsGroupIdentity == groupIdentity,
-                  let row = transactionByID[assignment.transactionId],
+            guard let row = transactionByID[assignment.transactionId],
                   !row.deleted, !row.pending, !row.requiresReview else {
                 return
             }

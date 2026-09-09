@@ -114,7 +114,10 @@ struct ContentView: View {
         // Outermost so sheets attached in this chain (Settings, Tutorial)
         // inherit the photo; applied inside them it never reaches the sheet
         // content.
-        .environment(\.nwFieldPhoto, container.backgroundPhotoStore.image)
+        .environment(
+            \.nwFieldFrostedPhoto,
+            container.backgroundPhotoStore.frostedImage
+        )
         .environment(\.nwFieldFrost, NwFrostStyle(
             blur: container.backgroundPhotoStore.frostBlur,
             wash: container.backgroundPhotoStore.frostWash

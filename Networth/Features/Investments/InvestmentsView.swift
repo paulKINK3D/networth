@@ -562,10 +562,15 @@ struct PlaidInvestmentAccountDetailView: View {
 
                             if canBackGoals {
                                 Divider()
+                                // Captured value: a Binding get that reads
+                                // @Query results re-runs during SwiftUI's
+                                // graph update and can wedge iOS 27 in an
+                                // endless loop.
+                                let goalsBacked = backsGoals
                                 Toggle(
                                     "Back Goals",
                                     isOn: Binding(
-                                        get: { backsGoals },
+                                        get: { goalsBacked },
                                         set: { setBacksGoals($0) }
                                     )
                                 )

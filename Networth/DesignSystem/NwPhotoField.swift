@@ -5,12 +5,6 @@ import UIKit
 /// fixed image, which keeps scrolling visible in the gaps between cards.
 /// The user-tunable field-color wash keeps surfaces and numbers legible in
 /// both appearances.
-/// The user's field photo, injected once at the app root so any screen can
-/// derive its background from it without plumbing the store around.
-private struct NwFieldPhotoKey: EnvironmentKey {
-    static let defaultValue: UIImage? = nil
-}
-
 /// User-tunable frosted-echo treatment for drill-down and sheet screens.
 public struct NwFrostStyle: Equatable, Sendable {
     public var blur: Double
@@ -26,6 +20,14 @@ private struct NwFieldFrostKey: EnvironmentKey {
     static let defaultValue = NwFrostStyle()
 }
 
+/// Pre-blurred copy of the field photo, rendered once by the photo store.
+/// Frosted screens must show this bitmap — a live `.blur` background
+/// modifier re-renders every frame and can wedge layout into an unbounded
+/// loop that hangs the app.
+private struct NwFieldFrostedPhotoKey: EnvironmentKey {
+    static let defaultValue: UIImage? = nil
+}
+
 /// True inside a half-height glass sheet: the sheet is translucent over the
 /// presenting screen, so field backgrounds must stay clear instead of
 /// painting the frosted photo.
@@ -34,14 +36,14 @@ private struct NwGlassSheetKey: EnvironmentKey {
 }
 
 public extension EnvironmentValues {
-    var nwFieldPhoto: UIImage? {
-        get { self[NwFieldPhotoKey.self] }
-        set { self[NwFieldPhotoKey.self] = newValue }
-    }
-
     var nwFieldFrost: NwFrostStyle {
         get { self[NwFieldFrostKey.self] }
         set { self[NwFieldFrostKey.self] = newValue }
+    }
+
+    var nwFieldFrostedPhoto: UIImage? {
+        get { self[NwFieldFrostedPhotoKey.self] }
+        set { self[NwFieldFrostedPhotoKey.self] = newValue }
     }
 
     var nwGlassSheet: Bool {
@@ -50,12 +52,12 @@ public extension EnvironmentValues {
     }
 }
 
-/// Frosted echo of the field photo for drill-down screens: the photo sits
-/// under a system blur plus a light field tint, so the screen inherits the
-/// photo's tones without displaying the image itself. Falls back to the flat
-/// field when no photo is set.
+/// Frosted echo of the field photo for drill-down screens: the pre-blurred
+/// photo sits under a light field tint, so the screen inherits the photo's
+/// tones without displaying the image itself. Falls back to the flat field
+/// when no photo is set.
 private struct NwFrostedFieldModifier: ViewModifier {
-    @Environment(\.nwFieldPhoto) private var photo
+    @Environment(\.nwFieldFrostedPhoto) private var frostedPhoto
     @Environment(\.nwFieldFrost) private var frost
     @Environment(\.nwGlassSheet) private var glassSheet
 
@@ -71,22 +73,11 @@ private struct NwFrostedFieldModifier: ViewModifier {
         content.background {
             ZStack {
                 NwAppColors.background
-                if let photo {
-                    GeometryReader { geo in
-                        Image(uiImage: photo)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(
-                                width: geo.size.width,
-                                height: geo.size.height
-                            )
-                            // Overscale hides the soft edge the blur pulls
-                            // in from outside the image bounds.
-                            .scaleEffect(1 + frost.blur / 200)
-                            .blur(radius: frost.blur, opaque: true)
-                            .clipped()
-                    }
-                    NwAppColors.background.opacity(frost.wash)
+                if let frostedPhoto {
+                    NwPhotoFieldBackground(
+                        image: frostedPhoto,
+                        wash: frost.wash
+                    )
                 }
             }
             .ignoresSafeArea()
