@@ -59,6 +59,18 @@ private struct NetWorthEntry: Identifiable {
     let destination: NetWorthEntryDestination
 }
 
+// Identity-only equality: entries are navigation values, and the associated
+// model references don't need to participate in path diffing.
+extension NetWorthEntry: Hashable {
+    static func == (lhs: NetWorthEntry, rhs: NetWorthEntry) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+}
+
 private enum NetWorthEntryDestination {
     case financialAccount(CachedFinancialAccount)
     case manualAsset(DurableManualAsset)
@@ -191,6 +203,13 @@ struct NetWorthView: View {
                 photo: container.backgroundPhotoStore.image,
                 wash: container.backgroundPhotoStore.washOpacity
             )
+            .navigationDestination(for: NetWorthCategory.self) { category in
+                categoryDestination(
+                    category,
+                    entries: entries(for: category),
+                    total: amount(for: category)
+                )
+            }
             .navigationTitle("Net Worth")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -525,16 +544,14 @@ struct NetWorthView: View {
         .padding(NwSpacing.md)
     }
 
+    // Value-based navigation: an inline destination closure makes the whole
+    // pushed hierarchy a child of this ForEach row, and on iOS 27 any
+    // balance-sheet re-render then rebuilds the pushed screens in an endless
+    // layout loop that freezes the app. NavigationLink(value:) moves the
+    // pushed content out of the row and into the stack's destination table.
     private func categoryLink(_ category: NetWorthCategory) -> some View {
-        let entries = entries(for: category)
         let amount = amount(for: category)
-        return NavigationLink {
-            categoryDestination(
-                category,
-                entries: entries,
-                total: amount
-            )
-        } label: {
+        return NavigationLink(value: category) {
             HStack(spacing: NwSpacing.md) {
                 category.icon.image
                     .font(.system(size: 18, weight: .semibold))
@@ -819,10 +836,11 @@ private struct NetWorthCategoryDetailView: View {
                     Text("No contributing accounts")
                         .foregroundStyle(.secondary)
                 } else {
+                    // Value-based for the same reason as the balance-sheet
+                    // rows: keep pushed account screens out of ForEach
+                    // children (iOS 27 re-render loop).
                     ForEach(entries) { entry in
-                        NavigationLink {
-                            destination(for: entry)
-                        } label: {
+                        NavigationLink(value: entry) {
                             HStack(spacing: NwSpacing.md) {
                                 category.icon.image
                                     .foregroundStyle(
@@ -852,6 +870,9 @@ private struct NetWorthCategoryDetailView: View {
             }
         }
         .nwScreenBackground()
+        .navigationDestination(for: NetWorthEntry.self) { entry in
+            destination(for: entry)
+        }
         .navigationTitle(category.title)
         .navigationBarTitleDisplayMode(.inline)
     }
