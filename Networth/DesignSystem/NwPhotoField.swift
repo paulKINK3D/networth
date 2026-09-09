@@ -85,9 +85,29 @@ private struct NwFrostedFieldModifier: ViewModifier {
     }
 }
 
+/// Field for dense task editors that also present in glass sheets: pushed
+/// contexts keep the frosted echo, but inside a sheet the solid warm field
+/// is painted anyway so cards and chips keep surface contrast instead of
+/// sitting white-on-white on the sheet material.
+private struct NwTaskFieldModifier: ViewModifier {
+    @Environment(\.nwGlassSheet) private var glassSheet
+
+    func body(content: Content) -> some View {
+        if glassSheet {
+            content.background(NwAppColors.background.ignoresSafeArea())
+        } else {
+            content.nwFrostedFieldBackground()
+        }
+    }
+}
+
 public extension View {
     func nwFrostedFieldBackground() -> some View {
         modifier(NwFrostedFieldModifier())
+    }
+
+    func nwTaskFieldBackground() -> some View {
+        modifier(NwTaskFieldModifier())
     }
 
     /// Overlay treatment for ANY sheet: translucent glass over the

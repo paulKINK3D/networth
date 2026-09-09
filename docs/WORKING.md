@@ -1,5 +1,44 @@
 # WORKING
 
+## Current handoff — Chip-based review editor and reimbursement bulk marks (2026-09-09)
+
+- The transaction review/edit screen is redesigned around visible choices
+  instead of form rows. Type, Category, Goal, and Savings Month are wrapping
+  chip rows (`NwChoiceChip`/`NwChipFlow`/`NwChipLabel` in the design system):
+  filled navy = committed choice, navy outline = best guess awaiting an
+  explicit tap, and an `All Categories` search chip opens the existing full
+  picker. Type chips use compact labels (Transfer, Investing, Exclude,
+  Card payment); `displayName` is unchanged elsewhere.
+- Category chips list the current selection first, then merchant-history
+  suggestions (existing ranker), backfilled by the categories most often
+  confirmed on the same account (`rankScoped` variant joins decisions to the
+  account's cached transaction IDs). The old separate quick-category grid is
+  removed.
+- Contact stays a pushed search picker behind a card row with a disclosure
+  chevron (`NwDisclosureValue`). Source moved off the screen into a new `⋯`
+  toolbar menu; once set to a Reserve or Goal it shows a quiet olive
+  `Source · <name>` trace that is itself a menu. Split stays an on-screen
+  toggle.
+- Split legs share one grouped card with internal dividers (peer-row rule).
+  Each leg leads with a navy amount pill using the staged keypad; the keypad
+  title carries the still-unassigned amount (`Split 2 · $67.44 left`), Use
+  Remaining is a tinted capsule button, and the Remaining/Balanced summary
+  sits directly beneath the legs above Add Split.
+- New `nwTaskFieldBackground()`: dense task editors keep the frosted echo
+  when pushed but paint the solid warm field even inside a glass sheet, so
+  cards and chips are not white-on-white on the sheet material. Applied to
+  the review editor and the Contact/Category pickers.
+- Transaction history gains Select mode when filtered to Outstanding
+  Reimbursements: checklist toolbar icon, Select All over visible rows only,
+  and a bulk green `Mark N Paid Back` action writing the same individual
+  private-CloudKit marks as the swipe. Selection resets on any list reload.
+- The derived investment-reporting group displays as `Investing`
+  (was `Investment Contributions`); the stored identity is unchanged, so the
+  rename is presentation-only.
+- Validation: generic-device builds and build-for-testing pass. The chip
+  editor, split entry, contact picker field, bulk paid-back flow, and the
+  rename were reviewed on the physical device.
+
 ## Current handoff — Retained history in Spending Trends (2026-09-09)
 
 - Committed and pushed as `4e0bd5f` on `main`.

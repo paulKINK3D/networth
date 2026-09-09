@@ -47,6 +47,8 @@
 		BF56FBD17B7F2C2013E565D5 /* PlaidSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E43EE440948B853BE872B43 /* PlaidSyncCoordinator.swift */; };
 		CC3D8AD27715C21A6B38A831 /* DurableModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03E7D5F7CA93A092A1D1FCFA /* DurableModels.swift */; };
 		D209856D2AAB5DD90552135E /* NwStatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0264F0F507183402E3765272 /* NwStatusBadge.swift */; };
+		A7D15C10B3E2F4A5C6D7E802 /* NwDisclosureValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7D15C10B3E2F4A5C6D7E801 /* NwDisclosureValue.swift */; };
+		A7D15C10B3E2F4A5C6D7E804 /* NwChoiceChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7D15C10B3E2F4A5C6D7E803 /* NwChoiceChips.swift */; };
 		D4EC196587B14227B2C1F741 /* NwSectionHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = D75EBC64A5ACE3D8F8759B9D /* NwSectionHeader.swift */; };
 		D5DBF9EEF402C738AA9257FB /* ConnectivityMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3C821A49A8355A2751B47DC /* ConnectivityMonitor.swift */; };
 		D7170A1E000000000000A004 /* TutorialStep.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7170A1E000000000000A002 /* TutorialStep.swift */; };
@@ -80,6 +82,8 @@
 /* Begin PBXFileReference section */
 		00DEA1EA6C6514069921CC1B /* Networth.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Networth.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0264F0F507183402E3765272 /* NwStatusBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwStatusBadge.swift; sourceTree = "<group>"; };
+		A7D15C10B3E2F4A5C6D7E801 /* NwDisclosureValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwDisclosureValue.swift; sourceTree = "<group>"; };
+		A7D15C10B3E2F4A5C6D7E803 /* NwChoiceChips.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwChoiceChips.swift; sourceTree = "<group>"; };
 		03E7D5F7CA93A092A1D1FCFA /* DurableModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DurableModels.swift; sourceTree = "<group>"; };
 		06108EDF4711FC37956304D8 /* NetWorthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetWorthView.swift; sourceTree = "<group>"; };
 		0727D894F5219438D45666EA /* NwIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwIcon.swift; sourceTree = "<group>"; };
@@ -231,6 +235,8 @@
 				2061551C22EB23F2FF7357D1 /* NwShadow.swift */,
 				300932C2BAB1914688FD35B9 /* NwSpacing.swift */,
 				0264F0F507183402E3765272 /* NwStatusBadge.swift */,
+				A7D15C10B3E2F4A5C6D7E801 /* NwDisclosureValue.swift */,
+				A7D15C10B3E2F4A5C6D7E803 /* NwChoiceChips.swift */,
 				E495FC76C53325CCED828AFC /* NwStrokeWidth.swift */,
 				52297C05613F92A328100ACC /* NwTypography.swift */,
 			);
@@ -492,6 +498,8 @@
 				D7628B1917CC0B072E6CCEE1 /* NwShadow.swift in Sources */,
 				A807F6A4038F08B94D24CA02 /* NwSpacing.swift in Sources */,
 				D209856D2AAB5DD90552135E /* NwStatusBadge.swift in Sources */,
+				A7D15C10B3E2F4A5C6D7E802 /* NwDisclosureValue.swift in Sources */,
+				A7D15C10B3E2F4A5C6D7E804 /* NwChoiceChips.swift in Sources */,
 				3C0093F4DB2426247509D9F3 /* NwStrokeWidth.swift in Sources */,
 				9DBC96FBA2CA0EFA7C9987CC /* NwTypography.swift in Sources */,
 				F1D9DC667AFCC6E3BB695AEC /* ProjectionsView.swift in Sources */,

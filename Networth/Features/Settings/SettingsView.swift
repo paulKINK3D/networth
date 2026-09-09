@@ -3186,6 +3186,8 @@ struct PlaidTransactionReviewEditor: View {
     @State private var splitDrafts: [PlaidSplitDraft]
     @State private var splitSaveError: String?
     @State private var splitAmountFocusedID: UUID?
+    @State private var accountTransactionIDs: Set<String> = []
+    @SwiftUI.Environment(\.modelContext) private var modelContext
 
     init(
         transaction: CachedFinancialTransaction,
@@ -3294,7 +3296,7 @@ struct PlaidTransactionReviewEditor: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .nwFrostedFieldBackground()
+        .nwTaskFieldBackground()
         .navigationTitle(
             transaction.requiresReview
                 ? "Review Transaction"
@@ -3306,6 +3308,22 @@ struct PlaidTransactionReviewEditor: View {
             resolveDisplayedSelections()
             resolveExistingExpenseFunding()
             resolveExistingSavingsMonths()
+            loadAccountTransactionIDs()
+        }
+        .toolbar {
+            if showsExpenseFunding {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Picker("Source", selection: $expenseFunding) {
+                            expenseFundingPickerOptions
+                        }
+                        .pickerStyle(.menu)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .accessibilityLabel("More options")
+                }
+            }
         }
         .onChange(of: canonicalPayees.count) {
             prepareDirectoryIndexes()
@@ -3433,14 +3451,7 @@ struct PlaidTransactionReviewEditor: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: NwSpacing.sm) {
-                reviewSectionTitle("Classification")
-                classificationControls
-            }
-
-            if !quickCategorySuggestions.isEmpty {
-                quickCategoryControls
-            }
+            classificationControls
 
             splitControls
                 .frame(height: isSplit ? nil : 0, alignment: .top)
@@ -3464,34 +3475,29 @@ struct PlaidTransactionReviewEditor: View {
     }
 
     private var classificationControls: some View {
-        NwCard(style: .primary, padding: 0) {
-            VStack(spacing: 0) {
-                typeRow
+        VStack(alignment: .leading, spacing: NwSpacing.lg) {
+            typeSection
+            contactSection
 
-                Divider()
-                contactRow
+            if !isSplit {
+                categorySection
 
-                if !isSplit {
-                    Divider()
-                    categoryRow
+                if treatment == .savings {
+                    savingsMonthSection(selection: $savingsMonth)
+                }
 
-                    if treatment == .savings {
-                        Divider()
-                        savingsMonthRow(selection: $savingsMonth)
-                    }
+                if showsExpenseFunding, expenseFunding != .monthlyBudget {
+                    sourceTraceRow
+                }
 
-                    if showsExpenseFunding {
-                        Divider()
-                        expenseFundingRow
-                    }
-
-                    if treatment == .reimbursement {
-                        Divider()
+                if treatment == .reimbursement {
+                    NwCard(style: .primary, padding: 0) {
                         reimbursementPaidBackRow
                     }
                 }
+            }
 
-                Divider()
+            NwCard(style: .primary, padding: 0) {
                 Toggle("Split transaction", isOn: $isSplit)
                     .onChange(of: isSplit) {
                         splitSaveError = nil
@@ -3501,18 +3507,89 @@ struct PlaidTransactionReviewEditor: View {
         }
     }
 
-    private var typeRow: some View {
-        Group {
+    private func decisionLabel(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(NwTypography.caption)
+            .foregroundStyle(NwAppColors.textSecondary)
+            .padding(.horizontal, NwSpacing.xs)
+            .accessibilityLabel(title)
+    }
+
+    private var typeSection: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            decisionLabel("Type")
             if isSplit {
-                HStack {
-                    Text("Type")
-                    Spacer()
-                    Text("Split")
-                        .foregroundStyle(NwAppColors.textSecondary)
-                }
-                .padding(NwSpacing.md)
+                Text("Split")
+                    .font(NwTypography.body)
+                    .foregroundStyle(NwAppColors.textSecondary)
+                    .padding(.horizontal, NwSpacing.xs)
             } else {
-                typePicker
+                NwChipFlow {
+                    ForEach(typeChipChoices, id: \.self) { choice in
+                        NwChoiceChip(
+                            typeChipLabel(for: choice),
+                            style: choice == treatment ? .selected : .normal
+                        ) {
+                            treatment = choice
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .onChange(of: treatment) {
+            // A type change invalidates a selected category whose
+            // group role no longer fits the new type.
+            if let id = categoryCanonicalId,
+               let selected = activeCategoryByID[id],
+               !TransactionTypeRules.isValidCombination(
+                   treatment: treatment,
+                   categoryRole: selected.role
+               ) {
+                categoryCanonicalId = nil
+                categoryName = ""
+            }
+            if !TransactionTypeRules.requiresGoal(treatment) {
+                goalId = nil
+            }
+            if treatment != .ordinarySpending {
+                expenseFunding = .monthlyBudget
+            }
+            if treatment == .savings {
+                savingsMonth = defaultSavingsMonth
+            }
+        }
+    }
+
+    private var typeChipChoices: [TransactionType] {
+        TransactionType.allCases.filter {
+            TransactionTypeRules.isValidAmountSign(
+                $0,
+                amountMilliunits: transaction.amountMilliunits
+            )
+            && $0 != .goalSpend
+            && ($0 != .savings || activeSavingsGroup != nil
+                || treatment == .savings)
+        }
+    }
+
+    /// Chips get compact names; the full `displayName` stays for menus and
+    /// history rows where width is not contested.
+    private func typeChipLabel(for type: TransactionType) -> String {
+        switch type {
+        case .internalTransfer: "Transfer"
+        case .cardPayment: "Card payment"
+        case .investmentContribution: "Investing"
+        case .excluded: "Exclude"
+        default: type.displayName
+        }
+    }
+
+    private var contactSection: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            decisionLabel("Contact")
+            NwCard(style: .primary, padding: 0) {
+                contactRow
             }
         }
     }
@@ -3526,9 +3603,12 @@ struct PlaidTransactionReviewEditor: View {
             )
         } label: {
             LabeledContent("Contact") {
-                Text(selectedPayeeName ?? "Select contact")
-                    .foregroundStyle(NwAppColors.textSecondary)
-                    .lineLimit(1)
+                NwDisclosureValue(
+                    selectedPayeeName ?? "Select contact",
+                    color: selectedPayeeName == nil
+                        ? NwAppColors.textSecondary
+                        : NwAppColors.textPrimary
+                )
             }
             .contentShape(Rectangle())
         }
@@ -3595,72 +3675,27 @@ struct PlaidTransactionReviewEditor: View {
         }
     }
 
-    private var typePicker: some View {
-        HStack {
-            Text("Type")
-            Spacer()
-            Picker("", selection: $treatment) {
-                ForEach(TransactionType.allCases.filter {
-                    TransactionTypeRules.isValidAmountSign(
-                        $0,
-                        amountMilliunits: transaction.amountMilliunits
-                    )
-                    && $0 != .goalSpend
-                    && ($0 != .savings || activeSavingsGroup != nil
-                        || treatment == .savings)
-                }, id: \.self) {
-                    Text($0.displayName).tag($0)
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .tint(NwAppColors.textSecondary)
-            // Menu pickers wrap long selected values ("Investment
-            // contribution") even with room to spare; ideal width keeps
-            // the label on one line.
-            .fixedSize(horizontal: true, vertical: false)
-        }
-        .padding(NwSpacing.md)
-        .onChange(of: treatment) {
-            // A type change invalidates a selected category whose
-            // group role no longer fits the new type.
-            if let id = categoryCanonicalId,
-               let selected = activeCategoryByID[id],
-               !TransactionTypeRules.isValidCombination(
-                   treatment: treatment,
-                   categoryRole: selected.role
-               ) {
-                categoryCanonicalId = nil
-                categoryName = ""
-            }
-            if !TransactionTypeRules.requiresGoal(treatment) {
-                goalId = nil
-            }
-            if treatment != .ordinarySpending {
-                expenseFunding = .monthlyBudget
-            }
-            if treatment == .savings {
-                savingsMonth = defaultSavingsMonth
-            }
-        }
-    }
-
-    private func savingsMonthRow(
+    private func savingsMonthSection(
         selection: Binding<BudgetMonth>
     ) -> some View {
-        HStack {
-            Text("Savings Month")
-            Spacer()
-            Picker("", selection: selection) {
-                ForEach(savingsMonthOptions(including: selection.wrappedValue)) {
-                    Text(savingsMonthLabel($0)).tag($0)
+        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            decisionLabel("Savings Month")
+            NwChipFlow {
+                ForEach(
+                    savingsMonthOptions(including: selection.wrappedValue)
+                ) { month in
+                    NwChoiceChip(
+                        savingsMonthLabel(month),
+                        style: selection.wrappedValue == month
+                            ? .selected
+                            : .normal
+                    ) {
+                        selection.wrappedValue = month
+                    }
                 }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .tint(NwAppColors.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(NwSpacing.md)
     }
 
     private var showsExpenseFunding: Bool {
@@ -3668,35 +3703,56 @@ struct PlaidTransactionReviewEditor: View {
             && treatment == .ordinarySpending
     }
 
-    private var expenseFundingRow: some View {
-        HStack {
-            Text("Source")
-            Spacer()
-            Picker("", selection: $expenseFunding) {
-                Text("Monthly budget")
-                    .tag(ExpenseFundingChoice.monthlyBudget)
-                if !activeReserveFunds.isEmpty {
-                    Section("Reserves") {
-                        ForEach(activeReserveFunds) { fund in
-                            Text(fund.name)
-                                .tag(ExpenseFundingChoice.reserve(fund.id))
-                        }
-                    }
-                }
-                if !activeGoals.isEmpty {
-                    Section("Goals") {
-                        ForEach(activeGoals) { goal in
-                            Text(goal.name)
-                                .tag(ExpenseFundingChoice.goal(goal.id))
-                        }
-                    }
+    @ViewBuilder
+    private var expenseFundingPickerOptions: some View {
+        Text("Monthly budget")
+            .tag(ExpenseFundingChoice.monthlyBudget)
+        if !activeReserveFunds.isEmpty {
+            Section("Reserves") {
+                ForEach(activeReserveFunds) { fund in
+                    Text(fund.name)
+                        .tag(ExpenseFundingChoice.reserve(fund.id))
                 }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .tint(NwAppColors.textSecondary)
         }
-        .padding(NwSpacing.md)
+        if !activeGoals.isEmpty {
+            Section("Goals") {
+                ForEach(activeGoals) { goal in
+                    Text(goal.name)
+                        .tag(ExpenseFundingChoice.goal(goal.id))
+                }
+            }
+        }
+    }
+
+    private func fundingName(_ choice: ExpenseFundingChoice) -> String {
+        switch choice {
+        case .monthlyBudget:
+            "Monthly budget"
+        case .reserve(let id):
+            activeReserveFunds.first { $0.id == id }?.name ?? "Reserve"
+        case .goal(let id):
+            activeGoals.first { $0.id == id }?.name ?? "Goal"
+        }
+    }
+
+    /// Source stays out of the visual hierarchy while it is the default, but
+    /// a Reserve- or Goal-funded transaction must confess on screen.
+    private var sourceTraceRow: some View {
+        Menu {
+            Picker("Source", selection: $expenseFunding) {
+                expenseFundingPickerOptions
+            }
+        } label: {
+            HStack(spacing: NwSpacing.xs) {
+                Text("Source ·")
+                    .foregroundStyle(NwAppColors.textSecondary)
+                Text(fundingName(expenseFunding))
+                    .foregroundStyle(NwAppColors.protected)
+            }
+            .font(NwTypography.footnoteEm)
+            .padding(.horizontal, NwSpacing.xs)
+        }
     }
 
     /// Only the groups whose reporting role fits the chosen type. Groups
@@ -3729,64 +3785,120 @@ struct PlaidTransactionReviewEditor: View {
         }
     }
 
-    private var categoryRow: some View {
-        Group {
-            if TransactionTypeRules.requiresGoal(treatment) {
-                HStack {
-                    Text("Goal")
-                    Spacer()
-                    Picker("", selection: $goalId) {
-                        Text("Select goal").tag(UUID?.none)
-                        ForEach(activeGoals) { goal in
-                            Text(goal.name).tag(Optional(goal.id))
+    @ViewBuilder
+    private var categorySection: some View {
+        if TransactionTypeRules.requiresGoal(treatment) {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                decisionLabel("Goal")
+                NwChipFlow {
+                    ForEach(activeGoals) { goal in
+                        NwChoiceChip(
+                            goal.name,
+                            style: goalId == goal.id ? .selected : .normal
+                        ) {
+                            goalId = goal.id
                         }
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .tint(NwAppColors.textSecondary)
                 }
-                .padding(NwSpacing.md)
-            } else if treatment.requiresCategory {
-                NavigationLink {
-                    PlaidCategoryPicker(
-                        selection: $categoryName,
-                        groups: visibleCategoryGroups,
-                        preferredOptions: merchantCategorySuggestions(
-                            for: treatment
-                        ),
-                        onSelect: selectCategory
-                    )
-                } label: {
-                    LabeledContent("Category") {
-                        Text(selectedCategoryName ?? "No category")
-                            .foregroundStyle(
-                                selectedCategoryName == nil
-                                    ? NwAppColors.caution
-                                    : NwAppColors.textSecondary
-                            )
-                            .lineLimit(1)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .padding(NwSpacing.md)
-            } else {
-                LabeledContent("Category") {
-                    Text(noCategoryLabel(for: treatment))
-                        .foregroundStyle(NwAppColors.textSecondary)
-                }
-                .padding(NwSpacing.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else if treatment.requiresCategory {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                decisionLabel("Category")
+                categoryChips(
+                    options: chipOptions(
+                        for: treatment,
+                        selectedID: categoryCanonicalId,
+                        limit: 5
+                    ),
+                    selectedID: categoryCanonicalId,
+                    groups: visibleCategoryGroups,
+                    preferred: merchantCategorySuggestions(for: treatment),
+                    pickerSelection: $categoryName,
+                    onSelect: selectCategory
+                )
             }
         }
     }
 
-    private var quickCategorySuggestions: [PlaidCategoryOption] {
-        guard !isSplit,
-              treatment.requiresCategory,
-              selectedCategoryName == nil else {
-            return []
+    /// Shared chip row for category choices: history-first suggestions plus
+    /// the search chip into the full picker. The first chip is outlined as
+    /// the best guess until a category is explicitly chosen.
+    private func categoryChips(
+        options: [PlaidCategoryOption],
+        selectedID: String?,
+        groups: [PlaidCategoryGroup],
+        preferred: [PlaidCategoryOption],
+        pickerSelection: Binding<String>,
+        onSelect: @escaping (PlaidCategoryOption) -> Void
+    ) -> some View {
+        NwChipFlow {
+            ForEach(
+                Array(options.enumerated()),
+                id: \.element.id
+            ) { index, option in
+                NwChoiceChip(
+                    option.name,
+                    style: categoryChipStyle(
+                        option: option,
+                        index: index,
+                        selectedID: selectedID
+                    )
+                ) {
+                    onSelect(option)
+                }
+            }
+            NavigationLink {
+                PlaidCategoryPicker(
+                    selection: pickerSelection,
+                    groups: groups,
+                    preferredOptions: preferred,
+                    onSelect: onSelect
+                )
+            } label: {
+                NwChipLabel("All Categories", style: .search)
+            }
+            .buttonStyle(.plain)
         }
-        return merchantCategorySuggestions(for: treatment)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func categoryChipStyle(
+        option: PlaidCategoryOption,
+        index: Int,
+        selectedID: String?
+    ) -> NwChipStyle {
+        if let selectedID {
+            return option.categoryID == selectedID ? .selected : .normal
+        }
+        return index == 0 ? .suggested : .normal
+    }
+
+    /// Chip candidates: the current selection first, then merchant history,
+    /// backfilled with the account's most-confirmed categories.
+    private func chipOptions(
+        for suggestedTreatment: ForecastTreatment,
+        selectedID: String?,
+        limit: Int
+    ) -> [PlaidCategoryOption] {
+        var result: [PlaidCategoryOption] = []
+        var seen = Set<String>()
+        func add(_ option: PlaidCategoryOption) {
+            guard let id = option.categoryID,
+                  seen.insert(id).inserted else { return }
+            result.append(option)
+        }
+        if let selectedID, let selected = activeCategoryByID[selectedID] {
+            add(selected)
+        }
+        for option in merchantCategorySuggestions(for: suggestedTreatment) {
+            add(option)
+        }
+        for option in accountCommonSuggestions(for: suggestedTreatment) {
+            if result.count >= limit { break }
+            add(option)
+        }
+        return result
     }
 
     private func merchantCategorySuggestions(
@@ -3830,30 +3942,61 @@ struct PlaidTransactionReviewEditor: View {
         ).compactMap { optionsByID[$0] }
     }
 
-    private var quickCategoryControls: some View {
-        VStack(alignment: .leading, spacing: NwSpacing.sm) {
-            reviewSectionTitle("Categories")
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 96))],
-                alignment: .leading,
-                spacing: NwSpacing.sm
-            ) {
-                ForEach(quickCategorySuggestions) { option in
-                    Button {
-                        selectCategory(option)
-                    } label: {
-                        Text(option.name)
-                            .font(NwTypography.footnoteEm)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(NwAppColors.primary)
-                    .accessibilityLabel("Use category \(option.name)")
+    /// The categories most often confirmed on this transaction's account,
+    /// regardless of merchant — the backfill when merchant history is thin.
+    private func accountCommonSuggestions(
+        for suggestedTreatment: ForecastTreatment
+    ) -> [PlaidCategoryOption] {
+        guard !accountTransactionIDs.isEmpty else { return [] }
+        let options = categoryGroups(
+            allowedFor: suggestedTreatment
+        ).flatMap(\.options)
+        let optionPairs: [(String, PlaidCategoryOption)] =
+            options.compactMap { option in
+                guard let id = option.categoryID,
+                      let activeOption = activeCategoryByID[id] else {
+                    return nil
                 }
+                return (id, activeOption)
             }
-        }
+        let optionsByID = Dictionary(
+            optionPairs,
+            uniquingKeysWith: { first, _ in first }
+        )
+        let records = canonicalDecisions
+            .filter { accountTransactionIDs.contains($0.transactionExternalId) }
+            .map {
+                MerchantCategoryHistoryRecord(
+                    transactionID: $0.transactionExternalId,
+                    payeeCanonicalID: $0.payeeCanonicalId,
+                    categoryCanonicalID: $0.categoryCanonicalId,
+                    treatment: $0.forecastTreatment,
+                    amountSign: $0.amountSign,
+                    reviewed: $0.reviewed,
+                    isSplit: $0.subtransactionsData != nil,
+                    updatedAt: $0.updatedAt
+                )
+            }
+        return MerchantCategorySuggestionRanker.rankScoped(
+            records,
+            treatment: suggestedTreatment,
+            amountSign: Int(transaction.amountMilliunits.signum()),
+            availableCategoryIDs: Set(optionsByID.keys),
+            limit: 5
+        ).compactMap { optionsByID[$0] }
+    }
+
+    private func loadAccountTransactionIDs() {
+        guard accountTransactionIDs.isEmpty else { return }
+        let accountID = transaction.canonicalAccountId
+        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate {
+                $0.canonicalAccountId == accountID && $0.deleted == false
+            }
+        )
+        descriptor.propertiesToFetch = [\.id]
+        let rows = (try? modelContext.fetch(descriptor)) ?? []
+        accountTransactionIDs = Set(rows.map(\.id))
     }
 
     private func selectCategory(_ option: PlaidCategoryOption) {
@@ -4091,198 +4234,18 @@ struct PlaidTransactionReviewEditor: View {
     private var splitControls: some View {
         VStack(alignment: .leading, spacing: NwSpacing.sm) {
             reviewSectionTitle("Split details")
-            ForEach($splitDrafts) { $draft in
-                NwCard(style: .primary, padding: 0) {
-                    VStack(spacing: 0) {
-                        HStack {
-                            Text("Split \(splitNumber(for: draft.id))")
-                                .font(NwTypography.bodyEmphasis)
-                            Spacer()
-                            Button {
-                                deleteSplitDraft(id: draft.id)
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundStyle(NwAppColors.liability)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(splitDrafts.count <= 2)
-                            .accessibilityLabel("Remove split")
-                        }
-                        .padding(NwSpacing.md)
-
-                        Divider()
-
-                        HStack {
-                            Text("Type")
-                            Spacer()
-                            Picker(
-                                "",
-                                selection: $draft.treatment
-                            ) {
-                                Text("Select")
-                                    .tag(ForecastTreatment?.none)
-                                ForEach(splitTypeChoices, id: \.self) {
-                                    Text($0.displayName)
-                                        .tag(Optional($0))
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .tint(NwAppColors.textSecondary)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .onChange(of: draft.treatment) {
-                                if draft.treatment != .ordinarySpending {
-                                    draft.expenseFunding = .monthlyBudget
-                                }
-                                if draft.treatment == .savings {
-                                    draft.savingsMonth = defaultSavingsMonth
-                                } else {
-                                    draft.savingsMonth = nil
-                                }
-                            }
-                        }
-                        .padding(NwSpacing.md)
-
-                        Divider()
-
-                        if draft.treatment?.requiresCategory == true {
-                            NavigationLink {
-                                PlaidCategoryPicker(
-                                    selection: $draft.categoryName,
-                                    groups: splitLegCategoryGroups,
-                                    preferredOptions:
-                                        merchantCategorySuggestions(
-                                            for: .ordinarySpending
-                                        ),
-                                    onSelect: { option in
-                                        draft.categoryID = option.categoryID
-                                    }
-                                )
-                            } label: {
-                                LabeledContent("Category") {
-                                    Text(
-                                        draft.categoryName.isEmpty
-                                            ? "Select category"
-                                            : draft.categoryName
-                                    )
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .padding(NwSpacing.md)
-                        } else if let splitType = draft.treatment,
-                                  TransactionTypeRules.requiresGoal(
-                                    splitType
-                                  ) {
-                            Picker("Goal", selection: $draft.goalId) {
-                                Text("Select goal").tag(UUID?.none)
-                                ForEach(activeGoals) { goal in
-                                    Text(goal.name)
-                                        .tag(Optional(goal.id))
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .tint(NwAppColors.textSecondary)
-                            .padding(NwSpacing.md)
-                        } else {
-                            LabeledContent("Category") {
-                                Text(
-                                    draft.treatment.map(
-                                        noCategoryLabel(for:)
-                                    ) ?? "Select type"
-                                )
-                                .foregroundStyle(.secondary)
-                            }
-                            .padding(NwSpacing.md)
-                        }
-
-                        if draft.treatment == .savings {
-                            Divider()
-                            HStack {
-                                Text("Savings Month")
-                                Spacer()
-                                Picker("", selection: $draft.savingsMonth) {
-                                    ForEach(savingsMonthOptions(
-                                        including: draft.savingsMonth
-                                            ?? defaultSavingsMonth
-                                    )) { month in
-                                        Text(savingsMonthLabel(month))
-                                            .tag(Optional(month))
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                                .tint(NwAppColors.textSecondary)
-                            }
-                            .padding(NwSpacing.md)
-                        }
-
-                        if !isIncomingSplit,
-                           draft.treatment == .ordinarySpending {
-                            Divider()
-                            HStack {
-                                Text("Source")
-                                Spacer()
-                                Picker(
-                                    "",
-                                    selection: $draft.expenseFunding
-                                ) {
-                                    Text("Monthly budget")
-                                        .tag(ExpenseFundingChoice.monthlyBudget)
-                                    if !activeReserveFunds.isEmpty {
-                                        Section("Reserves") {
-                                            ForEach(activeReserveFunds) { fund in
-                                                Text(fund.name).tag(
-                                                    ExpenseFundingChoice.reserve(
-                                                        fund.id
-                                                    )
-                                                )
-                                            }
-                                        }
-                                    }
-                                    if !activeGoals.isEmpty {
-                                        Section("Goals") {
-                                            ForEach(activeGoals) { goal in
-                                                Text(goal.name).tag(
-                                                    ExpenseFundingChoice.goal(
-                                                        goal.id
-                                                    )
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
-                                .tint(NwAppColors.textSecondary)
-                            }
-                            .padding(NwSpacing.md)
-                        }
-
-                        Divider()
-
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach($splitDrafts) { $draft in
+                    VStack(alignment: .leading, spacing: NwSpacing.md) {
                         HStack(spacing: NwSpacing.md) {
-                            Text("Amount")
-                            Spacer()
-                            if parsedSplitAmount(draft) == nil,
-                               unallocatedAmount(excluding: draft.id) > .zero {
-                                Button("Use Remaining") {
-                                    useRemainingAmount(for: draft.id)
-                                }
-                                .font(NwTypography.footnoteEm)
-                                .foregroundStyle(NwAppColors.primary)
-                                .accessibilityLabel(
-                                    "Use remaining amount for split "
-                                        + "\(splitNumber(for: draft.id))"
-                                )
-                            }
                             TextField("0.00", text: $draft.amountText)
-                                .multilineTextAlignment(.trailing)
+                                .multilineTextAlignment(.center)
+                                .font(NwTypography.metricCompact)
+                                .foregroundStyle(NwAppColors.primary)
                                 .nwCurrencyInput(
                                     text: $draft.amountText,
-                                    title: "Split \(splitNumber(for: draft.id)) Amount",
+                                    title: splitAmountEntryTitle(for: draft),
                                     onFocusChange: { focused in
                                         if focused {
                                             splitAmountFocusedID = draft.id
@@ -4293,16 +4256,178 @@ struct PlaidTransactionReviewEditor: View {
                                     }
                                 )
                                 .accessibilityLabel("Split amount")
-                                .frame(width: 110)
+                                .frame(width: 120)
+                                .padding(.vertical, NwSpacing.sm)
+                                .background(
+                                    NwAppColors.primary.opacity(0.10),
+                                    in: RoundedRectangle(
+                                        cornerRadius: NwCornerRadius.md,
+                                        style: .continuous
+                                    )
+                                )
                                 .onDisappear {
                                     if splitAmountFocusedID == draft.id {
                                         splitAmountFocusedID = nil
                                     }
                                 }
+
+                            if parsedSplitAmount(draft) == nil,
+                               unallocatedAmount(excluding: draft.id) > .zero {
+                                Button("Use Remaining") {
+                                    useRemainingAmount(for: draft.id)
+                                }
+                                .buttonStyle(NwTintedButtonStyle())
+                                .accessibilityLabel(
+                                    "Use remaining amount for split "
+                                        + "\(splitNumber(for: draft.id))"
+                                )
+                            }
+
+                            Spacer()
+
+                            Button {
+                                deleteSplitDraft(id: draft.id)
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .foregroundStyle(NwAppColors.liability)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(splitDrafts.count <= 2)
+                            .accessibilityLabel("Remove split")
                         }
-                        .padding(NwSpacing.md)
+
+                        decisionLabel("Type")
+                        NwChipFlow {
+                            ForEach(splitTypeChoices, id: \.self) { choice in
+                                NwChoiceChip(
+                                    typeChipLabel(for: choice),
+                                    style: draft.treatment == choice
+                                        ? .selected
+                                        : .normal
+                                ) {
+                                    draft.treatment = choice
+                                    if choice != .ordinarySpending {
+                                        draft.expenseFunding = .monthlyBudget
+                                    }
+                                    draft.savingsMonth = choice == .savings
+                                        ? defaultSavingsMonth
+                                        : nil
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if draft.treatment?.requiresCategory == true {
+                            decisionLabel("Category")
+                            categoryChips(
+                                options: chipOptions(
+                                    for: .ordinarySpending,
+                                    selectedID: draft.categoryID,
+                                    limit: 4
+                                ),
+                                selectedID: draft.categoryID,
+                                groups: splitLegCategoryGroups,
+                                preferred: merchantCategorySuggestions(
+                                    for: .ordinarySpending
+                                ),
+                                pickerSelection: $draft.categoryName,
+                                onSelect: { option in
+                                    draft.categoryID = option.categoryID
+                                    draft.categoryName = option.name
+                                }
+                            )
+                        } else if let splitType = draft.treatment,
+                                  TransactionTypeRules.requiresGoal(
+                                    splitType
+                                  ) {
+                            decisionLabel("Goal")
+                            NwChipFlow {
+                                ForEach(activeGoals) { goal in
+                                    NwChoiceChip(
+                                        goal.name,
+                                        style: draft.goalId == goal.id
+                                            ? .selected
+                                            : .normal
+                                    ) {
+                                        draft.goalId = goal.id
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        if draft.treatment == .savings {
+                            decisionLabel("Savings Month")
+                            NwChipFlow {
+                                ForEach(savingsMonthOptions(
+                                    including: draft.savingsMonth
+                                        ?? defaultSavingsMonth
+                                )) { month in
+                                    NwChoiceChip(
+                                        savingsMonthLabel(month),
+                                        style: draft.savingsMonth == month
+                                            ? .selected
+                                            : .normal
+                                    ) {
+                                        draft.savingsMonth = month
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        if !isIncomingSplit,
+                           draft.treatment == .ordinarySpending {
+                            Menu {
+                                Picker(
+                                    "Source",
+                                    selection: $draft.expenseFunding
+                                ) {
+                                    expenseFundingPickerOptions
+                                }
+                            } label: {
+                                HStack(spacing: NwSpacing.xs) {
+                                    Text("Source ·")
+                                        .foregroundStyle(
+                                            NwAppColors.textSecondary
+                                        )
+                                    Text(fundingName(draft.expenseFunding))
+                                        .foregroundStyle(
+                                            draft.expenseFunding
+                                                == .monthlyBudget
+                                                ? NwAppColors.textSecondary
+                                                : NwAppColors.protected
+                                        )
+                                }
+                                .font(NwTypography.footnoteEm)
+                                .padding(.horizontal, NwSpacing.xs)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(NwSpacing.cardPadding)
+
+                    if draft.id != splitDrafts.last?.id {
+                        Divider()
+                    }
                     }
                 }
+            }
+
+            if splitAmountFocusedID == nil {
+                HStack {
+                    Text(splitBalanceLabel)
+                    Spacer()
+                    NwAmountText(
+                        splitRemaining.absolute,
+                        variant: .body,
+                        color: splitRemaining.isZero
+                            ? NwAppColors.positive
+                            : NwAppColors.caution
+                    )
+                }
+                .font(NwTypography.footnote)
+                .padding(.horizontal, NwSpacing.xs)
             }
 
             NwCard(style: .primary, padding: 0) {
@@ -4321,22 +4446,21 @@ struct PlaidTransactionReviewEditor: View {
                 .foregroundStyle(NwAppColors.primary)
                 .padding(NwSpacing.md)
             }
-
-            if splitAmountFocusedID == nil {
-                HStack {
-                    Text(splitBalanceLabel)
-                    Spacer()
-                    NwAmountText(
-                        splitRemaining.absolute,
-                        variant: .body,
-                        color: splitRemaining.isZero
-                            ? NwAppColors.positive
-                            : NwAppColors.caution
-                    )
-                }
-                .font(NwTypography.footnote)
-            }
         }
+    }
+
+    /// The keypad sheet covers the split summary, so its title carries what
+    /// is still unassigned for this leg.
+    private func splitAmountEntryTitle(
+        for draft: PlaidSplitDraft
+    ) -> String {
+        let remaining = unallocatedAmount(excluding: draft.id)
+        guard remaining > .zero else {
+            return "Split \(splitNumber(for: draft.id)) Amount"
+        }
+        return "Split \(splitNumber(for: draft.id)) · "
+            + CurrencyFormatter.currency(remaining)
+            + " left"
     }
 
     private func reviewSectionTitle(_ title: String) -> some View {
@@ -4871,7 +4995,8 @@ private struct CanonicalPayeePicker: View {
                 }
             }
         }
-        .nwScreenBackground()
+        .scrollContentBackground(.hidden)
+        .nwTaskFieldBackground()
         .navigationTitle("Contact")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
@@ -4941,6 +5066,43 @@ enum MerchantCategorySuggestionRanker {
         availableCategoryIDs: Set<String>,
         limit: Int
     ) -> [String] {
+        rank(
+            records,
+            payeeCanonicalID: .some(payeeCanonicalID),
+            treatment: treatment,
+            amountSign: amountSign,
+            availableCategoryIDs: availableCategoryIDs,
+            limit: limit
+        )
+    }
+
+    /// Ranks across a caller-scoped record set (e.g. one account's
+    /// decisions) without requiring a payee match.
+    static func rankScoped(
+        _ records: [MerchantCategoryHistoryRecord],
+        treatment: ForecastTreatment,
+        amountSign: Int,
+        availableCategoryIDs: Set<String>,
+        limit: Int
+    ) -> [String] {
+        rank(
+            records,
+            payeeCanonicalID: nil,
+            treatment: treatment,
+            amountSign: amountSign,
+            availableCategoryIDs: availableCategoryIDs,
+            limit: limit
+        )
+    }
+
+    private static func rank(
+        _ records: [MerchantCategoryHistoryRecord],
+        payeeCanonicalID: String?,
+        treatment: ForecastTreatment,
+        amountSign: Int,
+        availableCategoryIDs: Set<String>,
+        limit: Int
+    ) -> [String] {
         guard limit > 0 else { return [] }
         let latestByTransaction = Dictionary(
             grouping: records,
@@ -4951,7 +5113,8 @@ enum MerchantCategorySuggestionRanker {
         let matching = latestByTransaction.values.filter {
             $0.reviewed
                 && !$0.isSplit
-                && $0.payeeCanonicalID == payeeCanonicalID
+                && (payeeCanonicalID == nil
+                    || $0.payeeCanonicalID == payeeCanonicalID)
                 && $0.treatment == treatment
                 && $0.amountSign == amountSign
                 && $0.categoryCanonicalID.map(
@@ -5077,7 +5240,8 @@ private struct PlaidCategoryPicker: View {
                 }
             }
         }
-        .nwScreenBackground()
+        .scrollContentBackground(.hidden)
+        .nwTaskFieldBackground()
         .navigationTitle("Category")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
