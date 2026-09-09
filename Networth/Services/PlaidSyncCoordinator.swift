@@ -2270,11 +2270,16 @@ public final class PlaidTransactionSyncCoordinator {
         return matches.count == 1 ? matches[0] : nil
     }
 
+    /// `reapplyDecisions: false` skips rewriting rows that already have a
+    /// decision — their cached fields were set when the decision was applied,
+    /// and rewriting all of them stamps `updatedAt` on thousands of rows per
+    /// save. Payee renames propagate separately via `updateCachedPayeeName`.
     private func applyCanonicalDirectory(
         to rows: [CachedFinancialTransaction],
         payees: [DurableCanonicalPayee],
         aliasesByKey: [String: [DurablePayeeAlias]],
-        decisions: [DurableCanonicalTransactionDecision]
+        decisions: [DurableCanonicalTransactionDecision],
+        reapplyDecisions: Bool = true
     ) {
         var payeeByID: [String: DurableCanonicalPayee] = [:]
         for payee in payees.sorted(by: { $0.updatedAt < $1.updatedAt }) {
@@ -2337,7 +2342,9 @@ public final class PlaidTransactionSyncCoordinator {
 
         for row in rows where !row.deleted && !row.pending {
             if let decision = decisionByID[row.externalId] {
-                applyCanonicalDecision(decision, to: row)
+                if reapplyDecisions {
+                    applyCanonicalDecision(decision, to: row)
+                }
                 continue
             }
             let summary = row.toSummary()
@@ -2525,7 +2532,9 @@ public final class PlaidTransactionSyncCoordinator {
         return result
     }
 
-    private func applyCurrentCanonicalState() {
+    private func applyCurrentCanonicalState(
+        reapplyDecisions: Bool = true
+    ) {
         let payees = (try? mainContext.fetch(
             FetchDescriptor<DurableCanonicalPayee>()
         )) ?? []
@@ -2543,7 +2552,8 @@ public final class PlaidTransactionSyncCoordinator {
             to: rows,
             payees: payees,
             aliasesByKey: Dictionary(grouping: aliases, by: \.aliasKey),
-            decisions: decisions
+            decisions: decisions,
+            reapplyDecisions: reapplyDecisions
         )
     }
 
@@ -2749,8 +2759,13 @@ public final class PlaidTransactionSyncCoordinator {
         }
 
         assignAliases(for: [row], to: payee)
+        let externalId = row.externalId
         let decisions = (try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalTransactionDecision>()
+            FetchDescriptor<DurableCanonicalTransactionDecision>(
+                predicate: #Predicate {
+                    $0.transactionExternalId == externalId
+                }
+            )
         )) ?? []
         let decision: DurableCanonicalTransactionDecision
         if let existing = latestCanonicalDecisionsByTransactionID(
@@ -2806,7 +2821,7 @@ public final class PlaidTransactionSyncCoordinator {
         )
         advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
-        applyCurrentCanonicalState()
+        applyCurrentCanonicalState(reapplyDecisions: false)
         guard mainContext.safeSave(
             source: "plaidTransactions.canonicalTransactionReview"
         ) else {
@@ -2824,12 +2839,12 @@ public final class PlaidTransactionSyncCoordinator {
         for row: CachedFinancialTransaction,
         reserveFund: DurableSpendingSinkingFund?
     ) {
-        let assignments = (try? mainContext.fetch(
-            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        let rowID = row.id
+        let transactionAssignments = (try? mainContext.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>(
+                predicate: #Predicate { $0.transactionId == rowID }
+            )
         )) ?? []
-        let transactionAssignments = assignments.filter {
-            $0.transactionId == row.id
-        }
         let matches = transactionAssignments.filter {
             $0.subtransactionId == nil
         }
@@ -2875,10 +2890,12 @@ public final class PlaidTransactionSyncCoordinator {
         reserveFundIdBySubtransactionId: [String: UUID],
         activeReservesByID: [UUID: DurableSpendingSinkingFund]
     ) {
-        let assignments = (try? mainContext.fetch(
-            FetchDescriptor<DurableSpendingSinkingFundExpense>()
+        let rowID = row.id
+        let matches = (try? mainContext.fetch(
+            FetchDescriptor<DurableSpendingSinkingFundExpense>(
+                predicate: #Predicate { $0.transactionId == rowID }
+            )
         )) ?? []
-        let matches = assignments.filter { $0.transactionId == row.id }
         let amountBySplitID = splits.reduce(into: [String: Money]()) {
             $0[$1.id] = $1.amount.absolute
         }
@@ -3178,8 +3195,13 @@ public final class PlaidTransactionSyncCoordinator {
             ? distinctTypes.first ?? .unknown
             : .unknown
         assignAliases(for: [row], to: payee)
+        let externalId = row.externalId
         let decisions = (try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalTransactionDecision>()
+            FetchDescriptor<DurableCanonicalTransactionDecision>(
+                predicate: #Predicate {
+                    $0.transactionExternalId == externalId
+                }
+            )
         )) ?? []
         let decision = latestCanonicalDecisionsByTransactionID(
             decisions
@@ -3226,7 +3248,7 @@ public final class PlaidTransactionSyncCoordinator {
         )
         advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
-        applyCurrentCanonicalState()
+        applyCurrentCanonicalState(reapplyDecisions: false)
         guard mainContext.safeSave(
             source: "plaidTransactions.canonicalSplitReview"
         ) else {
@@ -3726,16 +3748,24 @@ public final class PlaidTransactionSyncCoordinator {
                 }
             )
         )) ?? []
-        for row in rows {
+        // Write only rows whose values actually change: most confirms don't
+        // rename the payee, and unconditional writes dirty every row and
+        // decision for the payee on each save.
+        for row in rows where row.displayName != payee.name
+            || row.requiresNameReview {
             row.displayName = payee.name
             row.requiresNameReview = false
             row.updatedAt = .now
         }
         let decisions = (try? mainContext.fetch(
-            FetchDescriptor<DurableCanonicalTransactionDecision>()
+            FetchDescriptor<DurableCanonicalTransactionDecision>(
+                predicate: #Predicate {
+                    $0.payeeCanonicalId == canonicalId
+                }
+            )
         )) ?? []
         for decision in decisions
-        where decision.payeeCanonicalId == payee.canonicalId {
+        where decision.payeeNameSnapshot != payee.name {
             decision.payeeNameSnapshot = payee.name
             decision.updatedAt = .now
         }
