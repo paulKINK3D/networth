@@ -1,5 +1,36 @@
 # WORKING
 
+## Current handoff — Retained history in Spending Trends (2026-09-09)
+
+- Committed and pushed as `4e0bd5f` on `main`.
+- Spending Trends now has a `Spending | Retained` mode switch. Retained mode
+  charts each month's leftover money as signed bars — green above the zero
+  line when the month came out ahead, red below when it overran its funding —
+  over the shared 3/6/12/24-month range. Tapping a bar shows that month's
+  Retained, Funded, and Spent. The Series picker applies to Spending mode
+  only; the current month is dimmed month-to-date.
+- The numbers come from `SpendingRetainedHistoryBuilder` (new in
+  `NetworthCore`), which wraps the exact reconciliation the monthly hero
+  uses: budget-reconciled Retained when the month has budget groups,
+  funded-minus-ordinary-spending before budgets existed. The hero now calls
+  the same helper, so the chart and hero cannot disagree. Months before
+  income history begins are omitted rather than drawn as false overspending;
+  a genuine zero-income month after history begins stays visible.
+- No schema, persistence, or CloudKit changes; everything is derived at
+  display time. Four new NetworthCore tests cover the series rules.
+- Session context that motivated the feature (from live device-store
+  analysis): May 2026 was a ~$28.7K card-spend month whose balances were paid
+  down out of June–August cash, which made checking feel low despite every
+  month closing in surplus. This spike-then-payoff pattern is exactly what
+  the Retained chart makes visible.
+- Analysis pitfall recorded in agent memory: split transactions store
+  treatment `unknown` at the decision's top level with real treatments in
+  the `ZSUBTRANSACTIONSDATA` JSON — expand splits before summing by
+  treatment when querying device stores directly.
+- Validation: all 277 NetworthCore tests pass; generic-device Release build
+  passes. Simulator execution was not requested. Physical-device review of
+  the new Trends mode is the remaining check.
+
 ## Current handoff — Overlay glass and presentation audit (2026-09-07)
 
 - **Surface hierarchy is now: tabs show the crisp washed photo; pushed
