@@ -1681,6 +1681,8 @@ struct FinancialAccountTransactionHistoryView: View {
     @State private var categoryFilter: FinancialTransactionCategoryFilter?
     @State private var typeFilter: FinancialTransactionTypeFilter?
     @State private var showingCategoryFilter = false
+    @State private var isSelecting = false
+    @State private var selectedIds = Set<String>()
     @Query private var paidBackMarks: [DurableReimbursementPaidBack]
 
     private var paidBackIds: Set<String> {
@@ -1698,7 +1700,7 @@ struct FinancialAccountTransactionHistoryView: View {
     }
 
     var body: some View {
-        List {
+        List(selection: $selectedIds) {
             if transactions.isEmpty, !isLoading, loadError == nil {
                 NwEmptyState(
                     title: submittedQuery.isEmpty
@@ -1807,19 +1809,74 @@ struct FinancialAccountTransactionHistoryView: View {
             guard transactions.isEmpty else { return }
             loadNextPage()
         }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showingCategoryFilter = true
-                } label: {
-                    Image(
-                        systemName:
-                            categoryFilter == nil && typeFilter == nil
-                            ? "line.3.horizontal.decrease.circle"
-                            : "line.3.horizontal.decrease.circle.fill"
-                    )
+        .environment(
+            \.editMode,
+            .constant(isSelecting ? .active : .inactive)
+        )
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                Button(
+                    selectedIds.isEmpty
+                        ? "Mark Paid Back"
+                        : "Mark \(selectedIds.count) Paid Back"
+                ) {
+                    markSelectedPaidBack()
                 }
-                .accessibilityLabel("Filter transactions")
+                .buttonStyle(NwPrimaryButtonStyle(
+                    tint: NwAppColors.favorableFill
+                ))
+                .disabled(selectedIds.isEmpty)
+                .opacity(selectedIds.isEmpty ? 0.4 : 1)
+                .padding(.horizontal, NwSpacing.screenPadding)
+                .padding(.vertical, NwSpacing.sm)
+                .background(.ultraThinMaterial)
+            }
+        }
+        .toolbar {
+            if isSelecting {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(
+                        allVisibleSelected ? "Deselect All" : "Select All"
+                    ) {
+                        selectedIds = allVisibleSelected
+                            ? []
+                            : Set(transactions.map(\.id))
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        exitSelection()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(NwAppColors.liability)
+                    }
+                    .accessibilityLabel("Cancel selection")
+                }
+            } else {
+                if typeFilter?.outstandingOnly == true {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            withAnimation { isSelecting = true }
+                        } label: {
+                            Image(systemName: "checklist")
+                        }
+                        .accessibilityLabel("Select transactions")
+                        .disabled(transactions.isEmpty)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingCategoryFilter = true
+                    } label: {
+                        Image(
+                            systemName:
+                                categoryFilter == nil && typeFilter == nil
+                                ? "line.3.horizontal.decrease.circle"
+                                : "line.3.horizontal.decrease.circle.fill"
+                        )
+                    }
+                    .accessibilityLabel("Filter transactions")
+                }
             }
         }
         .sheet(isPresented: $showingCategoryFilter) {
@@ -1902,6 +1959,44 @@ struct FinancialAccountTransactionHistoryView: View {
         }
     }
 
+    private var allVisibleSelected: Bool {
+        !transactions.isEmpty
+            && Set(transactions.map(\.id)).isSubset(of: selectedIds)
+    }
+
+    private func exitSelection() {
+        withAnimation {
+            isSelecting = false
+            selectedIds = []
+        }
+    }
+
+    private func markSelectedPaidBack() {
+        let targets = transactions.filter {
+            selectedIds.contains($0.id) && !paidBackIds.contains($0.id)
+        }
+        guard !targets.isEmpty else {
+            exitSelection()
+            return
+        }
+        for transaction in targets {
+            modelContext.insert(DurableReimbursementPaidBack(
+                transactionId: transaction.id,
+                payeeName: transaction.displayName,
+                transactionDate: transaction.postedDate,
+                amountMilliunits: transaction.amountMilliunits
+            ))
+        }
+        guard modelContext.safeSave(
+            source: "transactions.reimbursementPaidBackBulk"
+        ) else {
+            modelContext.rollback()
+            return
+        }
+        exitSelection()
+        restartLoad()
+    }
+
     private func applySearch() {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != submittedQuery else { return }
@@ -1910,6 +2005,9 @@ struct FinancialAccountTransactionHistoryView: View {
     }
 
     private func restartLoad() {
+        if isSelecting {
+            exitSelection()
+        }
         transactions = []
         hasMore = true
         loadError = nil
