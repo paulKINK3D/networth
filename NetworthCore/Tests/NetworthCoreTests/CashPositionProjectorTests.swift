@@ -576,6 +576,33 @@ struct CashPositionProjectorTests {
         )
     }
 
+    @Test func overduePaymentLandsOnDayZero() {
+        // A payment past its due date is committed but has not left the
+        // bank: it applies on day zero so today's projected balance, the
+        // low point, and Safe to Spend all reflect the imminent debit.
+        let today = date(2026, 1, 10)
+        let payment = UpcomingCardPayment(
+            cardAccountId: "visa", paymentAccountId: "checking", cardName: "Visa",
+            closeDate: date(2025, 12, 21), dueDate: date(2026, 1, 5),
+            amount: Money.dollars(300), basis: .closedStatementEstimate
+        )
+        let result = CashPositionProjector(calendar: utc).project(
+            cashAccounts: [account("checking", balance: 1_000)],
+            selectedCashAccountIds: ["checking"],
+            cardAccountIds: ["visa"], fundedCardAccountIds: [],
+            cardPayments: [payment], scheduled: [], historicalTransactions: [],
+            asOf: today, horizonDays: 5,
+            minimumCashBuffer: .zero
+        )
+
+        #expect(result.knownPoints.first?.balance == Money.dollars(700))
+        #expect(result.events.contains { $0.id == payment.id && $0.date == today })
+        #expect(result.cardPaymentOutflows == Money.dollars(300))
+        #expect(result.safeToSpend?.projectedLowBalance == Money.dollars(700))
+        let checking = result.accountProjections.first { $0.accountId == "checking" }
+        #expect(checking?.points.first?.balance == Money.dollars(700))
+    }
+
     @Test func firstShortfallIsDistinctFromLowestBalanceAtHorizon() {
         let today = date(2026, 1, 1)
         let firstBill = ScheduledTransactionSummary(

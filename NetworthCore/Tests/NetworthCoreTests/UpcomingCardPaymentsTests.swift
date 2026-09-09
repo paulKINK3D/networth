@@ -248,11 +248,17 @@ struct UpcomingCardPaymentsTests {
             asOf: date(2026, 6, 12),
             horizonDays: 60
         )
+        // Jun 5 already passed: the closed statement ($1,260 owed minus
+        // $630 of post-close purchases) stays projected until the debit
+        // settles on the paying account.
+        let overdueRow = payments.first(where: { $0.basis == .closedStatementEstimate })
+        #expect(overdueRow?.amount == Money.dollars(630))
         let futureRow = payments.first(where: { $0.basis == .futureScheduledOnly })
         #expect(futureRow != nil)
-        // Daily-average extrapolation would add ~$30 × 9 days = $270 over
-        // owed. We expect it disabled, so projection stays at exactly owed.
-        #expect(futureRow?.amount == Money.dollars(1_260))
+        // Daily-average extrapolation would add ~$30 × 9 days = $270. We
+        // expect it disabled, so the next statement is exactly the $630
+        // charged since the last close.
+        #expect(futureRow?.amount == Money.dollars(630))
     }
 
     @Test func scheduledTransferInsideCloseWindowIsSkipped() {
@@ -274,18 +280,27 @@ struct UpcomingCardPaymentsTests {
             frequency: .monthly, amount: Money.dollars(500),
             transferAccountId: checkingId
         )
+        // A real charge keeps the next statement nonzero, so a wrongly
+        // counted transfer would be visible as a $500 reduction.
+        let scheduledCharge = ScheduledTransactionSummary(
+            id: "sched-rent", accountId: "card-1", nextDate: date(2026, 6, 16),
+            frequency: .monthly, amount: Money.dollars(-600)
+        )
         let withFilter = f.upcomingPayments(
             card: visa,
             settings: settings,
-            scheduled: [scheduled],
+            scheduled: [scheduled, scheduledCharge],
             historicalTransactions: [],
             spendAccountIds: [visa.id, checkingId],
             asOf: date(2026, 6, 12),
             horizonDays: 60
         )
+        // The overdue closed statement pays out on its own row.
+        let overdueRow = withFilter.first(where: { $0.basis == .closedStatementEstimate })
+        #expect(overdueRow?.amount == Money.dollars(1_000))
         let futureRow = withFilter.first(where: { $0.basis == .futureScheduledOnly })
         #expect(futureRow != nil)
-        #expect(futureRow?.amount == Money.dollars(1_000))
+        #expect(futureRow?.amount == Money.dollars(600))
     }
 
     @Test func scheduledRealChargeAddsToProjection() {
@@ -312,10 +327,79 @@ struct UpcomingCardPaymentsTests {
             asOf: date(2026, 6, 12),
             horizonDays: 60
         )
+        let overdueRow = payments.first(where: { $0.basis == .closedStatementEstimate })
+        #expect(overdueRow?.amount == Money.dollars(1_000))
         let futureRow = payments.first(where: { $0.basis == .futureScheduledOnly })
         #expect(futureRow != nil)
-        // owed $1000 + scheduled charge $25 = $1025.
-        #expect(futureRow?.amount == Money.dollars(1_025))
+        // The overdue $1,000 statement pays before the next close; the next
+        // statement carries just the scheduled $25 charge.
+        #expect(futureRow?.amount == Money.dollars(25))
+    }
+
+    @Test func overdueStatementKeepsProjectingUntilDebitSettles() {
+        // Close May 21, due Jun 5, today Jun 8: the due date passed but no
+        // payment posted anywhere. The statement stays projected at its
+        // original due date instead of silently retiring.
+        let f = CCPaymentForecaster(calendar: utc)
+        let visa = card(balance: Money.dollars(-800))
+        let settings = CardStatementSettings(
+            accountId: "card-1",
+            statementCycleDay: 21,
+            paymentDueDay: 5,
+            paymentAccountId: "checking-1"
+        )
+        let payments = f.upcomingPayments(
+            card: visa,
+            settings: settings,
+            scheduled: [],
+            historicalTransactions: [],
+            asOf: date(2026, 6, 8),
+            horizonDays: 60
+        )
+        let overdueRow = payments.first(where: { $0.basis == .closedStatementEstimate })
+        #expect(overdueRow != nil)
+        #expect(overdueRow?.amount == Money.dollars(800))
+        #expect(overdueRow?.dueDate == date(2026, 6, 5))
+    }
+
+    @Test func overdueAmountAddsBackPostedCardCredit() {
+        // The card-side autopay credit posted Jun 6 but the bank debit has
+        // not settled. The overdue payment self-corrects to the actual
+        // credited amount, and the next statement keeps only the new
+        // post-close purchase.
+        let f = CCPaymentForecaster(calendar: utc)
+        let visa = card(balance: Money.dollars(-50))
+        let settings = CardStatementSettings(
+            accountId: "card-1",
+            statementCycleDay: 21,
+            paymentDueDay: 5,
+            paymentAccountId: "checking-1"
+        )
+        let history = [
+            TransactionSummary(
+                id: "autopay-credit", accountId: "card-1", date: date(2026, 6, 6),
+                amount: Money.dollars(800), cleared: true, approved: true,
+                payeeName: nil, categoryName: nil,
+                forecastTreatment: .cardPayment, memo: nil, deleted: false
+            ),
+            TransactionSummary(
+                id: "new-purchase", accountId: "card-1", date: date(2026, 6, 7),
+                amount: Money.dollars(-50), cleared: true, approved: true,
+                payeeName: nil, categoryName: nil, memo: nil, deleted: false
+            )
+        ]
+        let payments = f.upcomingPayments(
+            card: visa,
+            settings: settings,
+            scheduled: [],
+            historicalTransactions: history,
+            asOf: date(2026, 6, 8),
+            horizonDays: 60
+        )
+        let overdueRow = payments.first(where: { $0.basis == .closedStatementEstimate })
+        #expect(overdueRow?.amount == Money.dollars(800))
+        let futureRow = payments.first(where: { $0.basis == .futureScheduledOnly })
+        #expect(futureRow?.amount == Money.dollars(50))
     }
 
     @Test func dueDaysShorterThanCloseDayHandled() {

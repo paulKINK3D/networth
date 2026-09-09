@@ -135,12 +135,15 @@ public struct CashPositionProjector: Sendable {
             start: start,
             end: end
         )
+        // A payment past its due date is committed but not yet cleared —
+        // the app layer removes it once the bank debit settles. It lands on
+        // day zero so the whole curve reflects the imminent outflow.
         let paymentEvents = cardPayments
-            .filter { selectedCashAccountIds.contains($0.paymentAccountId) && $0.dueDate > start && $0.dueDate <= end }
+            .filter { selectedCashAccountIds.contains($0.paymentAccountId) && $0.dueDate <= end }
             .map { payment in
                 CashProjectionEvent(
                     id: payment.id,
-                    date: calendar.startOfDay(for: payment.dueDate),
+                    date: max(start, calendar.startOfDay(for: payment.dueDate)),
                     amount: -payment.amount,
                     kind: .cardPayment,
                     title: "\(payment.cardName) autopay",
@@ -178,12 +181,16 @@ public struct CashPositionProjector: Sendable {
         var cursor = start
 
         while cursor <= end {
+            // Day-zero events exist only for past-due card payments; they
+            // apply before the first point so today's balance is already
+            // net of the committed debit. Expected spending still starts
+            // tomorrow.
+            for event in eventsByDay[cursor] ?? [] {
+                known += event.amount
+                expected += event.amount
+                higherExpected += event.amount
+            }
             if cursor > start {
-                for event in eventsByDay[cursor] ?? [] {
-                    known += event.amount
-                    expected += event.amount
-                    higherExpected += event.amount
-                }
                 expected -= spendEstimate.dailyAmount
                 if let higherDailyAmount = spendEstimate.higherDailyAmount {
                     higherExpected -= higherDailyAmount
@@ -419,10 +426,8 @@ public struct CashPositionProjector: Sendable {
             var cursor = start
 
             while cursor <= end {
-                if cursor > start {
-                    for event in eventsByDay[cursor] ?? [] {
-                        balance += event.amount
-                    }
+                for event in eventsByDay[cursor] ?? [] {
+                    balance += event.amount
                 }
                 points.append(CashPositionPoint(date: cursor, balance: balance))
                 guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
@@ -430,7 +435,7 @@ public struct CashPositionProjector: Sendable {
             }
 
             guard let lowPoint = points.min(by: { $0.balance < $1.balance }) else { return nil }
-            let firstShortfall = points.dropFirst().first { point in
+            let firstShortfall = points.first { point in
                 guard point.balance < .zero else { return false }
                 return eventsByDay[calendar.startOfDay(for: point.date)]?
                     .contains { $0.amount.isNegative } == true

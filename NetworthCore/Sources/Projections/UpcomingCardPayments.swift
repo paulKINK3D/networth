@@ -321,6 +321,37 @@ extension CCPaymentForecaster {
                     startingBalanceOwed: card.balance.absolute
                 ))
             }
+        } else {
+            // The due date has passed but the debit may not have left the
+            // paying account yet. Keep emitting the statement at its
+            // pre-payment amount — card-side payment credits are added back
+            // so a cleared card credit cannot hide a bank debit that is
+            // still pending. The app layer drops the payment once it is
+            // settled on the paying account or resolved by the user.
+            let overdueAmount = lastStatement + postClosePaymentCredits(
+                cardAccountId: card.id,
+                closeDate: lastClose,
+                today: start,
+                history: historicalTransactions,
+                assignments: statementAssignments
+            )
+            if !overdueAmount.isZero {
+                // Only the un-credited remainder is still inside owed; a
+                // posted card credit already left the balance and must not
+                // zero the next simulated statement.
+                pending.append((dayAfter(start), lastStatement))
+                payments.append(UpcomingCardPayment(
+                    cardAccountId: card.id,
+                    paymentAccountId: paymentAccountId,
+                    cardName: card.name,
+                    closeDate: lastClose,
+                    statementCycleDay: settings.statementCycleDay,
+                    dueDate: lastDue,
+                    amount: overdueAmount,
+                    basis: .closedStatementEstimate,
+                    startingBalanceOwed: card.balance.absolute
+                ))
+            }
         }
 
         var owed = card.balance.absolute
@@ -434,6 +465,32 @@ extension CCPaymentForecaster {
                 + currentBalanceCredits
         )
         return result < .zero ? .zero : result
+    }
+
+    /// Post-close card-side payment credits for one closed statement. Used to
+    /// reconstruct the pre-payment statement amount while the matching bank
+    /// debit has not been confirmed on the paying account.
+    private func postClosePaymentCredits(
+        cardAccountId: String,
+        closeDate: Date,
+        today: Date,
+        history: [TransactionSummary],
+        assignments: [CardStatementAssignment]
+    ) -> Money {
+        let credits = history.lazy
+            .filter {
+                !$0.deleted &&
+                    $0.accountId == cardAccountId &&
+                    isAfterStatementClose(
+                        $0,
+                        closeDate: closeDate,
+                        assignments: assignments
+                    ) &&
+                    $0.date <= today &&
+                    activityEffect(for: $0) == .reducesPayment
+            }
+            .reduce(Int64(0)) { $0 + $1.amount.milliunits }
+        return Money(milliunits: max(credits, 0))
     }
 
     /// Transactions close enough to a boundary to be plausible statement

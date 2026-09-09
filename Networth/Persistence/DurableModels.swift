@@ -230,6 +230,46 @@ public final class DurableCardPaymentConfirmation {
     }
 }
 
+/// One user-visible resolution for an overdue statement autopay. Settling
+/// retires the projected payment for that cycle only; an empty transaction id
+/// means the statement was paid outside the tracked accounts. All fields are
+/// defaulted for additive CloudKit schema compatibility.
+@Model
+public final class DurableCardPaymentSettlement {
+    public var id: UUID = UUID()
+    public var cardAccountId: String = ""
+    public var statementCloseDate: Date = Date.now
+    public var transactionId: String = ""
+    public var createdAt: Date = Date.now
+    public var updatedAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        cardAccountId: String = "",
+        statementCloseDate: Date = .now,
+        transactionId: String = "",
+        createdAt: Date = .now,
+        updatedAt: Date = .now
+    ) {
+        self.id = id
+        self.cardAccountId = cardAccountId
+        self.statementCloseDate = statementCloseDate
+        self.transactionId = transactionId
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    public var coreSettlement: CardPaymentSettlement {
+        CardPaymentSettlement(
+            id: id.uuidString,
+            cardAccountId: cardAccountId,
+            statementCloseDate: statementCloseDate,
+            transactionId: transactionId.isEmpty ? nil : transactionId,
+            updatedAt: updatedAt
+        )
+    }
+}
+
 /// One explicit statement-cycle assignment for an imported card transaction.
 /// This never mutates the disposable Plaid transaction or either source date.
 /// All fields are defaulted for additive CloudKit schema compatibility.

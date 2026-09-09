@@ -90,6 +90,9 @@ struct ProjectionHeroMetric: Sendable, Equatable {
 private struct CardPaymentDetailSelection: Identifiable {
     let payment: UpcomingCardPayment
     let transactions: [TransactionSummary]
+    /// Paying-account outflows offered as the actual debit when the
+    /// payment is past due and unsettled.
+    let bankCandidates: [TransactionSummary]
 
     var id: String { payment.id }
 }
@@ -282,7 +285,8 @@ struct ProjectionsView: View {
             .sheet(item: $selectedPayment) { payment in
                 CardPaymentDetailSheet(
                     payment: payment.payment,
-                    transactions: payment.transactions
+                    transactions: payment.transactions,
+                    bankCandidates: payment.bankCandidates
                 )
                 .environment(container)
             }
@@ -686,7 +690,9 @@ struct ProjectionsView: View {
                 selectedPayment = CardPaymentDetailSelection(
                     payment: payment,
                     transactions: data.cardActivityByPaymentID[payment.id]
-                        ?? []
+                        ?? [],
+                    bankCandidates:
+                        data.overdueCandidatesByPaymentID[payment.id] ?? []
                 )
             } label: { row }
                 .buttonStyle(.plain)
@@ -759,20 +765,30 @@ struct ProjectionsView: View {
         let color = event.amount.isNegative
             ? NwAppColors.liability
             : NwAppColors.positive
+        // A card payment dated today is a past-due debit being held against
+        // cash until it clears the paying account.
+        let awaitingClearance = event.kind == .cardPayment
+            && event.date <= Calendar.current.startOfDay(for: .now)
         return HStack(alignment: .top, spacing: NwSpacing.md) {
             timelineMarker(
                 icon: timelineIcon(event),
-                color: color,
+                color: awaitingClearance ? NwAppColors.caution : color,
                 isLast: isLast
             )
             VStack(alignment: .leading, spacing: 2) {
-                Text(
-                    event.date,
-                    format: .dateTime.month(.abbreviated).day()
-                        .weekday(.abbreviated)
-                )
-                .font(NwTypography.caption)
-                .foregroundStyle(NwAppColors.textSecondary)
+                if awaitingClearance {
+                    Text("Waiting to clear")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.caution)
+                } else {
+                    Text(
+                        event.date,
+                        format: .dateTime.month(.abbreviated).day()
+                            .weekday(.abbreviated)
+                    )
+                    .font(NwTypography.caption)
+                    .foregroundStyle(NwAppColors.textSecondary)
+                }
                 HStack(spacing: NwSpacing.xs) {
                     Text(event.title)
                         .font(NwTypography.bodyEmphasis)
@@ -867,6 +883,9 @@ struct ProjectionsView: View {
         let result: CashPositionProjector.Result
         let paymentEstimates: [UpcomingCardPayment]
         let cardActivityByPaymentID: [String: [TransactionSummary]]
+        /// Paying-account outflows a user can pick as the actual debit for
+        /// an overdue, still-unsettled payment, keyed by payment id.
+        let overdueCandidatesByPaymentID: [String: [TransactionSummary]]
         let selectedCashAccounts: [AccountSnapshot]
         let missingCardNames: [String]
         let unfundedCardNames: [String]
@@ -1939,8 +1958,10 @@ private struct CardPaymentDetailSheet: View {
     @Query private var confirmationRows: [DurableCardPaymentConfirmation]
     @Query private var statementAssignmentRows:
         [DurableCardStatementAssignment]
+    @Query private var settlementRows: [DurableCardPaymentSettlement]
     let payment: UpcomingCardPayment
     let transactions: [TransactionSummary]
+    let bankCandidates: [TransactionSummary]
 
     @State private var showingEditor = false
     @State private var showingUseEstimateConfirmation = false
@@ -1979,6 +2000,38 @@ private struct CardPaymentDetailSheet: View {
                             time: .omitted
                         )
                     )
+                }
+            }
+
+            if isAwaitingClearance {
+                if cycleSettlements.isEmpty {
+                    Text("Waiting to Clear")
+                        .font(NwTypography.titleSmall)
+
+                    if !displayedCandidates.isEmpty {
+                        candidatesCard
+                    }
+
+                    Button {
+                        saveSettlement(transactionId: nil)
+                    } label: {
+                        Text("Paid from Another Account")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(NwAppColors.primary)
+                } else {
+                    Text("Marked Paid")
+                        .font(NwTypography.titleSmall)
+
+                    Button {
+                        removeSettlement()
+                    } label: {
+                        Text("Not Paid Yet")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(NwAppColors.liability)
                 }
             }
 
@@ -2201,6 +2254,68 @@ private struct CardPaymentDetailSheet: View {
         }
     }
 
+    /// The projected debit date has arrived but no matching outflow settled
+    /// on the paying account. Settled payments never reach this sheet — the
+    /// projection retires their timeline event.
+    private var isAwaitingClearance: Bool {
+        calendar.startOfDay(for: resolved.paymentDate)
+            <= calendar.startOfDay(for: .now)
+    }
+
+    private var displayedCandidates: [TransactionSummary] {
+        Array(bankCandidates.prefix(5))
+    }
+
+    private var candidatesCard: some View {
+        NwCard(style: .primary, padding: 0) {
+            VStack(spacing: 0) {
+                ForEach(Array(displayedCandidates.enumerated()),
+                        id: \.element.id) { index, transaction in
+                    Button {
+                        saveSettlement(transactionId: transaction.id)
+                    } label: {
+                        HStack(spacing: NwSpacing.md) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(
+                                    transaction.payeeName
+                                        ?? transaction.categoryName
+                                        ?? "Transaction"
+                                )
+                                .font(NwTypography.body)
+                                .foregroundStyle(NwAppColors.textPrimary)
+                                Text("Mark as this payment")
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(NwAppColors.accent)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 2) {
+                                NwAmountText(
+                                    transaction.amount,
+                                    variant: .body,
+                                    showCents: true,
+                                    color: NwAppColors.liability
+                                )
+                                Text(
+                                    transaction.date.formatted(
+                                        .dateTime.month(.abbreviated).day()
+                                    )
+                                )
+                                .font(NwTypography.caption)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                            }
+                        }
+                        .padding(NwSpacing.md)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if index < displayedCandidates.count - 1 {
+                        Divider().padding(.leading, NwSpacing.md)
+                    }
+                }
+            }
+        }
+    }
+
     private var boundaryActivityCard: some View {
         NwCard(style: .primary, padding: 0) {
             VStack(spacing: 0) {
@@ -2323,6 +2438,51 @@ private struct CardPaymentDetailSheet: View {
 
     private func shortDate(_ date: Date) -> String {
         date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    private var cycleSettlements: [DurableCardPaymentSettlement] {
+        settlementRows.filter {
+            $0.cardAccountId == payment.cardAccountId
+                && calendar.isDate(
+                    $0.statementCloseDate,
+                    inSameDayAs: payment.closeDate
+                )
+        }
+    }
+
+    private func saveSettlement(transactionId: String?) {
+        let context = container.modelContainer.mainContext
+        let now = Date.now
+        if cycleSettlements.isEmpty {
+            context.insert(DurableCardPaymentSettlement(
+                cardAccountId: payment.cardAccountId,
+                statementCloseDate: payment.closeDate,
+                transactionId: transactionId ?? "",
+                createdAt: now,
+                updatedAt: now
+            ))
+        } else {
+            for row in cycleSettlements {
+                row.transactionId = transactionId ?? ""
+                row.updatedAt = now
+            }
+        }
+        guard context.safeSave(source: "projection.cardPayment.settle")
+        else {
+            persistenceError = "Your payment confirmation wasn’t saved."
+            return
+        }
+    }
+
+    private func removeSettlement() {
+        let context = container.modelContainer.mainContext
+        for row in cycleSettlements { context.delete(row) }
+        guard context.safeSave(source: "projection.cardPayment.unsettle")
+        else {
+            context.rollback()
+            persistenceError = "Your change wasn’t saved."
+            return
+        }
     }
 
     private var matchingRows: [DurableCardPaymentConfirmation] {
@@ -2668,6 +2828,9 @@ private actor ProjectionsDataActor {
         let confirmationRows = (try? context.fetch(
             FetchDescriptor<DurableCardPaymentConfirmation>()
         )) ?? []
+        let settlementRows = (try? context.fetch(
+            FetchDescriptor<DurableCardPaymentSettlement>()
+        )) ?? []
         let statementAssignmentRows = (try? context.fetch(
             FetchDescriptor<DurableCardStatementAssignment>()
         )) ?? []
@@ -2888,6 +3051,38 @@ private actor ProjectionsDataActor {
             confirmationResolver.resolve($0, confirmations: confirmations)
         }
         let projectedPayments = resolvedPayments.map(\.projectedPayment)
+        // A payment past its due date stays projected until its debit
+        // settles on the paying account or the user resolves it in the
+        // autopay detail sheet. Settled cycles drop out here; the
+        // forecaster itself stays settlement-blind.
+        let settlementMatcher = CardPaymentSettlementMatcher()
+        let settledPaymentIds = settlementMatcher.settledPaymentIds(
+            payments: projectedPayments,
+            transactions: cardActivityHistory,
+            settlements: settlementRows.map(\.coreSettlement),
+            asOf: .now
+        )
+        let activePayments = projectedPayments.filter {
+            !settledPaymentIds.contains($0.id)
+        }
+        let startOfToday = Calendar.current.startOfDay(for: .now)
+        let overdueCandidatesByPaymentID = Dictionary(
+            uniqueKeysWithValues: activePayments
+                .filter {
+                    Calendar.current.startOfDay(for: $0.dueDate)
+                        <= startOfToday
+                }
+                .map { payment in
+                    (
+                        payment.id,
+                        settlementMatcher.candidateTransactions(
+                            for: payment,
+                            transactions: cardActivityHistory,
+                            asOf: .now
+                        )
+                    )
+                }
+        )
         let cardActivityByPaymentID = Dictionary(uniqueKeysWithValues:
             paymentEstimates.map { payment in
                 (
@@ -2909,7 +3104,7 @@ private actor ProjectionsDataActor {
             selectedCashAccountIds: selectedIds,
             cardAccountIds: Set(openCards.map(\.id)),
             fundedCardAccountIds: fundedCardIds,
-            cardPayments: projectedPayments,
+            cardPayments: activePayments,
             scheduled: scheduledSummaries,
             estimateExemptScheduledIds: estimateExemptIds,
             historicalTransactions: history,
@@ -2932,6 +3127,7 @@ private actor ProjectionsDataActor {
             result: result,
             paymentEstimates: paymentEstimates,
             cardActivityByPaymentID: cardActivityByPaymentID,
+            overdueCandidatesByPaymentID: overdueCandidatesByPaymentID,
             selectedCashAccounts: selectedCash,
             missingCardNames: missingCards,
             unfundedCardNames: unfundedCards,
