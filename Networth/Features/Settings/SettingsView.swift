@@ -3159,6 +3159,8 @@ struct PlaidTransactionReviewEditor: View {
         [DurableSavingsTransferAssignment]
     @Query private var canonicalDecisions:
         [DurableCanonicalTransactionDecision]
+    @Query private var reimbursementPaidBackRows:
+        [DurableReimbursementPaidBack]
     let transaction: CachedFinancialTransaction
     let dismissAfterSave: Bool
     let canMovePrevious: Bool
@@ -3481,6 +3483,11 @@ struct PlaidTransactionReviewEditor: View {
                     if showsExpenseFunding {
                         Divider()
                         expenseFundingRow
+                    }
+
+                    if treatment == .reimbursement {
+                        Divider()
+                        reimbursementPaidBackRow
                     }
                 }
 
@@ -4644,6 +4651,46 @@ struct PlaidTransactionReviewEditor: View {
 
     /// The matched opposite leg of this transfer or card payment, when the
     /// sync pass linked one.
+    /// Manual reimbursement bookkeeping, independent of the Confirm
+    /// decision: the mark saves immediately and never affects totals.
+    private var reimbursementPaidBackRow: some View {
+        Toggle(
+            "Paid back",
+            isOn: Binding(
+                get: {
+                    reimbursementPaidBackRows.contains {
+                        $0.transactionId == transaction.id
+                    }
+                },
+                set: { _ in toggleReimbursementPaidBack() }
+            )
+        )
+        .padding(NwSpacing.md)
+    }
+
+    private func toggleReimbursementPaidBack() {
+        let context = container.modelContainer.mainContext
+        let existing = reimbursementPaidBackRows.filter {
+            $0.transactionId == transaction.id
+        }
+        if existing.isEmpty {
+            context.insert(DurableReimbursementPaidBack(
+                transactionId: transaction.id,
+                payeeName: transaction.displayName,
+                transactionDate: transaction.postedDate,
+                amountMilliunits: transaction.amountMilliunits
+            ))
+        } else {
+            existing.forEach(context.delete)
+        }
+        guard context.safeSave(
+            source: "transactions.reimbursementPaidBack"
+        ) else {
+            context.rollback()
+            return
+        }
+    }
+
     private var counterpartTwin: CachedFinancialTransaction? {
         guard let twinId = transaction.counterpartTransactionId else {
             return nil

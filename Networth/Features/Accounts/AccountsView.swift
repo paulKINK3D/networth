@@ -1626,6 +1626,44 @@ struct FinancialTransactionCategoryFilter: Equatable {
     }
 }
 
+/// A transaction-type filter for history lists. `outstandingOnly` pairs only
+/// with `.reimbursement` and hides transactions already marked paid back.
+struct FinancialTransactionTypeFilter: Equatable {
+    let treatment: ForecastTreatment
+    let outstandingOnly: Bool
+    let name: String
+
+    init(
+        treatment: ForecastTreatment,
+        outstandingOnly: Bool = false,
+        name: String
+    ) {
+        self.treatment = treatment
+        self.outstandingOnly = outstandingOnly
+        self.name = name
+    }
+
+    func matchingAmountMilliunits(
+        in transaction: CachedFinancialTransaction,
+        paidBackTransactionIds: Set<String> = []
+    ) -> Int64? {
+        guard !transaction.requiresReview else { return nil }
+        if outstandingOnly,
+           paidBackTransactionIds.contains(transaction.id) {
+            return nil
+        }
+        if transaction.isSplit {
+            let matchingLegs = transaction.subtransactions.filter {
+                !$0.deleted && $0.forecastTreatment == treatment
+            }
+            guard !matchingLegs.isEmpty else { return nil }
+            return matchingLegs.map(\.amount.milliunits).reduce(0, +)
+        }
+        guard transaction.forecastTreatment == treatment else { return nil }
+        return transaction.amountMilliunits
+    }
+}
+
 struct FinancialAccountTransactionHistoryView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: [
@@ -1641,7 +1679,13 @@ struct FinancialAccountTransactionHistoryView: View {
     @State private var searchText = ""
     @State private var submittedQuery = ""
     @State private var categoryFilter: FinancialTransactionCategoryFilter?
+    @State private var typeFilter: FinancialTransactionTypeFilter?
     @State private var showingCategoryFilter = false
+    @Query private var paidBackMarks: [DurableReimbursementPaidBack]
+
+    private var paidBackIds: Set<String> {
+        Set(paidBackMarks.map(\.transactionId))
+    }
 
     private static let pageSize = 50
 
@@ -1658,13 +1702,13 @@ struct FinancialAccountTransactionHistoryView: View {
             if transactions.isEmpty, !isLoading, loadError == nil {
                 NwEmptyState(
                     title: submittedQuery.isEmpty
-                        ? (categoryFilter == nil
+                        ? (activeFilterName == nil
                             ? "No transactions"
-                            : "No category transactions")
+                            : "No matching transactions")
                         : "No matches",
                     message: submittedQuery.isEmpty
-                        ? (categoryFilter.map {
-                            "No posted transactions use \($0.name)."
+                        ? (activeFilterName.map {
+                            "No posted transactions use \($0)."
                         } ?? "Posted transactions will appear here.")
                         : "No transactions match “\(submittedQuery)”.",
                     icon: .empty
@@ -1682,14 +1726,34 @@ struct FinancialAccountTransactionHistoryView: View {
                 } label: {
                     NwTransactionRow(
                         title: transaction.displayName,
-                        subtitle: financialTransactionSubtitle(transaction),
+                        subtitle: financialTransactionSubtitle(
+                            transaction,
+                            paidBack: paidBackIds.contains(transaction.id)
+                        ),
                         amount: Money(
-                            milliunits: categoryFilter?.matchingAmountMilliunits(
-                                in: transaction,
-                                cashAccountIDs: [transaction.canonicalAccountId]
-                            ) ?? transaction.amountMilliunits
+                            milliunits: displayAmountMilliunits(transaction)
                         )
                     )
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    if isReimbursementFlavored(transaction) {
+                        let isPaidBack = paidBackIds.contains(transaction.id)
+                        Button {
+                            togglePaidBack(transaction)
+                        } label: {
+                            Label(
+                                isPaidBack ? "Outstanding" : "Paid Back",
+                                systemImage: isPaidBack
+                                    ? "arrow.uturn.backward.circle"
+                                    : "checkmark.circle"
+                            )
+                        }
+                        .tint(
+                            isPaidBack
+                                ? NwAppColors.caution
+                                : NwAppColors.positive
+                        )
+                    }
                 }
                 .onAppear {
                     if transaction.id == transactions.last?.id {
@@ -1721,7 +1785,7 @@ struct FinancialAccountTransactionHistoryView: View {
         }
         .nwScreenBackground()
         .navigationTitle(
-            categoryFilter?.name
+            activeFilterName
                 ?? (account == nil ? "All Transactions" : "Transactions")
         )
         .navigationBarTitleDisplayMode(.inline)
@@ -1749,22 +1813,92 @@ struct FinancialAccountTransactionHistoryView: View {
                     showingCategoryFilter = true
                 } label: {
                     Image(
-                        systemName: categoryFilter == nil
+                        systemName:
+                            categoryFilter == nil && typeFilter == nil
                             ? "line.3.horizontal.decrease.circle"
                             : "line.3.horizontal.decrease.circle.fill"
                     )
                 }
-                .accessibilityLabel("Filter by category")
+                .accessibilityLabel("Filter transactions")
             }
         }
         .sheet(isPresented: $showingCategoryFilter) {
             TransactionCategoryFilterSheet(
                 categories: categories,
-                selection: categoryFilter
-            ) { selection in
-                categoryFilter = selection
-                restartLoad()
+                selection: categoryFilter,
+                typeSelection: typeFilter,
+                onSelect: { selection in
+                    categoryFilter = selection
+                    restartLoad()
+                },
+                onSelectType: { selection in
+                    typeFilter = selection
+                    restartLoad()
+                }
+            )
+        }
+    }
+
+    /// The narrowest active filter names the screen and its empty state.
+    private var activeFilterName: String? {
+        categoryFilter?.name ?? typeFilter?.name
+    }
+
+    private func displayAmountMilliunits(
+        _ transaction: CachedFinancialTransaction
+    ) -> Int64 {
+        if let amount = categoryFilter?.matchingAmountMilliunits(
+            in: transaction,
+            cashAccountIDs: [transaction.canonicalAccountId]
+        ) {
+            return amount
+        }
+        if let amount = typeFilter?.matchingAmountMilliunits(
+            in: transaction,
+            paidBackTransactionIds: paidBackIds
+        ) {
+            return amount
+        }
+        return transaction.amountMilliunits
+    }
+
+    private func isReimbursementFlavored(
+        _ transaction: CachedFinancialTransaction
+    ) -> Bool {
+        if transaction.isSplit {
+            return transaction.subtransactions.contains {
+                !$0.deleted && $0.forecastTreatment == .reimbursement
             }
+        }
+        return transaction.forecastTreatment == .reimbursement
+    }
+
+    private func togglePaidBack(
+        _ transaction: CachedFinancialTransaction
+    ) {
+        let transactionId = transaction.id
+        let descriptor = FetchDescriptor<DurableReimbursementPaidBack>(
+            predicate: #Predicate { $0.transactionId == transactionId }
+        )
+        let existing = (try? modelContext.fetch(descriptor)) ?? []
+        if existing.isEmpty {
+            modelContext.insert(DurableReimbursementPaidBack(
+                transactionId: transactionId,
+                payeeName: transaction.displayName,
+                transactionDate: transaction.postedDate,
+                amountMilliunits: transaction.amountMilliunits
+            ))
+        } else {
+            existing.forEach(modelContext.delete)
+        }
+        guard modelContext.safeSave(
+            source: "transactions.reimbursementPaidBack"
+        ) else {
+            modelContext.rollback()
+            return
+        }
+        if typeFilter?.outstandingOnly == true {
+            restartLoad()
         }
     }
 
@@ -1794,9 +1928,11 @@ struct FinancialAccountTransactionHistoryView: View {
                 offset: transactions.count,
                 limit: Self.pageSize,
                 categoryFilter: categoryFilter,
+                typeFilter: typeFilter,
+                paidBackTransactionIds: paidBackIds,
                 context: modelContext
             )
-            if categoryFilter == nil {
+            if categoryFilter == nil, typeFilter == nil {
                 transactions.append(contentsOf: page)
                 hasMore = page.count == Self.pageSize
             } else {
@@ -1814,12 +1950,44 @@ private struct TransactionCategoryFilterSheet: View {
     @Environment(\.dismiss) private var dismiss
     let categories: [DurableCanonicalCategory]
     let selection: FinancialTransactionCategoryFilter?
+    let typeSelection: FinancialTransactionTypeFilter?
     let onSelect: (FinancialTransactionCategoryFilter?) -> Void
+    let onSelectType: (FinancialTransactionTypeFilter?) -> Void
     @State private var searchText = ""
 
     var body: some View {
         NavigationStack {
             List {
+                if searchText.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                ).isEmpty {
+                    Section("Type") {
+                        typeButton(title: "All Types", filter: nil)
+                        ForEach(
+                            TransactionType.allCases,
+                            id: \.self
+                        ) { treatment in
+                            typeButton(
+                                title: treatment.displayName,
+                                filter: FinancialTransactionTypeFilter(
+                                    treatment: treatment,
+                                    name: treatment.displayName
+                                )
+                            )
+                            if treatment == .reimbursement {
+                                typeButton(
+                                    title: "Outstanding Reimbursements",
+                                    filter: FinancialTransactionTypeFilter(
+                                        treatment: .reimbursement,
+                                        outstandingOnly: true,
+                                        name: "Outstanding Reimbursements"
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
                 Section {
                     filterButton(title: "All Categories", filter: nil)
                     filterButton(
@@ -1846,7 +2014,7 @@ private struct TransactionCategoryFilterSheet: View {
                 }
             }
             .nwScreenBackground()
-            .navigationTitle("Category")
+            .navigationTitle("Filter")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Search categories")
             .toolbar {
@@ -1877,6 +2045,27 @@ private struct TransactionCategoryFilterSheet: View {
                     .foregroundStyle(NwAppColors.textPrimary)
                 Spacer()
                 if selection == filter {
+                    NwIcon.confirm.image
+                        .foregroundStyle(NwAppColors.positive)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+    }
+
+    private func typeButton(
+        title: String,
+        filter: FinancialTransactionTypeFilter?
+    ) -> some View {
+        Button {
+            onSelectType(filter)
+            dismiss()
+        } label: {
+            HStack {
+                Text(title)
+                    .foregroundStyle(NwAppColors.textPrimary)
+                Spacer()
+                if typeSelection == filter {
                     NwIcon.confirm.image
                         .foregroundStyle(NwAppColors.positive)
                 }
@@ -1929,7 +2118,8 @@ private struct TransactionCategoryFilterSheet: View {
 }
 
 private func financialTransactionSubtitle(
-    _ transaction: CachedFinancialTransaction
+    _ transaction: CachedFinancialTransaction,
+    paidBack: Bool = false
 ) -> String {
     let classification: String
     if transaction.isSplit {
@@ -1948,7 +2138,8 @@ private func financialTransactionSubtitle(
         date: .abbreviated,
         time: .omitted
     )
-    return "\(classification) · \(date)"
+    let base = "\(classification) · \(date)"
+    return paidBack ? "\(base) · Paid back" : base
 }
 
 @MainActor
@@ -1960,6 +2151,8 @@ enum FinancialTransactionPageFetcher {
         offset: Int,
         limit: Int = 50,
         categoryFilter: FinancialTransactionCategoryFilter? = nil,
+        typeFilter: FinancialTransactionTypeFilter? = nil,
+        paidBackTransactionIds: Set<String> = [],
         context: ModelContext
     ) throws -> [CachedFinancialTransaction] {
         let sort = [
@@ -2003,29 +2196,43 @@ enum FinancialTransactionPageFetcher {
             predicate: predicate,
             sortBy: sort
         )
-        if categoryFilter == nil {
+        // Any active filter switches to a single in-memory pass: split legs
+        // and paid-back marks cannot be expressed in a #Predicate.
+        if categoryFilter == nil, typeFilter == nil {
             descriptor.fetchLimit = limit
             descriptor.fetchOffset = offset
         }
-        let rows = try context.fetch(descriptor)
-        guard let categoryFilter else { return rows }
+        var rows = try context.fetch(descriptor)
 
-        let cashAccountIDs: Set<String>
-        if categoryFilter.isInvestmentContribution {
-            cashAccountIDs = Set(
-                try context.fetch(FetchDescriptor<CachedFinancialAccount>())
+        if let categoryFilter {
+            let cashAccountIDs: Set<String>
+            if categoryFilter.isInvestmentContribution {
+                cashAccountIDs = Set(
+                    try context.fetch(
+                        FetchDescriptor<CachedFinancialAccount>()
+                    )
                     .filter { $0.type.isCashLike }
                     .map(\.canonicalAccountId)
-            )
-        } else {
-            cashAccountIDs = []
+                )
+            } else {
+                cashAccountIDs = []
+            }
+            rows = rows.filter {
+                categoryFilter.matchingAmountMilliunits(
+                    in: $0,
+                    cashAccountIDs: cashAccountIDs
+                ) != nil
+            }
         }
-        return rows.filter {
-            categoryFilter.matchingAmountMilliunits(
-                in: $0,
-                cashAccountIDs: cashAccountIDs
-            ) != nil
+        if let typeFilter {
+            rows = rows.filter {
+                typeFilter.matchingAmountMilliunits(
+                    in: $0,
+                    paidBackTransactionIds: paidBackTransactionIds
+                ) != nil
+            }
         }
+        return rows
     }
 }
 

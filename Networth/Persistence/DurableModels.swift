@@ -1247,6 +1247,36 @@ public final class DurableExcludedSpendTransaction {
     }
 }
 
+/// One reimbursement the user marked as paid back. Manual bookkeeping only:
+/// repayments arrive in bulk, so nothing is paired against deposits and the
+/// mark never affects spending, budgets, or projections. Additive durable
+/// CloudKit data keyed by stable provider transaction identity.
+@Model
+public final class DurableReimbursementPaidBack {
+    public var id: UUID = UUID()
+    public var transactionId: String = ""
+    public var payeeName: String = ""
+    public var transactionDate: Date = Date.now
+    public var amountMilliunits: Int64 = 0
+    public var createdAt: Date = Date.now
+
+    public init(
+        id: UUID = UUID(),
+        transactionId: String = "",
+        payeeName: String = "",
+        transactionDate: Date = .now,
+        amountMilliunits: Int64 = 0,
+        createdAt: Date = .now
+    ) {
+        self.id = id
+        self.transactionId = transactionId
+        self.payeeName = payeeName
+        self.transactionDate = transactionDate
+        self.amountMilliunits = amountMilliunits
+        self.createdAt = createdAt
+    }
+}
+
 /// A durable override to the projection cash-pool default. Open on-budget
 /// cash accounts default on; off-budget cash accounts default off.
 @Model
