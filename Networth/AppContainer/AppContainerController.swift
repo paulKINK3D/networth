@@ -368,6 +368,23 @@ public final class AppContainerController {
     }
 
     @discardableResult
+    public func confirmPlaidCardPaymentSettlement(
+        transactionId: String,
+        cardAccountId: String
+    ) -> Bool {
+        plaidTransactionSyncCoordinator.confirmCardPaymentSettlement(
+            transactionId: transactionId,
+            cardAccountId: cardAccountId
+        )
+    }
+
+    public func requeuePlaidSettledCardPayment(transactionId: String) {
+        plaidTransactionSyncCoordinator.requeueSettledCardPayment(
+            transactionId: transactionId
+        )
+    }
+
+    @discardableResult
     public func reviewPlaidSplitTransaction(
         id: String,
         displayName: String,

@@ -2829,7 +2829,8 @@ public final class PlaidTransactionSyncCoordinator {
         categoryCanonicalId: String?,
         goalId: UUID?,
         reserveFundId: UUID?,
-        savingsMonth: BudgetMonth?
+        savingsMonth: BudgetMonth?,
+        identityFromAccountRelationship: Bool = false
     ) -> Bool {
         var descriptor = FetchDescriptor<CachedFinancialTransaction>(
             predicate: #Predicate { $0.id == id }
@@ -2928,7 +2929,8 @@ public final class PlaidTransactionSyncCoordinator {
         // Payment: Debit") are shared by payments to many destinations, so
         // aliasing one to a card-specific payee would mislabel every future
         // transfer that lacks a monitored twin.
-        let identityFromCounterpart = row.counterpartTransactionId != nil
+        let identityFromCounterpart = (row.counterpartTransactionId != nil
+            || identityFromAccountRelationship)
             && (treatment == .cardPayment || treatment == .internalTransfer)
         if !identityFromCounterpart {
             assignAliases(for: [row], to: payee)
@@ -4325,6 +4327,106 @@ public final class PlaidTransactionSyncCoordinator {
             }
         }
         return candidates.count
+    }
+
+    /// A settlement pick in the autopay detail sheet is a direct user
+    /// identification: this debit is the card's statement payment. Confirm
+    /// it as a card payment named for the card so the review queue agrees
+    /// with the projection. The identity comes from the account
+    /// relationship, so the generic bank descriptor stays unaliased,
+    /// exactly as counterpart-matched confirmations do. A debit the user
+    /// already confirmed as a card payment keeps its classification.
+    @discardableResult
+    public func confirmCardPaymentSettlement(
+        transactionId: String,
+        cardAccountId: String
+    ) -> Bool {
+        var rowDescriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate { $0.id == transactionId }
+        )
+        rowDescriptor.fetchLimit = 1
+        guard let row = try? mainContext.fetch(rowDescriptor).first,
+              !row.deleted,
+              !row.pending,
+              row.amountMilliunits < 0 else {
+            return false
+        }
+        if !row.requiresReview, row.forecastTreatment == .cardPayment {
+            return true
+        }
+        let accounts = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialAccount>(
+                predicate: #Predicate { !$0.deleted }
+            )
+        )) ?? []
+        guard let card = accounts.first(where: {
+            $0.canonicalAccountId == cardAccountId
+        }) else { return false }
+        let nicknames = (try? mainContext.fetch(
+            FetchDescriptor<DurableAccountNickname>()
+        )) ?? []
+        let cardName = AccountDisplayNameResolver(
+            nicknames: nicknames
+        ).name(for: card)
+        // Resolve the payee by exact name only. Falling through to the
+        // row's held contact would rename it — a generic-descriptor alias
+        // may hold a contact shared by many unrelated transfers.
+        guard let payee = resolveOrCreateCanonicalPayee(
+            named: "Payment · \(cardName)",
+            preferredCanonicalId: nil
+        ) else { return false }
+        return confirmCanonicalTransaction(
+            id: transactionId,
+            displayName: payee.name,
+            payeeCanonicalId: payee.canonicalId,
+            categoryName: nil,
+            treatment: .cardPayment,
+            categoryCanonicalId: nil,
+            goalId: nil,
+            reserveFundId: nil,
+            savingsMonth: nil,
+            identityFromAccountRelationship: true
+        )
+    }
+
+    /// Undoing a settlement returns its picked debit to the review queue so
+    /// the classification is re-decided rather than silently kept. A debit
+    /// the user has since reclassified away from card payment is left alone.
+    public func requeueSettledCardPayment(transactionId: String) {
+        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate { $0.id == transactionId }
+        )
+        descriptor.fetchLimit = 1
+        guard let row = try? mainContext.fetch(descriptor).first,
+              !row.deleted,
+              row.forecastTreatment == .cardPayment,
+              !row.requiresReview else {
+            return
+        }
+        let externalId = row.externalId
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>(
+                predicate: #Predicate {
+                    $0.transactionExternalId == externalId
+                }
+            )
+        )) ?? []
+        let now = Date.now
+        row.requiresReview = true
+        row.updatedAt = now
+        if let decision = latestCanonicalDecisionsByTransactionID(
+            decisions
+        )[externalId] {
+            decision.reviewed = false
+            decision.updatedAt = now
+        }
+        guard mainContext.safeSave(
+            source: "plaidTransactions.settlementRequeue"
+        ) else {
+            mainContext.rollback()
+            return
+        }
+        refreshCanonicalReviewCounts()
     }
 
     @discardableResult

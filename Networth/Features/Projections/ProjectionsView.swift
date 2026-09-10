@@ -2453,6 +2453,9 @@ private struct CardPaymentDetailSheet: View {
     private func saveSettlement(transactionId: String?) {
         let context = container.modelContainer.mainContext
         let now = Date.now
+        let previousPickedIds = Set(
+            cycleSettlements.map(\.transactionId).filter { !$0.isEmpty }
+        )
         if cycleSettlements.isEmpty {
             context.insert(DurableCardPaymentSettlement(
                 cardAccountId: payment.cardAccountId,
@@ -2472,16 +2475,38 @@ private struct CardPaymentDetailSheet: View {
             persistenceError = "Your payment confirmation wasn’t saved."
             return
         }
+        // The pick identifies the debit, so the review queue follows: the
+        // picked transaction confirms as a card payment to this card, and
+        // a previously picked debit returns to review.
+        for previousId in previousPickedIds where previousId != transactionId {
+            container.requeuePlaidSettledCardPayment(
+                transactionId: previousId
+            )
+        }
+        if let transactionId,
+           !container.confirmPlaidCardPaymentSettlement(
+               transactionId: transactionId,
+               cardAccountId: payment.cardAccountId
+           ) {
+            persistenceError =
+                "Marked paid, but the transaction couldn’t be updated in review."
+        }
     }
 
     private func removeSettlement() {
         let context = container.modelContainer.mainContext
+        let pickedIds = Set(
+            cycleSettlements.map(\.transactionId).filter { !$0.isEmpty }
+        )
         for row in cycleSettlements { context.delete(row) }
         guard context.safeSave(source: "projection.cardPayment.unsettle")
         else {
             context.rollback()
             persistenceError = "Your change wasn’t saved."
             return
+        }
+        for pickedId in pickedIds {
+            container.requeuePlaidSettledCardPayment(transactionId: pickedId)
         }
     }
 
