@@ -274,12 +274,8 @@ struct ProjectionsView: View {
             }
             .sheet(isPresented: $showingSafeToSpendDetails) {
                 if let estimate = data.result.safeToSpend {
-                    SafeToSpendDetailSheet(
-                        estimate: estimate,
-                        higherSpendEstimate: data.result.higherSpendSafeToSpend,
-                        expectedMonthlyAmount: data.result.expectedSpend.estimatedMonthlyAmount,
-                        higherSpendMonthlyAmount: data.result.expectedSpend.higherSpendMonthlyAmount
-                    )
+                    SafeToSpendDetailSheet(data: data, estimate: estimate)
+                        .environment(container)
                 }
             }
             .sheet(item: $selectedPayment) { payment in
@@ -1149,29 +1145,49 @@ struct ProjectionsView: View {
 
 private struct SafeToSpendDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppContainerController.self) private var container
+    @Query private var categoryGroups: [DurableCategoryGroup]
+    @Query private var canonicalCategories: [DurableCanonicalCategory]
+    @Query private var statementAssignmentRows: [DurableCardStatementAssignment]
+    let data: ProjectionsView.ProjectionData
     let estimate: SafeToSpendEstimate
-    let higherSpendEstimate: SafeToSpendEstimate?
-    let expectedMonthlyAmount: Money
-    let higherSpendMonthlyAmount: Money?
 
-    private struct CashMovement: Identifiable {
-        enum Tone { case inflow, committed, estimated }
+    private enum Segment: String, CaseIterable, Identifiable {
+        case drivers
+        case cycle
+        case ledger
 
-        let id: String
-        let label: String
-        let amount: Money
-        let tone: Tone
+        var id: String { rawValue }
+        var title: String { rawValue.capitalized }
     }
+
+    private enum LockedKind: Hashable {
+        case cardAutopays
+        case bills
+        case income
+    }
+
+    @State private var segment: Segment = .drivers
+    @State private var expandedLocked: Set<LockedKind> = []
+
+    private let calendar = Calendar.current
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                    spendingRoomHero
-                    lowPointSection
-                    cashMovementSection
-                    scenarioSection
-                    activitySection
+                    hero
+                    NwSegmentedSelector(
+                        options: Segment.allCases,
+                        selection: $segment,
+                        title: { $0.title }
+                    )
+                    .accessibilityLabel("Spending Room view")
+                    switch segment {
+                    case .drivers: driversSegment
+                    case .cycle: cycleSegment
+                    case .ledger: ledgerSegment
+                    }
                 }
                 .padding(.horizontal, NwSpacing.screenPadding)
                 .padding(.vertical, NwSpacing.lg)
@@ -1179,6 +1195,36 @@ private struct SafeToSpendDetailSheet: View {
             .nwFrostedFieldBackground()
             .navigationTitle("Spending Room")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(
+                for: SpendingRoomDrivers.GroupSpending.self
+            ) { group in
+                SpendingRoomGroupDetail(
+                    title: group.name,
+                    categories: SpendingRoomDrivers.categoryAverages(
+                        groupId: group.id,
+                        samples: data.result.expectedSpend.monthlySamples,
+                        groupIdForCategory: groupIdForCategory(context: groupContext)
+                    ),
+                    currentMonth: data.result.expectedSpend.currentMonth
+                )
+            }
+            .navigationDestination(
+                for: SpendingRoomDrivers.CategorySpending.self
+            ) { category in
+                SpendingRoomCategoryDetail(
+                    title: category.name,
+                    monthCount: data.result.expectedSpend.monthlySamples.count,
+                    average: category.monthlyAverage,
+                    thisMonth: SpendingRoomDrivers.currentMonthTotal(
+                        categoryId: category.id,
+                        currentMonth: data.result.expectedSpend.currentMonth
+                    ),
+                    payees: SpendingRoomDrivers.payeeSummaries(
+                        categoryId: category.id,
+                        samples: data.result.expectedSpend.monthlySamples
+                    )
+                )
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { dismiss() } label: {
@@ -1190,320 +1236,103 @@ private struct SafeToSpendDetailSheet: View {
         .nwGlassSheet()
     }
 
-    private var spendingRoomHero: some View {
+    // MARK: Hero
+
+    private var hero: some View {
         NwCard(style: .primary) {
-            VStack(alignment: .leading, spacing: NwSpacing.md) {
-                Text(estimate.amount.isZero ? "NO EXTRA SPENDING ROOM" : "AVAILABLE FOR EXTRA SPENDING")
-                    .font(NwTypography.caption)
-                    .foregroundStyle(NwAppColors.textSecondary)
+            HStack(alignment: .center) {
                 NwAmountText(
                     estimate.amount,
                     variant: .hero,
                     showCents: false,
-                    color: estimate.amount.isZero ? NwAppColors.caution : NwAppColors.positive
+                    color: estimate.amount.isZero
+                        ? NwAppColors.caution
+                        : NwAppColors.positive
                 )
-                Text("One-time amount available through \(lowPointDateText)")
-                    .font(NwTypography.bodyEmphasis)
-            }
-        }
-    }
-
-    private var lowPointSection: some View {
-        VStack(alignment: .leading, spacing: NwSpacing.md) {
-            Text("At the Projected Low")
-                .font(NwTypography.titleSmall)
-
-            NwCard(style: .primary) {
-                VStack(alignment: .leading, spacing: NwSpacing.md) {
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(lowPointDateText)
-                                .font(NwTypography.bodyEmphasis)
-                            Text(lowPointStatusText)
-                                .font(NwTypography.footnote)
-                                .foregroundStyle(lowPointStatusColor)
-                        }
-                        Spacer()
-                        NwAmountText(
-                            estimate.projectedLowBalance,
-                            variant: .large,
-                            showCents: false,
-                            color: estimate.protectedCashGap.isZero
-                                ? NwAppColors.textPrimary
-                                : NwAppColors.liability
-                        )
-                    }
-
-                    lowPointCompositionBar
-
-                    HStack(spacing: NwSpacing.lg) {
-                        compositionLegend(
-                            "Cash buffer",
-                            amount: estimate.minimumCashBuffer,
-                            color: NwAppColors.protected
-                        )
-                        if estimate.spendingReserve > .zero {
-                            compositionLegend(
-                                "Spending Reserves",
-                                amount: estimate.spendingReserve,
-                                color: NwAppColors.gold
-                            )
-                        } else {
-                            compositionLegend(
-                                estimate.protectedCashGap.isZero
-                                    ? "Extra room" : "Buffer gap",
-                                amount: estimate.protectedCashGap.isZero
-                                    ? estimate.amount
-                                    : estimate.protectedCashGap,
-                                color: estimate.protectedCashGap.isZero
-                                    ? NwAppColors.positive
-                                    : NwAppColors.liability
-                            )
-                        }
-                    }
-
-                    if estimate.spendingReserve > .zero {
-                        compositionLegend(
-                            estimate.protectedCashGap.isZero
-                                ? "Extra room" : "Protected cash gap",
-                            amount: estimate.protectedCashGap.isZero
-                                ? estimate.amount
-                                : estimate.protectedCashGap,
-                            color: estimate.protectedCashGap.isZero
-                                ? NwAppColors.positive
-                                : NwAppColors.liability
-                        )
-                    }
+                Spacer()
+                VStack(spacing: 0) {
+                    Text("Through:")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                    Text(lowPointDateText)
+                        .font(NwTypography.display)
                 }
             }
         }
-    }
-
-    private var lowPointCompositionBar: some View {
-        GeometryReader { geometry in
-            let width = geometry.size.width
-            if estimate.protectedCashGap.isZero {
-                let total = max(estimate.projectedLowBalance.doubleValue, 0.01)
-                let segmentCount = 1
-                    + (estimate.spendingReserve > .zero ? 1 : 0)
-                    + (!estimate.amount.isZero ? 1 : 0)
-                let contentWidth = max(
-                    width - (CGFloat(segmentCount - 1) * 2),
-                    0
-                )
-                HStack(spacing: 2) {
-                    Capsule()
-                        .fill(NwAppColors.protected)
-                        .frame(width: contentWidth * min(
-                            max(estimate.minimumCashBuffer.doubleValue / total, 0),
-                            1
-                        ))
-                    if estimate.spendingReserve > .zero {
-                        Capsule()
-                            .fill(NwAppColors.gold)
-                            .frame(width: contentWidth * min(
-                                max(estimate.spendingReserve.doubleValue / total, 0),
-                                1
-                            ))
-                    }
-                    if !estimate.amount.isZero {
-                        Capsule()
-                            .fill(NwAppColors.positive)
-                            .frame(width: contentWidth * min(
-                                max(estimate.amount.doubleValue / total, 0),
-                                1
-                            ))
-                    }
-                }
-            } else {
-                let target = max(
-                    estimate.protectedCashMinimum.doubleValue,
-                    0.01
-                )
-                let available = max(estimate.projectedLowBalance.doubleValue, 0)
-                let coveredShare = min(available / target, 1)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(NwAppColors.liability.opacity(0.2))
-                    Capsule()
-                        .fill(NwAppColors.caution)
-                        .frame(width: width * coveredShare)
-                }
-            }
-        }
-        .frame(height: 18)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(lowPointStatusText)
+        .accessibilityLabel(
+            "Spending Room \(CurrencyFormatter.compact(estimate.amount)) through \(lowPointDateText)"
+        )
     }
 
-    private func compositionLegend(
-        _ label: String,
-        amount: Money,
-        color: Color
-    ) -> some View {
-        HStack(alignment: .top, spacing: NwSpacing.sm) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-                .padding(.top, 4)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(NwTypography.caption)
-                    .foregroundStyle(.secondary)
-                NwAmountText(amount, variant: .body, showCents: false)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    // MARK: Drivers
 
-    private var cashMovementSection: some View {
-        VStack(alignment: .leading, spacing: NwSpacing.md) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("What Moves Cash")
-                    .font(NwTypography.titleSmall)
-                Text("Through \(lowPointDateText)")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            NwCard(style: .primary) {
-                VStack(alignment: .leading, spacing: NwSpacing.md) {
-                    HStack {
-                        Text("Starting cash")
-                            .font(NwTypography.bodyEmphasis)
-                        Spacer()
-                        NwAmountText(estimate.startingBalance, variant: .body, showCents: false)
-                    }
-                    Divider()
-
-                    Chart(cashMovements) { movement in
-                        BarMark(
-                            x: .value("Amount", movement.amount.absolute.doubleValue),
-                            y: .value("Movement", movement.label)
-                        )
-                        .foregroundStyle(movementColor(movement.tone))
-                        .cornerRadius(8)
-                        .annotation(position: .trailing) {
-                            Text(CurrencyFormatter.signedDelta(movement.amount))
-                                .font(NwTypography.footnoteEm)
-                                .monospacedDigit()
-                                .foregroundStyle(movementColor(movement.tone))
-                        }
-                    }
-                    .chartXAxis(.hidden)
-                    .chartYAxis {
-                        AxisMarks(position: .leading) { _ in
-                            AxisValueLabel()
-                                .font(NwTypography.footnote)
-                        }
-                    }
-                    .frame(height: CGFloat(max(cashMovements.count, 1)) * 52)
-                }
-            }
+    private var driversSegment: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.lg) {
+            spendingSection
+            lockedInSection
         }
     }
 
-    @ViewBuilder
-    private var scenarioSection: some View {
-        if let higherSpendEstimate, let higherSpendMonthlyAmount {
-            VStack(alignment: .leading, spacing: NwSpacing.md) {
-                Text("Spending Scenarios")
-                    .font(NwTypography.titleSmall)
+    private var groupContext: SpendingEntryPipeline.Context {
+        SpendingEntryPipeline.Context(
+            groups: categoryGroups,
+            categories: canonicalCategories,
+            accounts: []
+        )
+    }
 
-                NwCard(style: .primary) {
-                    VStack(alignment: .leading, spacing: NwSpacing.md) {
-                        scenarioRow(
-                            "Expected",
-                            monthlyAmount: expectedMonthlyAmount,
-                            amount: estimate.amount,
-                            lowBalance: estimate.projectedLowBalance,
-                            color: estimate.amount.isZero ? NwAppColors.caution : NwAppColors.positive
-                        )
-                        Divider()
-                        scenarioRow(
-                            "Higher spending",
-                            monthlyAmount: higherSpendMonthlyAmount,
-                            amount: higherSpendEstimate.amount,
-                            lowBalance: higherSpendEstimate.projectedLowBalance,
-                            color: NwAppColors.caution
-                        )
-                    }
-                }
-            }
+    private func groupIdForCategory(
+        context: SpendingEntryPipeline.Context
+    ) -> (String) -> String? {
+        { categoryId in
+            let resolved = context.resolvedGroup(
+                categoryCanonicalId: categoryId
+            )
+            return resolved.identity == SpendingGroupSetup.unassignedIdentity
+                ? nil
+                : resolved.identity
         }
     }
 
-    private func scenarioRow(
-        _ title: String,
-        monthlyAmount: Money,
-        amount: Money,
-        lowBalance: Money,
-        color: Color
-    ) -> some View {
-        VStack(alignment: .leading, spacing: NwSpacing.sm) {
+    private var groupSpending: [SpendingRoomDrivers.GroupSpending] {
+        let context = groupContext
+        return SpendingRoomDrivers.groupAverages(
+            samples: data.result.expectedSpend.monthlySamples,
+            groupIdForCategory: groupIdForCategory(context: context),
+            nameForGroup: { identity in
+                context.groupByIdentity[identity]?.name ?? "Group"
+            }
+        )
+    }
+
+    private var spendingSection: some View {
+        let groups = groupSpending
+        let total = groups.map(\.monthlyAverage).sum()
+        let maxAverage = groups.first?.monthlyAverage ?? .zero
+        return VStack(alignment: .leading, spacing: NwSpacing.md) {
             HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(NwTypography.bodyEmphasis)
-                Spacer()
-                Text("\(CurrencyFormatter.compact(monthlyAmount))/month")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: NwSpacing.md) {
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(color.opacity(0.12))
-                        Capsule()
-                            .fill(color)
-                            .frame(width: geometry.size.width * scenarioShare(amount))
-                    }
-                }
-                .frame(height: 12)
-
-                NwAmountText(amount, variant: .large, showCents: false, color: color)
-                    .frame(minWidth: 112, alignment: .trailing)
-            }
-
-            HStack {
-                Text("Extra spending room")
-                Spacer()
-                Text("\(CurrencyFormatter.compact(lowBalance)) projected low")
-            }
-            .font(NwTypography.caption)
-            .foregroundStyle(.secondary)
-        }
-    }
-
-    private func scenarioShare(_ amount: Money) -> CGFloat {
-        let maximum = max(estimate.amount, higherSpendEstimate?.amount ?? .zero)
-        guard maximum > .zero else { return 0 }
-        return CGFloat(max(0, min(1, amount.doubleValue / maximum.doubleValue)))
-    }
-
-    private var activitySection: some View {
-        VStack(alignment: .leading, spacing: NwSpacing.md) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Dated Activity")
+                Text("Your Spending")
                     .font(NwTypography.titleSmall)
-                Text("Through \(lowPointDateText)")
-                    .font(NwTypography.footnote)
-                    .foregroundStyle(.secondary)
+                Spacer()
+                if !groups.isEmpty {
+                    Text("\(CurrencyFormatter.compact(total))/mo average")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
-
-            if estimate.contributingEvents.isEmpty {
-                NwInlineNotice(
-                    "No scheduled activity",
-                    message: "Driven by everyday spending.",
-                    tone: .info
-                )
+            if groups.isEmpty {
+                NwInlineNotice("No everyday spending sampled yet", tone: .info)
             } else {
                 NwCard(style: .primary, padding: 0) {
                     VStack(spacing: 0) {
-                        ForEach(estimate.contributingEvents) { event in
-                            activityRow(event)
-                            if event.id != estimate.contributingEvents.last?.id {
-                                Divider().padding(.leading, 52)
+                        ForEach(groups) { group in
+                            NavigationLink(value: group) {
+                                groupRow(group, maxAverage: maxAverage)
+                            }
+                            .buttonStyle(.plain)
+                            if group.id != groups.last?.id {
+                                Divider().padding(.leading, NwSpacing.md)
                             }
                         }
                     }
@@ -1512,84 +1341,928 @@ private struct SafeToSpendDetailSheet: View {
         }
     }
 
-    private func activityRow(_ event: CashProjectionEvent) -> some View {
+    private func groupRow(
+        _ group: SpendingRoomDrivers.GroupSpending,
+        maxAverage: Money
+    ) -> some View {
         HStack(spacing: NwSpacing.md) {
-            Image(systemName: event.amount.isNegative ? "arrow.down.circle.fill" : "arrow.up.circle.fill")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(event.amount.isNegative ? NwAppColors.liability : NwAppColors.positive)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(event.title)
+            VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                Text(group.name)
                     .font(NwTypography.bodyEmphasis)
-                Text(event.date, format: .dateTime.month(.abbreviated).day().weekday(.abbreviated))
+                GeometryReader { geometry in
+                    Capsule()
+                        .fill(NwAppColors.primary)
+                        .frame(width: geometry.size.width * shareOfLargest(
+                            group.monthlyAverage,
+                            largest: maxAverage
+                        ))
+                }
+                .frame(height: 5)
+            }
+            Spacer()
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                NwAmountText(
+                    group.monthlyAverage,
+                    variant: .body,
+                    showCents: false
+                )
+                Text("/mo")
+                    .font(NwTypography.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Image(systemName: "chevron.right")
+                .font(NwTypography.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(NwSpacing.md)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Shows sampled transactions for this group")
+    }
+
+    private func shareOfLargest(_ amount: Money, largest: Money) -> CGFloat {
+        guard largest > .zero else { return 0 }
+        return CGFloat(max(0, min(1, amount.doubleValue / largest.doubleValue)))
+    }
+
+    private var lockedInSection: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Text("Locked In")
+                .font(NwTypography.titleSmall)
+            lockedCard(kinds: lockedKinds)
+        }
+    }
+
+    private var lockedKinds: [LockedKind] {
+        var kinds: [LockedKind] = []
+        if !estimate.cardPaymentOutflows.isZero { kinds.append(.cardAutopays) }
+        if !estimate.scheduledOutflows.isZero { kinds.append(.bills) }
+        if !estimate.knownInflows.isZero { kinds.append(.income) }
+        return kinds
+    }
+
+    @ViewBuilder
+    private func lockedCard(kinds: [LockedKind]) -> some View {
+        if kinds.isEmpty {
+            NwInlineNotice("No dated activity before the low", tone: .info)
+        } else {
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach(kinds, id: \.self) { kind in
+                        lockedRow(kind)
+                        if kind != kinds.last {
+                            Divider().padding(.leading, NwSpacing.md)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func lockedEvents(_ kind: LockedKind) -> [CashProjectionEvent] {
+        switch kind {
+        case .cardAutopays:
+            return estimate.contributingEvents
+                .filter { $0.kind == .cardPayment }
+        case .bills:
+            return estimate.contributingEvents
+                .filter { $0.amount.isNegative && $0.kind != .cardPayment }
+        case .income:
+            return estimate.contributingEvents.filter { $0.amount > .zero }
+        }
+    }
+
+    private func lockedTitle(_ kind: LockedKind) -> String {
+        switch kind {
+        case .cardAutopays: return "Card autopays"
+        case .bills: return "Bills"
+        case .income:
+            let events = lockedEvents(.income)
+            return events.count == 1 ? events[0].title : "Income"
+        }
+    }
+
+    private func lockedSubtitle(_ kind: LockedKind) -> String {
+        let events = lockedEvents(kind)
+        switch kind {
+        case .cardAutopays, .bills:
+            return events.count == 1
+                ? "1 payment"
+                : "\(events.count) payments"
+        case .income:
+            if events.count == 1 {
+                return events[0].date.formatted(
+                    .dateTime.weekday(.abbreviated).month(.abbreviated).day()
+                )
+            }
+            return "\(events.count) deposits"
+        }
+    }
+
+    private func lockedAmount(_ kind: LockedKind) -> Money {
+        switch kind {
+        case .cardAutopays: return -estimate.cardPaymentOutflows
+        case .bills: return -estimate.scheduledOutflows
+        case .income: return estimate.knownInflows
+        }
+    }
+
+    private func lockedRow(_ kind: LockedKind) -> some View {
+        let isExpanded = expandedLocked.contains(kind)
+        let amount = lockedAmount(kind)
+        return VStack(spacing: 0) {
+            Button {
+                withAnimation(.snappy) {
+                    if isExpanded {
+                        expandedLocked.remove(kind)
+                    } else {
+                        expandedLocked.insert(kind)
+                    }
+                }
+            } label: {
+                HStack(spacing: NwSpacing.md) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(lockedTitle(kind))
+                            .font(NwTypography.bodyEmphasis)
+                        Text(lockedSubtitle(kind))
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    NwAmountText(
+                        amount,
+                        variant: .body,
+                        showCents: false,
+                        color: amount.isNegative
+                            ? NwAppColors.liability
+                            : NwAppColors.positive
+                    )
+                    Image(systemName: "chevron.right")
+                        .font(NwTypography.caption)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .padding(NwSpacing.md)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows the individual dated amounts")
+            if isExpanded {
+                ForEach(lockedEvents(kind)) { event in
+                    Divider().padding(.leading, NwSpacing.lg)
+                    HStack(spacing: NwSpacing.md) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(event.title)
+                                .font(NwTypography.callout)
+                            Text(
+                                event.date,
+                                format: .dateTime.weekday(.abbreviated)
+                                    .month(.abbreviated).day()
+                            )
+                            .font(NwTypography.footnote)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        NwAmountText(event.amount, variant: .signed)
+                    }
+                    .padding(.vertical, NwSpacing.sm)
+                    .padding(.leading, NwSpacing.lg)
+                    .padding(.trailing, NwSpacing.md)
+                }
+            }
+        }
+    }
+
+    // MARK: Cycle
+
+    private var cycleSegment: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.lg) {
+            creditCardsSection
+            cashSection
+        }
+    }
+
+    private var cycleSummary: SpendingRoomCardCycle.Summary? {
+        let assignments = statementAssignmentRows.map(\.coreAssignment)
+        let forecaster = CCPaymentForecaster(calendar: calendar)
+        var openCharges: [String: Money] = [:]
+        for payment in data.paymentEstimates
+        where payment.basis == .closedStatementEstimate {
+            let reconciliation = forecaster.reconciliation(
+                for: payment,
+                transactions: data.cardActivityByPaymentID[payment.id] ?? [],
+                statementAssignments: assignments,
+                asOf: .now
+            )
+            openCharges[payment.cardAccountId, default: .zero]
+                += reconciliation.newPurchases
+        }
+        return SpendingRoomCardCycle.summarize(
+            payments: data.paymentEstimates,
+            openChargesByCardId: openCharges,
+            asOf: .now,
+            calendar: calendar
+        )
+    }
+
+    private var creditCardsSection: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Credit Cards")
+                    .font(NwTypography.titleSmall)
+                Text("Spend now, pay next month")
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if let summary = cycleSummary {
+                NwCard(style: .primary, padding: 0) {
+                    VStack(spacing: 0) {
+                        if summary.hasClosed {
+                            cycleClosedRow(summary)
+                        }
+                        if summary.openEarliestCloseDate != nil {
+                            if summary.hasClosed {
+                                Divider().padding(.leading, NwSpacing.md)
+                            }
+                            cycleOpenRow(summary)
+                        }
+                        if summary.hasNext {
+                            Divider().padding(.leading, NwSpacing.md)
+                            cycleNextRow(summary)
+                        }
+                    }
+                }
+            } else {
+                NwInlineNotice("No card payments projected", tone: .info)
+            }
+        }
+    }
+
+    private func cycleClosedRow(
+        _ summary: SpendingRoomCardCycle.Summary
+    ) -> some View {
+        HStack(spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Closed statements")
+                    .font(NwTypography.bodyEmphasis)
+                Text(cycleClosedSubtitle(summary))
                     .font(NwTypography.footnote)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             NwAmountText(
-                event.amount,
-                variant: .signed,
-                color: event.amount.isNegative ? NwAppColors.liability : NwAppColors.positive
+                -summary.closedTotal,
+                variant: .body,
+                showCents: false,
+                color: NwAppColors.liability
             )
         }
         .padding(NwSpacing.md)
     }
 
-    private var lowPointDateText: String {
-        estimate.lowPointDate.formatted(.dateTime.month(.abbreviated).day())
+    private func cycleClosedSubtitle(
+        _ summary: SpendingRoomCardCycle.Summary
+    ) -> String {
+        let count = summary.closedCount == 1
+            ? "1 statement"
+            : "\(summary.closedCount) statements"
+        guard let due = summary.closedLatestDueDate else { return count }
+        return "\(count) · autopay by \(shortDate(due))"
     }
 
-    private var lowPointStatusText: String {
+    private func cycleOpenRow(
+        _ summary: SpendingRoomCardCycle.Summary
+    ) -> some View {
+        let typical = data.result.expectedSpend.unscheduledMonthlyAmount
+        return HStack(alignment: .top, spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                Text("Open statements")
+                    .font(NwTypography.bodyEmphasis)
+                if let close = summary.openLatestCloseDate {
+                    Text("Close by \(shortDate(close))")
+                        .font(NwTypography.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if typical > .zero {
+                    cyclePaceBar(
+                        soFar: summary.openChargesSoFar,
+                        typical: typical,
+                        elapsed: summary.cycleElapsedFraction
+                    )
+                }
+            }
+            Spacer()
+            NwAmountText(
+                summary.openChargesSoFar,
+                variant: .body,
+                showCents: false
+            )
+        }
+        .padding(NwSpacing.md)
+    }
+
+    private func cyclePaceBar(
+        soFar: Money,
+        typical: Money,
+        elapsed: Double?
+    ) -> some View {
+        HStack(spacing: NwSpacing.sm) {
+            NwPaceBar(
+                fillFraction: typical > .zero
+                    ? soFar.doubleValue / typical.doubleValue
+                    : 0,
+                markerFraction: elapsed
+            )
+            .frame(width: 120, height: 6)
+            Text("typical \(CurrencyFormatter.compact(typical))")
+                .font(NwTypography.micro)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "\(CurrencyFormatter.compact(soFar)) so far against a typical month of \(CurrencyFormatter.compact(typical))"
+        )
+    }
+
+    private func cycleNextRow(
+        _ summary: SpendingRoomCardCycle.Summary
+    ) -> some View {
+        HStack(spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Next payments")
+                    .font(NwTypography.bodyEmphasis)
+                Text(cycleNextSubtitle(summary))
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            NwAmountText(
+                -summary.nextPaymentsTotal,
+                variant: .body,
+                showCents: false,
+                color: NwAppColors.caution
+            )
+        }
+        .padding(NwSpacing.md)
+    }
+
+    private func cycleNextSubtitle(
+        _ summary: SpendingRoomCardCycle.Summary
+    ) -> String {
+        guard let due = summary.nextPaymentsLatestDueDate else {
+            return "Estimate"
+        }
+        return "Due by \(shortDate(due)) · estimate"
+    }
+
+    private var cashSection: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Text("Cash")
+                .font(NwTypography.titleSmall)
+            lockedCard(kinds: lockedKinds.filter { $0 != .cardAutopays })
+        }
+    }
+
+    // MARK: Ledger
+
+    private var ledgerSegment: some View {
+        VStack(alignment: .leading, spacing: NwSpacing.lg) {
+            cashFlowSection
+            spendableSection
+        }
+    }
+
+    private var ledgerEntries: [SpendingRoomLedger.Entry] {
+        SpendingRoomLedger.cashFlowEntries(from: estimate)
+    }
+
+    private var cashFlowSection: some View {
+        let entries = ledgerEntries
+        return VStack(alignment: .leading, spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Cash Flow")
+                    .font(NwTypography.titleSmall)
+                Text("Through \(lowPointDateText)")
+                    .font(NwTypography.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            NwCard(style: .primary) {
+                ledgerChart(entries)
+            }
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    ForEach(entries) { entry in
+                        ledgerRow(entry)
+                        if entry.id != entries.last?.id {
+                            Divider().padding(.leading, NwSpacing.lg)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func ledgerChart(
+        _ entries: [SpendingRoomLedger.Entry]
+    ) -> some View {
+        let maxY = entries.map { $0.barEnd.doubleValue }.max() ?? 1
+        let minY = min(entries.map { $0.barStart.doubleValue }.min() ?? 0, 0)
+        return Chart(entries) { entry in
+            BarMark(
+                x: .value("Step", entry.kind.rawValue),
+                yStart: .value("From", entry.barStart.doubleValue),
+                yEnd: .value("To", entry.barEnd.doubleValue),
+                width: .ratio(0.62)
+            )
+            .foregroundStyle(ledgerColor(entry.kind))
+            .cornerRadius(4)
+            .annotation(position: .top, spacing: 3) {
+                Text(ledgerBarLabel(entry))
+                    .font(NwTypography.micro)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .chartXScale(domain: entries.map(\.kind.rawValue))
+        .chartYScale(domain: minY...(maxY * 1.14))
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .frame(height: 190)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "Cash flow from starting cash to the projected low on \(lowPointDateText)"
+        )
+    }
+
+    private func ledgerBarLabel(_ entry: SpendingRoomLedger.Entry) -> String {
+        if entry.isLevel {
+            return CurrencyFormatter.compact(entry.amount)
+        }
+        let sign = entry.amount.isNegative ? "−" : "+"
+        return sign + CurrencyFormatter.compact(entry.amount.absolute)
+    }
+
+    private func ledgerColor(
+        _ kind: SpendingRoomLedger.Entry.Kind
+    ) -> Color {
+        switch kind {
+        case .startingCash, .projectedLow: return NwAppColors.primary
+        case .inflows: return NwAppColors.positive
+        case .bills, .cardAutopays: return NwAppColors.liability
+        case .everydaySpending: return NwAppColors.caution
+        }
+    }
+
+    private func ledgerLabel(_ kind: SpendingRoomLedger.Entry.Kind) -> String {
+        switch kind {
+        case .startingCash: return "Starting cash"
+        case .inflows: return lockedTitle(.income)
+        case .bills: return "Bills"
+        case .cardAutopays: return "Card autopays"
+        case .everydaySpending:
+            return "Everyday spending · \(daysToLow) days"
+        case .projectedLow: return "Projected low · \(lowPointDateText)"
+        }
+    }
+
+    private func ledgerRow(_ entry: SpendingRoomLedger.Entry) -> some View {
+        HStack(spacing: NwSpacing.md) {
+            Capsule()
+                .fill(ledgerColor(entry.kind))
+                .frame(width: 4, height: 20)
+            Text(ledgerLabel(entry.kind))
+                .font(
+                    entry.kind == .projectedLow
+                        ? NwTypography.bodyEmphasis
+                        : NwTypography.callout
+                )
+            Spacer()
+            NwAmountText(
+                entry.amount,
+                variant: .body,
+                showCents: false,
+                color: entry.isLevel
+                    ? nil
+                    : ledgerColor(entry.kind)
+            )
+        }
+        .padding(NwSpacing.md)
+        .background(
+            entry.kind == .projectedLow
+                ? NwAppColors.primary.opacity(0.06)
+                : Color.clear
+        )
+    }
+
+    private var spendableSection: some View {
+        let spendable = SpendingRoomLedger.spendable(from: estimate)
+        return VStack(alignment: .leading, spacing: NwSpacing.md) {
+            Text("Spendable")
+                .font(NwTypography.titleSmall)
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    spendableBar(spendable)
+                        .padding(.horizontal, NwSpacing.md)
+                        .padding(.top, NwSpacing.md)
+                        .padding(.bottom, NwSpacing.sm)
+                    spendableRow(
+                        "Cash buffer",
+                        amount: spendable.cashBuffer,
+                        color: NwAppColors.protected
+                    )
+                    if spendable.reserves > .zero {
+                        Divider().padding(.leading, NwSpacing.lg)
+                        spendableRow(
+                            "Reserves",
+                            amount: spendable.reserves,
+                            color: NwAppColors.gold
+                        )
+                    }
+                    Divider().padding(.leading, NwSpacing.lg)
+                    if spendable.isCovered {
+                        spendableRow(
+                            "Spending Room",
+                            amount: spendable.room,
+                            color: NwAppColors.positive,
+                            emphasized: true
+                        )
+                    } else {
+                        spendableRow(
+                            "Protected cash gap",
+                            amount: -spendable.protectedCashGap,
+                            color: NwAppColors.liability,
+                            emphasized: true
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func spendableBar(
+        _ spendable: SpendingRoomLedger.Spendable
+    ) -> some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            if spendable.isCovered {
+                let total = max(spendable.projectedLowBalance.doubleValue, 0.01)
+                HStack(spacing: 2) {
+                    Capsule()
+                        .fill(NwAppColors.protected)
+                        .frame(width: width * segmentShare(
+                            spendable.cashBuffer,
+                            of: total
+                        ))
+                    if spendable.reserves > .zero {
+                        Capsule()
+                            .fill(NwAppColors.gold)
+                            .frame(width: width * segmentShare(
+                                spendable.reserves,
+                                of: total
+                            ))
+                    }
+                    if spendable.room > .zero {
+                        Capsule()
+                            .fill(NwAppColors.positive)
+                            .frame(width: width * segmentShare(
+                                spendable.room,
+                                of: total
+                            ))
+                    }
+                }
+            } else {
+                let target = max(
+                    (spendable.cashBuffer + spendable.reserves).doubleValue,
+                    0.01
+                )
+                let covered = max(spendable.projectedLowBalance.doubleValue, 0)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(NwAppColors.liability.opacity(0.2))
+                    Capsule()
+                        .fill(NwAppColors.caution)
+                        .frame(width: width * min(covered / target, 1))
+                }
+            }
+        }
+        .frame(height: 14)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spendableBarLabel)
+    }
+
+    private var spendableBarLabel: String {
         if estimate.protectedCashGap.isZero {
             return estimate.spendingReserve > .zero
                 ? "Cash buffer and Reserves protected"
                 : "Cash buffer protected"
         }
-        let protected = estimate.spendingReserve > .zero
-            ? "protected cash" : "cash buffer"
-        return "\(CurrencyFormatter.compact(estimate.protectedCashGap)) below the \(protected)"
+        return "\(CurrencyFormatter.compact(estimate.protectedCashGap)) below protected cash"
     }
 
-    private var lowPointStatusColor: Color {
-        if !estimate.protectedCashGap.isZero { return NwAppColors.liability }
-        return NwAppColors.protected
+    private func segmentShare(_ amount: Money, of total: Double) -> CGFloat {
+        CGFloat(max(0, min(1, amount.doubleValue / total)))
     }
 
-    private var cashMovements: [CashMovement] {
-        [
-            CashMovement(
-                id: "inflows",
-                label: "Money in",
-                amount: estimate.knownInflows,
-                tone: .inflow
-            ),
-            CashMovement(
-                id: "scheduled",
-                label: "Scheduled",
-                amount: -estimate.scheduledOutflows,
-                tone: .committed
-            ),
-            CashMovement(
-                id: "cards",
-                label: "Card payments",
-                amount: -estimate.cardPaymentOutflows,
-                tone: .committed
-            ),
-            CashMovement(
-                id: "everyday",
-                label: "Everyday reserve",
-                amount: -estimate.expectedSpendingReserve,
-                tone: .estimated
+    private func spendableRow(
+        _ label: String,
+        amount: Money,
+        color: Color,
+        emphasized: Bool = false
+    ) -> some View {
+        HStack(spacing: NwSpacing.md) {
+            Capsule()
+                .fill(color)
+                .frame(width: 4, height: 20)
+            Text(label)
+                .font(
+                    emphasized
+                        ? NwTypography.bodyEmphasis
+                        : NwTypography.callout
+                )
+            Spacer()
+            NwAmountText(
+                amount,
+                variant: .body,
+                showCents: false,
+                color: emphasized ? color : nil
             )
-        ].filter { !$0.amount.isZero }
+        }
+        .padding(NwSpacing.md)
+        .background(
+            emphasized
+                ? color.opacity(0.06)
+                : Color.clear
+        )
     }
 
-    private func movementColor(_ tone: CashMovement.Tone) -> Color {
-        switch tone {
-        case .inflow: return NwAppColors.positive
-        case .committed: return NwAppColors.liability
-        case .estimated: return NwAppColors.caution
+    // MARK: Shared
+
+    private var lowPointDateText: String {
+        estimate.lowPointDate.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    private var daysToLow: Int {
+        max(
+            calendar.dateComponents(
+                [.day],
+                from: calendar.startOfDay(for: .now),
+                to: calendar.startOfDay(for: estimate.lowPointDate)
+            ).day ?? 0,
+            0
+        )
+    }
+
+    private func shortDate(_ date: Date) -> String {
+        date.formatted(.dateTime.month(.abbreviated).day())
+    }
+}
+
+/// One Spending group's categories: this month's spend against the sampled
+/// monthly average.
+private struct SpendingRoomGroupDetail: View {
+    let title: String
+    let categories: [SpendingRoomDrivers.CategorySpending]
+    let currentMonth: MonthlySpendSample?
+
+    var body: some View {
+        List {
+            if categories.isEmpty {
+                Text("No spending sampled")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(categories) { category in
+                NavigationLink(value: category) {
+                    HStack {
+                        Text(category.name)
+                        Spacer()
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            NwAmountText(
+                                SpendingRoomDrivers.currentMonthTotal(
+                                    categoryId: category.id,
+                                    currentMonth: currentMonth
+                                ),
+                                variant: .body,
+                                showCents: false
+                            )
+                            Text("/")
+                                .font(NwTypography.caption)
+                                .foregroundStyle(.secondary)
+                            NwAmountText(
+                                category.monthlyAverage,
+                                variant: .body,
+                                showCents: false,
+                                color: NwAppColors.textSecondary
+                            )
+                        }
+                    }
+                }
+                .accessibilityHint("Shows payees for this category")
+            }
         }
+        .nwScreenBackground()
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// One category's payees, one summed line per payee, expandable to the
+/// sampled purchases with the shared include/exclude control.
+private struct SpendingRoomCategoryDetail: View {
+    @Environment(AppContainerController.self) private var container
+    @Query private var exclusions: [DurableExcludedSpendTransaction]
+    let title: String
+    let monthCount: Int
+    let average: Money
+    let thisMonth: Money
+    let payees: [SpendingRoomDrivers.PayeeSpending]
+
+    private var excludedIds: Set<String> {
+        Set(exclusions.map(\.transactionId))
+    }
+
+    var body: some View {
+        List {
+            Section {
+                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                    HStack {
+                        Text("This month")
+                            .font(NwTypography.bodyEmphasis)
+                        Spacer()
+                        NwAmountText(thisMonth, variant: .body, showCents: false)
+                    }
+                    if average > .zero {
+                        HStack(spacing: NwSpacing.sm) {
+                            NwPaceBar(
+                                fillFraction: thisMonth.doubleValue
+                                    / average.doubleValue,
+                                markerFraction: monthElapsedFraction,
+                                markerLabel: "\(dayOfMonthToday)",
+                                leadingLabel: "1",
+                                trailingLabel: "\(daysInCurrentMonth)"
+                            )
+                            .frame(height: 6)
+                            Text("avg \(CurrencyFormatter.compact(average))/mo")
+                                .font(NwTypography.micro)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.bottom, 16)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(
+                            "\(CurrencyFormatter.compact(thisMonth)) spent this month against an average of \(CurrencyFormatter.compact(average)), on day \(dayOfMonthToday) of \(daysInCurrentMonth)"
+                        )
+                    }
+                }
+            }
+            if payees.isEmpty {
+                Text("No spending sampled")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(payees) { payee in
+                DisclosureGroup {
+                    ForEach(payee.transactions) { transaction in
+                        row(transaction)
+                            .swipeActions(
+                                edge: .trailing,
+                                allowsFullSwipe: true
+                            ) {
+                                Button {
+                                    toggleSpendExclusion(
+                                        transaction,
+                                        container: container
+                                    )
+                                } label: {
+                                    Label(
+                                        isExcluded(transaction)
+                                            ? "Include" : "Exclude",
+                                        systemImage: isExcluded(transaction)
+                                            ? "arrow.uturn.backward"
+                                            : "minus.circle"
+                                    )
+                                }
+                                .tint(
+                                    isExcluded(transaction)
+                                        ? NwAppColors.positive
+                                        : NwAppColors.liability
+                                )
+                            }
+                    }
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(payee.name)
+                                .font(NwTypography.bodyEmphasis)
+                            Text(purchasesLabel(payee))
+                                .font(NwTypography.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        HStack(alignment: .firstTextBaseline, spacing: 2) {
+                            NwAmountText(
+                                liveAverage(payee),
+                                variant: .body,
+                                showCents: false
+                            )
+                            Text("/mo")
+                                .font(NwTypography.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .nwScreenBackground()
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func isExcluded(_ transaction: MonthlySpendTransaction) -> Bool {
+        transaction.excluded || excludedIds.contains(transaction.id)
+    }
+
+    private var dayOfMonthToday: Int {
+        Calendar.current.component(.day, from: .now)
+    }
+
+    private var daysInCurrentMonth: Int {
+        Calendar.current.range(of: .day, in: .month, for: .now)?.count ?? 30
+    }
+
+    private var monthElapsedFraction: Double? {
+        Double(dayOfMonthToday) / Double(daysInCurrentMonth)
+    }
+
+    /// Average recomputed against the live exclusion set so a swipe updates
+    /// the payee line immediately, before the projection refreshes.
+    private func liveAverage(
+        _ payee: SpendingRoomDrivers.PayeeSpending
+    ) -> Money {
+        guard monthCount > 0 else { return .zero }
+        let total = payee.transactions
+            .filter { !isExcluded($0) }
+            .map(\.amount)
+            .sum()
+        return Money(milliunits: total.milliunits / Int64(monthCount))
+    }
+
+    private func purchasesLabel(
+        _ payee: SpendingRoomDrivers.PayeeSpending
+    ) -> String {
+        let count = payee.transactions.filter { !isExcluded($0) }.count
+        return count == 1 ? "1 purchase" : "\(count) purchases"
+    }
+
+    private func row(_ transaction: MonthlySpendTransaction) -> some View {
+        HStack(spacing: NwSpacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(transaction.payeeName)
+                    .foregroundStyle(
+                        isExcluded(transaction)
+                            ? NwAppColors.textSecondary
+                            : NwAppColors.textPrimary
+                    )
+                    .strikethrough(isExcluded(transaction))
+                Text(
+                    transaction.date,
+                    format: .dateTime.month(.abbreviated).day().year()
+                )
+                .font(NwTypography.footnote)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            NwAmountText(
+                transaction.amount,
+                variant: .body,
+                color: isExcluded(transaction)
+                    ? NwAppColors.textSecondary
+                    : nil
+            )
+        }
+    }
+}
+
+/// Toggles a durable everyday-spending exclusion for one transaction line.
+@MainActor
+private func toggleSpendExclusion(
+    _ transaction: MonthlySpendTransaction,
+    container: AppContainerController
+) {
+    let ctx = container.modelContainer.mainContext
+    let transactionId = transaction.id
+    let descriptor = FetchDescriptor<DurableExcludedSpendTransaction>(
+        predicate: #Predicate { $0.transactionId == transactionId }
+    )
+    let existing = (try? ctx.fetch(descriptor)) ?? []
+    if existing.isEmpty {
+        ctx.insert(DurableExcludedSpendTransaction(
+            transactionId: transaction.id,
+            payeeName: transaction.payeeName,
+            transactionDate: transaction.date,
+            amountMilliunits: transaction.amount.milliunits
+        ))
+    } else {
+        existing.forEach(ctx.delete)
+    }
+    if !ctx.safeSave(source: "projection.transactionExclusion.toggle") {
+        ctx.rollback()
     }
 }
 
@@ -1930,25 +2603,7 @@ private struct MonthlySpendCategoryDetail: View {
     }
 
     private func toggle(_ transaction: MonthlySpendTransaction) {
-        let ctx = container.modelContainer.mainContext
-        let transactionId = transaction.id
-        let descriptor = FetchDescriptor<DurableExcludedSpendTransaction>(
-            predicate: #Predicate { $0.transactionId == transactionId }
-        )
-        let existing = (try? ctx.fetch(descriptor)) ?? []
-        if existing.isEmpty {
-            ctx.insert(DurableExcludedSpendTransaction(
-                transactionId: transaction.id,
-                payeeName: transaction.payeeName,
-                transactionDate: transaction.date,
-                amountMilliunits: transaction.amount.milliunits
-            ))
-        } else {
-            existing.forEach(ctx.delete)
-        }
-        if !ctx.safeSave(source: "projection.transactionExclusion.toggle") {
-            ctx.rollback()
-        }
+        toggleSpendExclusion(transaction, container: container)
     }
 }
 

@@ -33,6 +33,7 @@
 		84B00A612FD614A800F81F22 /* TrendDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B00A602FD614A800F81F22 /* TrendDetailView.swift */; };
 		8614121B6B87ABFFECC4F72E /* AppContainerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42FB5FDDDD46ED86502D6E77 /* AppContainerController.swift */; };
 		87720F33E363A78B86DD9F18 /* NwCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31B717C7AC171203E3E7B365 /* NwCard.swift */; };
+		A11EC0DE5E60123400000001 /* NwSegmentedSelector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11EC0DE5E60123400000002 /* NwSegmentedSelector.swift */; };
 		8B9F5A11520C943DFC50D116 /* PlaidClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82874A066698E71B6954CECE /* PlaidClient.swift */; };
 		905A9CF8744CAACA046F3E4A /* BiometricGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45A47DBE9CC8F8A78C358517 /* BiometricGate.swift */; };
 		A7B10C02000000000000F002 /* BackgroundPhotoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B10C01000000000000F001 /* BackgroundPhotoStore.swift */; };
@@ -97,6 +98,7 @@
 		300932C2BAB1914688FD35B9 /* NwSpacing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwSpacing.swift; sourceTree = "<group>"; };
 		31B61BCD772811EAD2BE147F /* NwLoadingState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwLoadingState.swift; sourceTree = "<group>"; };
 		31B717C7AC171203E3E7B365 /* NwCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwCard.swift; sourceTree = "<group>"; };
+		A11EC0DE5E60123400000002 /* NwSegmentedSelector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NwSegmentedSelector.swift; sourceTree = "<group>"; };
 		341C0448EBF9D1C9337844CE /* CardSettingsForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardSettingsForm.swift; sourceTree = "<group>"; };
 		35CD0B8D2A7E4D60A18E0001 /* CanonicalDirectoryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalDirectoryService.swift; sourceTree = "<group>"; };
 		35CD0B8D2A7E4D60A18E0003 /* CanonicalDirectoryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalDirectoryServiceTests.swift; sourceTree = "<group>"; };
@@ -222,6 +224,7 @@
 				C67F5A89172289A05D285547 /* NwAppColors.swift */,
 				A0640132B868410EFCA27FBB /* NwButtonStyles.swift */,
 				31B717C7AC171203E3E7B365 /* NwCard.swift */,
+				A11EC0DE5E60123400000002 /* NwSegmentedSelector.swift */,
 				A9E3D99E3745BEFD8F3CED25 /* NwCornerRadius.swift */,
 				D5222B9938406EB9BCDD6306 /* NwEmptyState.swift */,
 				0727D894F5219438D45666EA /* NwIcon.swift */,
@@ -486,6 +489,7 @@
 				78A4A695C94AFA056D8AF11C /* NwAppColors.swift in Sources */,
 				B270E19D380583D0CEE0AFB1 /* NwButtonStyles.swift in Sources */,
 				87720F33E363A78B86DD9F18 /* NwCard.swift in Sources */,
+				A11EC0DE5E60123400000001 /* NwSegmentedSelector.swift in Sources */,
 				7AACF46A41E0C5B0E7C3E660 /* NwCornerRadius.swift in Sources */,
 				12DEBD8BB7D411DC2C673394 /* NwEmptyState.swift in Sources */,
 				131D9DF2BC5E0363511389D5 /* NwIcon.swift in Sources */,

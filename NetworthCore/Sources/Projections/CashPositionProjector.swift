@@ -689,11 +689,8 @@ public struct CashPositionProjector: Sendable {
             to: monthStart(for: earliest)
         )
         let currentMonth = monthStart(for: today)
-        var monthlyTotalSamples: [Money] = []
-        var monthlyUnscheduledSamples: [Money] = []
-        var monthlySamples: [MonthlySpendSample] = []
-        var month = firstCompleteMonth
-        while let sampleMonth = month, sampleMonth < currentMonth {
+
+        func monthSample(for sampleMonth: Date) -> MonthlySpendSample {
             let ordinary = max(
                 (historicalByMonth[sampleMonth] ?? .zero)
                     - (refundsByMonth[sampleMonth] ?? .zero),
@@ -704,7 +701,6 @@ public struct CashPositionProjector: Sendable {
                 + min(scheduledByMonth[sampleMonth] ?? .zero, ordinary)
             let unscheduled = ordinary
                 - min(scheduledByMonth[sampleMonth] ?? .zero, ordinary)
-            let historical = ordinary + recurring
             let categories = (categoriesByMonth[sampleMonth] ?? [:])
                 .map { categoryId, accumulator in
                     MonthlySpendCategory(
@@ -721,17 +717,29 @@ public struct CashPositionProjector: Sendable {
                     if lhs.amount != rhs.amount { return lhs.amount > rhs.amount }
                     return lhs.categoryName.localizedCaseInsensitiveCompare(rhs.categoryName) == .orderedAscending
                 }
-            monthlyTotalSamples.append(historical)
-            monthlyUnscheduledSamples.append(unscheduled)
-            monthlySamples.append(MonthlySpendSample(
+            return MonthlySpendSample(
                 month: sampleMonth,
-                totalAmount: historical,
+                totalAmount: ordinary + recurring,
                 scheduledAmount: scheduled,
                 unscheduledAmount: unscheduled,
                 categories: categories
-            ))
+            )
+        }
+
+        var monthlyTotalSamples: [Money] = []
+        var monthlyUnscheduledSamples: [Money] = []
+        var monthlySamples: [MonthlySpendSample] = []
+        var month = firstCompleteMonth
+        while let sampleMonth = month, sampleMonth < currentMonth {
+            let sample = monthSample(for: sampleMonth)
+            monthlyTotalSamples.append(sample.totalAmount)
+            monthlyUnscheduledSamples.append(sample.unscheduledAmount)
+            monthlySamples.append(sample)
             month = calendar.date(byAdding: .month, value: 1, to: sampleMonth)
         }
+        let currentMonthSample = categoriesByMonth[currentMonth] != nil
+            ? monthSample(for: currentMonth)
+            : nil
 
         let estimatedMonthly: Money
         let unscheduledMonthly: Money
@@ -779,7 +787,8 @@ public struct CashPositionProjector: Sendable {
             scheduledOutflows: reportedScheduledOutflows,
             historyDays: days,
             lookbackStart: earliest,
-            monthlySamples: monthlySamples
+            monthlySamples: monthlySamples,
+            currentMonth: currentMonthSample
         )
     }
 

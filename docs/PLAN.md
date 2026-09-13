@@ -218,6 +218,22 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+- **2026-09-12** — Spending group budget targets are seeded from evidence,
+  never live-linked to it. A user-triggered, repeatable seeding action fills
+  each ordinary group's monthly target from its observed historical spending
+  average (rounded), after which the targets remain static, user-editable
+  budgets. Auto-updating targets are rejected: a rolling average ratchets —
+  good months permanently tighten the bar while blowout months quietly raise
+  future allowances — and a self-rewriting target makes past Retained months
+  uninterpretable. Seeding uses Spending's own history, not the projection
+  estimate's recurring-stripped, refund-netted averages, so budget numbers
+  stay in budget dialect. The Fixed group is the exception: its truer target
+  is the sum of known recurring bills rather than a historical average. The
+  working posture is "stay under the average," which aligns the budget system
+  with the cash forecast: spending under the seeded average beats the
+  projection's everyday-spend assumption, so the realized low comes in above
+  the projected low and Retained lands positive. Re-seeding is an occasional,
+  deliberate act for when life actually changes, not a monthly recalculation.
 - **2026-09-05** — The Deep Slate palette restores its source olive
   (`#505423`) as the semantic color for protected or allocated money. Navy is
   reserved for brand, interaction, and informational/on-track progress;

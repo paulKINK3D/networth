@@ -1070,48 +1070,11 @@ struct SpendingHistoryView: View {
     }
 
     private var overviewSectionSelector: some View {
-        HStack(spacing: NwSpacing.xs) {
-            ForEach(OverviewSection.allCases) { section in
-                let isSelected = overviewSection == section
-                Button {
-                    overviewSection = section
-                } label: {
-                    Text(section.title)
-                        .font(NwTypography.bodyEmphasis)
-                        .foregroundStyle(
-                            isSelected
-                                ? NwAppColors.textOnPrimary
-                                : NwAppColors.textSecondary
-                        )
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .background(
-                            RoundedRectangle(
-                                cornerRadius: NwCornerRadius.md,
-                                style: .continuous
-                            )
-                            .fill(
-                                isSelected
-                                    ? NwAppColors.primary
-                                    : Color.clear
-                            )
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(
-                    isSelected ? .isSelected : []
-                )
-            }
-        }
-        .padding(NwSpacing.xs)
-        .background(
-            RoundedRectangle(
-                cornerRadius: NwCornerRadius.card,
-                style: .continuous
-            )
-            .fill(NwAppColors.cardSurfaceAlt)
+        NwSegmentedSelector(
+            options: OverviewSection.allCases,
+            selection: $overviewSection,
+            title: { $0.title }
         )
-        .accessibilityElement(children: .contain)
         .accessibilityLabel("Spending view")
     }
 
@@ -1354,7 +1317,8 @@ struct SpendingHistoryView: View {
                 reserveAssignments: model.reserveAssignments(
                     in: BudgetMonth(containing: month.month),
                     from: group.id
-                )
+                ),
+                historyMonths: model.months
             )
         } label: {
             if budget.groupIdentity == model.savingsGroupIdentity {
@@ -1803,7 +1767,8 @@ private struct SpendingTrendsView: View {
                     reserveAssignments: model.reserveAssignments(
                         in: BudgetMonth(containing: month.month),
                         from: group.id
-                    )
+                    ),
+                    historyMonths: model.months
                 )
             } label: {
                 HStack {
@@ -3186,16 +3151,20 @@ struct SpendingGroupDetailSelection: Identifiable {
     let periodStartMonth: Date
     let savingsChoices: [SavingsBudgetChoice]
     let reserveAssignments: [SpendingReserveAssignmentActivity]
+    /// Full cached history so the sheet can compute trailing averages.
+    let historyMonths: [SpendingHistoryMonth]
 
     init(
         month: SpendingHistoryMonth,
         group: SpendingHistoryGroupTotal,
         periodStartMonth: Date? = nil,
         savingsChoices: [SavingsBudgetChoice] = [],
-        reserveAssignments: [SpendingReserveAssignmentActivity] = []
+        reserveAssignments: [SpendingReserveAssignmentActivity] = [],
+        historyMonths: [SpendingHistoryMonth] = []
     ) {
         self.month = month
         self.group = group
+        self.historyMonths = historyMonths
         self.periodStartMonth = periodStartMonth ?? month.month
         self.savingsChoices = savingsChoices.sorted {
             if $0.occurredAt != $1.occurredAt {
@@ -6156,6 +6125,20 @@ private struct SpendingSinkingFundPurchasePicker: View {
 
 /// Period/group drill-down: categories retain the selected period's totals and
 /// transaction list, with a separate path to complete cached history.
+/// Comparison tint for a spent-versus-average figure: red once the full
+/// average is crossed regardless of date; green only when a completed period
+/// finished under it; neutral otherwise (including while the month is still
+/// in progress or when there is no average to compare against).
+private func spendingComparisonColor(
+    spent: Money,
+    average: Money,
+    periodCompleted: Bool
+) -> Color? {
+    guard average > .zero else { return nil }
+    if spent > average { return NwAppColors.budgetOver }
+    return periodCompleted ? NwAppColors.positive : nil
+}
+
 struct SpendingGroupDetailSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
     let selection: SpendingGroupDetailSelection
@@ -6181,25 +6164,53 @@ struct SpendingGroupDetailSheet: View {
                     }
                 }
                 // One compact row per category in a single joined list;
-                // transactions live one tap deeper.
+                // payees live one tap deeper. Rows show the viewed period's
+                // spend against the trailing monthly average, including
+                // categories quiet this period but active in the window.
                 Section {
-                    ForEach(selection.group.categories) { category in
+                    ForEach(categoryRows, id: \.category.id) { row in
                         NavigationLink {
                             SpendingCategoryMonthDetailView(
-                                periodLabel: selection.periodLabel,
-                                category: category,
-                                reportingRole: selection.group.reportingRole
+                                category: row.category,
+                                reportingRole: selection.group.reportingRole,
+                                groupId: selection.group.id,
+                                window: averageWindow,
+                                periodCompleted: viewedPeriodCompleted
                             )
                         } label: {
                             HStack(spacing: NwSpacing.xs) {
-                                Text(category.name)
+                                Text(row.category.name)
                                     .lineLimit(1)
-                                Text("(\(category.transactionIds.count))")
-                                    .font(NwTypography.footnote)
-                                    .foregroundStyle(.secondary)
+                                if !row.category.transactionIds.isEmpty {
+                                    Text("(\(row.category.transactionIds.count))")
+                                        .font(NwTypography.footnote)
+                                        .foregroundStyle(.secondary)
+                                }
                                 Spacer()
-                                Text(CurrencyFormatter.currency(category.spent))
-                                    .foregroundStyle(.secondary)
+                                HStack(
+                                    alignment: .firstTextBaseline,
+                                    spacing: 4
+                                ) {
+                                    NwAmountText(
+                                        row.category.spent,
+                                        variant: .body,
+                                        showCents: false,
+                                        color: spendingComparisonColor(
+                                            spent: row.category.spent,
+                                            average: row.average,
+                                            periodCompleted: viewedPeriodCompleted
+                                        )
+                                    )
+                                    Text("/")
+                                        .font(NwTypography.caption)
+                                        .foregroundStyle(.secondary)
+                                    NwAmountText(
+                                        row.average,
+                                        variant: .body,
+                                        showCents: false,
+                                        color: NwAppColors.textSecondary
+                                    )
+                                }
                             }
                         }
                     }
@@ -6274,6 +6285,62 @@ struct SpendingGroupDetailSheet: View {
     private var reserveAssignmentTotal: Money {
         selection.reserveAssignments.map(\.amount).sum()
     }
+
+    private var averageWindow: [SpendingHistoryMonth] {
+        SpendingHistoryAverages.averageWindow(
+            months: selection.historyMonths,
+            asOf: .now
+        )
+    }
+
+    /// A period strictly before the current calendar month is settled, so
+    /// finishing under the average is an actual favorable outcome.
+    private var viewedPeriodCompleted: Bool {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents(
+            [.year, .month], from: .now
+        )
+        guard let currentStart = calendar.date(from: components) else {
+            return false
+        }
+        return selection.month.month < currentStart
+    }
+
+    /// Viewed-period categories merged with the window's, so a category with
+    /// history but nothing this period still appears with its average.
+    private var categoryRows: [(
+        category: SpendingHistoryCategoryTotal,
+        average: Money
+    )] {
+        let averages = SpendingHistoryAverages.categoryAverages(
+            groupId: selection.group.id,
+            window: averageWindow
+        )
+        var periodById = Dictionary(
+            uniqueKeysWithValues: selection.group.categories.map {
+                ($0.id, $0)
+            }
+        )
+        var rows: [(
+            category: SpendingHistoryCategoryTotal,
+            average: Money
+        )] = averages.map { average in
+            let period = periodById.removeValue(forKey: average.id)
+                ?? SpendingHistoryCategoryTotal(
+                    id: average.id,
+                    name: average.name,
+                    spentMilliunits: 0,
+                    transactionIds: []
+                )
+            return (period, average.monthlyAverage)
+        }
+        rows.append(contentsOf:
+            periodById.values
+                .sorted { $0.spent > $1.spent }
+                .map { ($0, Money.zero) }
+        )
+        return rows
+    }
 }
 
 private struct SavingsChoiceMonthDetailView: View {
@@ -6331,9 +6398,11 @@ private struct ReserveAssignmentMonthDetailView: View {
 
 private struct SpendingCategoryMonthDetailView: View {
     @SwiftUI.Environment(AppContainerController.self) private var container
-    let periodLabel: String
     let category: SpendingHistoryCategoryTotal
     let reportingRole: CategoryReportingRole?
+    let groupId: String
+    let window: [SpendingHistoryMonth]
+    let periodCompleted: Bool
 
     @State private var rowsByID: [String: CachedFinancialTransaction] = [:]
 
@@ -6360,27 +6429,72 @@ private struct SpendingCategoryMonthDetailView: View {
                 }
             }
 
-            Section(periodLabel) {
-                ForEach(monthTransactions, id: \.id) { row in
-                    NavigationLink {
-                        PlaidTransactionReviewDestination(
-                            transaction: row,
-                            dismissAfterSave: true,
-                            onSaved: loadRows
-                        )
+            // One summed line per payee: the viewed period against the
+            // trailing monthly average, expandable to the raw lines.
+            Section {
+                ForEach(rollups) { rollup in
+                    DisclosureGroup {
+                        ForEach(
+                            rollupTransactions(rollup),
+                            id: \.id
+                        ) { row in
+                            NavigationLink {
+                                PlaidTransactionReviewDestination(
+                                    transaction: row,
+                                    dismissAfterSave: true,
+                                    onSaved: loadRows
+                                )
+                            } label: {
+                                NwTransactionRow(
+                                    title: row.displayName,
+                                    subtitle: row.postedDate.formatted(
+                                        date: .abbreviated,
+                                        time: .omitted
+                                    ),
+                                    amount: Money(
+                                        milliunits: rollup
+                                            .lineAmountsByTransactionId[row.id]
+                                            ?? row.amountMilliunits
+                                    )
+                                )
+                            }
+                        }
                     } label: {
-                        NwTransactionRow(
-                            title: row.displayName,
-                            subtitle: row.postedDate.formatted(
-                                date: .abbreviated,
-                                time: .omitted
-                            ),
-                            amount: Money(
-                                milliunits:
-                                    category.lineAmountsByTransactionId[row.id]
-                                        ?? row.amountMilliunits
-                            )
-                        )
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(rollup.name)
+                                    .font(NwTypography.bodyEmphasis)
+                                    .lineLimit(1)
+                                Text(purchasesLabel(rollup))
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            HStack(
+                                alignment: .firstTextBaseline,
+                                spacing: 4
+                            ) {
+                                NwAmountText(
+                                    rollup.selectedTotal,
+                                    variant: .body,
+                                    showCents: false,
+                                    color: spendingComparisonColor(
+                                        spent: rollup.selectedTotal,
+                                        average: rollup.monthlyAverage,
+                                        periodCompleted: periodCompleted
+                                    )
+                                )
+                                Text("/")
+                                    .font(NwTypography.caption)
+                                    .foregroundStyle(.secondary)
+                                NwAmountText(
+                                    rollup.monthlyAverage,
+                                    variant: .body,
+                                    showCents: false,
+                                    color: NwAppColors.textSecondary
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -6399,14 +6513,47 @@ private struct SpendingCategoryMonthDetailView: View {
         )
     }
 
-    private var monthTransactions: [CachedFinancialTransaction] {
-        category.transactionIds
+    private var rollups: [SpendingHistoryAverages.PayeeRollup] {
+        SpendingHistoryAverages.payeeRollups(
+            groupId: groupId,
+            categoryId: category.id,
+            window: window,
+            selected: category,
+            payeeName: { rowsByID[$0]?.displayName }
+        )
+    }
+
+    private func rollupTransactions(
+        _ rollup: SpendingHistoryAverages.PayeeRollup
+    ) -> [CachedFinancialTransaction] {
+        rollup.transactionIds
             .compactMap { rowsByID[$0] }
             .sorted { $0.postedDate > $1.postedDate }
     }
 
+    private func purchasesLabel(
+        _ rollup: SpendingHistoryAverages.PayeeRollup
+    ) -> String {
+        rollup.purchaseCount == 1
+            ? "1 purchase"
+            : "\(rollup.purchaseCount) purchases"
+    }
+
+    private var windowTransactionIds: Set<String> {
+        var ids = Set<String>()
+        for month in window {
+            for group in month.groups where group.id == groupId {
+                for windowCategory in group.categories
+                where windowCategory.id == category.id {
+                    ids.formUnion(windowCategory.transactionIds)
+                }
+            }
+        }
+        return ids
+    }
+
     private func loadRows() {
-        let ids = Set(category.transactionIds)
+        let ids = Set(category.transactionIds).union(windowTransactionIds)
         guard !ids.isEmpty else {
             rowsByID = [:]
             return

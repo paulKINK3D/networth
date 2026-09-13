@@ -261,3 +261,73 @@ public struct NwReserveBalanceColumn: View {
         .frame(width: width, height: height)
     }
 }
+
+/// Compact actual-versus-reference bar: the filled share of a reference
+/// amount, with an optional elapsed-time marker for factual pace context.
+/// Scale and marker labels render below the bar without affecting layout;
+/// give the caller extra bottom spacing when using them.
+public struct NwPaceBar: View {
+    public let fillFraction: Double
+    public let markerFraction: Double?
+    public let markerLabel: String?
+    public let leadingLabel: String?
+    public let trailingLabel: String?
+
+    public init(
+        fillFraction: Double,
+        markerFraction: Double? = nil,
+        markerLabel: String? = nil,
+        leadingLabel: String? = nil,
+        trailingLabel: String? = nil
+    ) {
+        self.fillFraction = min(max(fillFraction, 0), 1)
+        self.markerFraction = markerFraction.map { min(max($0, 0), 1) }
+        self.markerLabel = markerLabel
+        self.leadingLabel = leadingLabel
+        self.trailingLabel = trailingLabel
+    }
+
+    public var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let labelOffset = geometry.size.height + 7
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(NwAppColors.primary.opacity(0.12))
+                Capsule()
+                    .fill(NwAppColors.primary)
+                    .frame(width: width * fillFraction)
+                if let leadingLabel {
+                    Text(leadingLabel)
+                        .font(NwTypography.micro)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                        .offset(y: labelOffset)
+                }
+                if let trailingLabel {
+                    Text(trailingLabel)
+                        .font(NwTypography.micro)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                        .frame(width: width, alignment: .trailing)
+                        .offset(y: labelOffset)
+                }
+                if let markerFraction {
+                    Capsule()
+                        .fill(NwAppColors.protected)
+                        .frame(width: 2)
+                        .offset(x: width * markerFraction)
+                    if let markerLabel {
+                        Text(markerLabel)
+                            .font(NwTypography.micro)
+                            .foregroundStyle(NwAppColors.protected)
+                            .fixedSize()
+                            .frame(width: 0)
+                            .offset(
+                                x: width * markerFraction + 1,
+                                y: labelOffset
+                            )
+                    }
+                }
+            }
+        }
+    }
+}

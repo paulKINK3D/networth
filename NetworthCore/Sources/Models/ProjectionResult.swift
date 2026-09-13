@@ -307,6 +307,9 @@ public struct ExpectedSpendEstimate: Sendable, Hashable, Codable {
     public let historyDays: Int
     public let lookbackStart: Date?
     public let monthlySamples: [MonthlySpendSample]
+    /// The in-progress month's partial spending, kept out of the averages
+    /// but exposed so month-to-date can be compared against them.
+    public let currentMonth: MonthlySpendSample?
 
     public var scheduledMonthlyAmount: Money {
         max(estimatedMonthlyAmount - unscheduledMonthlyAmount, .zero)
@@ -325,7 +328,8 @@ public struct ExpectedSpendEstimate: Sendable, Hashable, Codable {
         scheduledOutflows: Money,
         historyDays: Int,
         lookbackStart: Date?,
-        monthlySamples: [MonthlySpendSample] = []
+        monthlySamples: [MonthlySpendSample] = [],
+        currentMonth: MonthlySpendSample? = nil
     ) {
         self.dailyAmount = dailyAmount
         self.estimatedMonthlyAmount = estimatedMonthlyAmount
@@ -340,6 +344,7 @@ public struct ExpectedSpendEstimate: Sendable, Hashable, Codable {
         self.historyDays = historyDays
         self.lookbackStart = lookbackStart
         self.monthlySamples = monthlySamples
+        self.currentMonth = currentMonth
     }
 
     public static let empty = ExpectedSpendEstimate(
