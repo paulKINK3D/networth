@@ -1,5 +1,48 @@
 # WORKING
 
+## Current handoff — Spending Room redesign and spending-vs-average drill-downs (2026-09-12)
+
+- Committed and pushed as `b8264fe` on `main`.
+- The Spending Room sheet is rebuilt: one hero (amount left; stacked
+  `Through:` / date right at display size) over a Plan/Future-style pill
+  selector with three segments. **Drivers** ranks Spending groups by monthly
+  average (projection dialect: recurring-stripped, refund-netted samples)
+  with `Locked In` collapsing card autopays / bills / income into
+  tap-expandable rows. **Cycle** shows closed statements, open-statement
+  charges so far with a pace bar, and estimated next payments, plus the
+  cash-side bills/income. **Ledger** is a Swift Charts waterfall from
+  starting cash to `Projected low`, a swatched reconciliation table, and a
+  `Spendable` composition (buffer olive, Reserves parchment, Spending Room
+  green). Old sections (What Moves Cash, Spending Scenarios, Dated Activity)
+  are gone; vocabulary canon applied (Spending Room, Everyday spending,
+  Cash buffer, Reserves, Bills, Card autopays).
+- Drill-down grammar everywhere is `$X / $Y` — current/viewed amount against
+  a monthly average, no labels. Projections: group → category (with This
+  month header + calendar-scale pace bar: `1 … today … 28/30/31`) → payee
+  summed one line each, expandable, swipe include/exclude preserved.
+  Spending: tapping a group now shows the same drill-down in budget dialect
+  (own history, trailing 12 complete months, matching Trends), payee rollup
+  with window purchase counts; no exclude control there. Comparison tint on
+  the numerator only: red when over the full average any time, green only
+  when a completed month finished under, neutral otherwise.
+- Estimate now exposes the partial current month
+  (`ExpectedSpendEstimate.currentMonth`), kept out of the averages. New pure
+  helpers: `SpendingRoomLedger`/`SpendingRoomDrivers`/`SpendingRoomCardCycle`
+  (NetworthCore/Projections) and `SpendingHistoryAverages` (Models). Design
+  system gains `NwSegmentedSelector` (Spending's selector now uses it) and
+  `NwPaceBar`.
+- Product decision logged in PLAN.md (2026-09-12): budget targets will be
+  **seeded from averages, never live-linked** (ratchet rejected; Fixed seeds
+  from recurring-bill sum). The seeding flow is **not built yet** — it is
+  the next piece of work and needs its own design pass.
+- Also open: `docs/2026-09-10-architecture-audit-hotspot-map.md` sits staged
+  but uncommitted, predating this session. Projection Details sheet still
+  exists unchanged; absorbing it into the Ledger segment is a candidate
+  follow-up. Mockups for the redesign live in the session scratchpad only.
+- Validation: 293 NetworthCore tests pass; generic-device Debug and Release
+  builds pass. Physical-device review done for the drill-downs and colors;
+  the Cycle segment with real statement data deserves another look.
+
 ## Current handoff — Chip-based review editor and reimbursement bulk marks (2026-09-09)
 
 - The transaction review/edit screen is redesigned around visible choices
