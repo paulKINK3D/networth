@@ -113,6 +113,7 @@ struct ProjectionsView: View {
     @Query private var cardSettings: [DurableCardSettings]
     @Query private var cardPaymentConfirmations:
         [DurableCardPaymentConfirmation]
+    @Query private var reviewDismissals: [DurableCardPaymentReviewDismissal]
     @Query private var cardStatementAssignments:
         [DurableCardStatementAssignment]
     @Query private var incomePatternOverrides: [DurableIncomePatternOverride]
@@ -139,6 +140,7 @@ struct ProjectionsView: View {
     @State private var cachedData: ProjectionData?
     @State private var cacheFingerprint = ""
     @State private var isVisible = false
+    @State private var refreshError: String?
 
     var body: some View {
         NavigationStack {
@@ -172,12 +174,22 @@ struct ProjectionsView: View {
                     )
                 }
             }
+            .alert("Couldn’t Update Projections", isPresented: Binding(
+                get: { refreshError != nil },
+                set: { if !$0 { refreshError = nil } }
+            )) {
+                Button("Retry") { refreshCache(force: true) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(refreshError ?? "Please try again.")
+            }
             .task { refreshCache() }
             .onAppear {
                 isVisible = true
                 refreshCache()
             }
             .onDisappear { isVisible = false }
+            .onChange(of: reviewDismissals.count) { refreshCache(force: true) }
             .onReceive(Self.saveEvents) { _ in
                 if isVisible {
                     refreshCache(force: true)
@@ -197,6 +209,7 @@ struct ProjectionsView: View {
             "\(financialAccounts.count)",
             "\(cardSettings.count)", "\(exclusions.count)",
             "\(cardPaymentConfirmations.count)",
+            "\(reviewDismissals.count)",
             "\(cardStatementAssignments.count)",
             "\(incomePatternOverrides.count)",
             "\(recurringExpectations.count)",
@@ -217,14 +230,18 @@ struct ProjectionsView: View {
         refreshTask = Task {
             // Detached: @ModelActor inherits the creating executor; built on
             // main it would compute on main.
-            let data = await Task.detached(priority: .userInitiated) {
-                let dataActor = ProjectionsDataActor(
-                    modelContainer: modelContainer
-                )
-                return await dataActor.build()
-            }.value
-            guard !Task.isCancelled else { return }
-            cachedData = data
+            do {
+                let data = try await Task.detached(priority: .userInitiated) {
+                    let dataActor = ProjectionsDataActor(modelContainer: modelContainer)
+                    return try await dataActor.build()
+                }.value
+                guard !Task.isCancelled else { return }
+                cachedData = data
+            } catch {
+                guard !Task.isCancelled else { return }
+                cacheFingerprint = ""
+                refreshError = "Your statement review couldn’t be loaded. Please try again."
+            }
         }
     }
 
@@ -280,9 +297,12 @@ struct ProjectionsView: View {
             }
             .sheet(item: $selectedPayment) { payment in
                 CardPaymentDetailSheet(
-                    payment: payment.payment,
-                    transactions: payment.transactions,
-                    bankCandidates: payment.bankCandidates
+                    payment: data.reviewPayments.first { $0.id == payment.id }
+                        ?? data.paymentEstimates.first { $0.id == payment.id }
+                        ?? payment.payment,
+                    transactions: data.cardActivityByPaymentID[payment.id] ?? payment.transactions,
+                    bankCandidates: data.overdueCandidatesByPaymentID[payment.id] ?? payment.bankCandidates,
+                    isSettled: data.settledPaymentIDs.contains(payment.id)
                 )
                 .environment(container)
             }
@@ -610,13 +630,50 @@ struct ProjectionsView: View {
         return VStack(alignment: .leading, spacing: NwSpacing.md) {
             Text("Next Cash Activity")
                 .font(NwTypography.titleSmall)
-            if data.result.events.isEmpty && !hasExpectedPaycheck {
+            if !data.reviewPayments.isEmpty {
+                NwCard(style: .primary, padding: 0) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(data.reviewPayments.enumerated()), id: \.element.id) { index, payment in
+                            Button {
+                                selectedPayment = CardPaymentDetailSelection(
+                                    payment: payment,
+                                    transactions: data.cardActivityByPaymentID[payment.id] ?? [],
+                                    bankCandidates: []
+                                )
+                            } label: {
+                                HStack(spacing: NwSpacing.md) {
+                                    VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                                        Text(payment.cardName)
+                                            .font(NwTypography.bodyEmphasis)
+                                            .foregroundStyle(NwAppColors.textPrimary)
+                                        Text("Statement closed \(payment.closeDate.formatted(.dateTime.month(.abbreviated).day().year()))")
+                                            .font(NwTypography.caption)
+                                            .foregroundStyle(NwAppColors.textSecondary)
+                                        NwStatusBadge("Ready to Clear", style: .positive)
+                                    }
+                                    Spacer()
+                                    NwAmountText(payment.amount, variant: .body, showCents: true,
+                                                 color: NwAppColors.positive)
+                                }
+                                .padding(NwSpacing.md)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityHint("Review statement items and clear this payment")
+                            if index < data.reviewPayments.count - 1 {
+                                Divider().padding(.leading, NwSpacing.md)
+                            }
+                        }
+                    }
+                }
+            }
+            if data.result.events.isEmpty && !hasExpectedPaycheck && data.reviewPayments.isEmpty {
                 NwInlineNotice(
                     "No known events",
                     message: "Add recurring income and bills in Settings.",
                     tone: .info
                 )
-            } else {
+            } else if !data.result.events.isEmpty || hasExpectedPaycheck {
                 NwCard(style: .primary, padding: NwSpacing.md) {
                     VStack(spacing: 0) {
                         if case .detected(let paycheck) = data.paycheckDetection,
@@ -878,6 +935,8 @@ struct ProjectionsView: View {
     fileprivate struct ProjectionData: Sendable {
         let result: CashPositionProjector.Result
         let paymentEstimates: [UpcomingCardPayment]
+        let reviewPayments: [UpcomingCardPayment]
+        let settledPaymentIDs: Set<String>
         let cardActivityByPaymentID: [String: [TransactionSummary]]
         /// Paying-account outflows a user can pick as the actual debit for
         /// an overdue, still-unsettled payment, keyed by payment id.
@@ -2614,9 +2673,12 @@ private struct CardPaymentDetailSheet: View {
     @Query private var statementAssignmentRows:
         [DurableCardStatementAssignment]
     @Query private var settlementRows: [DurableCardPaymentSettlement]
+    @Query private var accounts: [CachedFinancialAccount]
+    @Query private var reviewDismissals: [DurableCardPaymentReviewDismissal]
     let payment: UpcomingCardPayment
     let transactions: [TransactionSummary]
     let bankCandidates: [TransactionSummary]
+    let isSettled: Bool
 
     @State private var showingEditor = false
     @State private var showingUseEstimateConfirmation = false
@@ -2630,14 +2692,23 @@ private struct CardPaymentDetailSheet: View {
             title: payment.cardName,
             onClose: { dismiss() }
         ) {
+            if readyToClear {
+                HStack {
+                    NwStatusBadge("Ready to Clear", style: .positive)
+                    Spacer()
+                    Button("Clear") { clearReview() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(NwAppColors.positive)
+                }
+            }
             NwCard(style: .primary) {
                 VStack(spacing: NwSpacing.md) {
                     amountRow(
                         resolved.isConfirmed
                             ? "Scheduled payment"
                             : "Estimated autopay",
-                        resolved.amount,
-                        color: NwAppColors.liability
+                        isSettled ? payment.amount : resolved.amount,
+                        color: readyToClear ? NwAppColors.positive : NwAppColors.liability
                     )
                     Divider()
                     detail(
@@ -2658,7 +2729,7 @@ private struct CardPaymentDetailSheet: View {
                 }
             }
 
-            if isAwaitingClearance {
+            if isAwaitingClearance && !readyToClear {
                 if cycleSettlements.isEmpty {
                     Text("Waiting to Clear")
                         .font(NwTypography.titleSmall)
@@ -2675,19 +2746,12 @@ private struct CardPaymentDetailSheet: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(NwAppColors.primary)
-                } else {
-                    Text("Marked Paid")
-                        .font(NwTypography.titleSmall)
-
-                    Button {
-                        removeSettlement()
-                    } label: {
-                        Text("Not Paid Yet")
-                            .frame(maxWidth: .infinity)
-                    }
+                }
+            }
+            if !cycleSettlements.isEmpty {
+                Button("Not Paid Yet") { removeSettlement() }
                     .buttonStyle(.bordered)
                     .tint(NwAppColors.liability)
-                }
             }
 
             if payment.basis == .closedStatementEstimate {
@@ -2695,7 +2759,9 @@ private struct CardPaymentDetailSheet: View {
                     Text("Around Statement Close")
                         .font(NwTypography.titleSmall)
 
-                    boundaryActivityCard
+                    ForEach(boundaryPeriodCloseDates, id: \.self) { closeDate in
+                        boundaryActivityCard(ending: closeDate)
+                    }
                 }
 
                 Text("Reconciliation")
@@ -2703,7 +2769,7 @@ private struct CardPaymentDetailSheet: View {
 
                 NwCard(style: .primary) {
                     VStack(spacing: NwSpacing.md) {
-                        amountRow("Current balance", payment.startingBalanceOwed)
+                        amountRow("Current balance", currentBalanceOwed)
                         Divider()
                         amountRow(
                             "New purchases",
@@ -2722,7 +2788,7 @@ private struct CardPaymentDetailSheet: View {
                             )
                         }
                         Divider()
-                        amountRow("Estimated autopay", payment.amount)
+                        amountRow("Estimated autopay", refreshedPayment.amount)
                     }
                 }
 
@@ -2734,33 +2800,35 @@ private struct CardPaymentDetailSheet: View {
                 activityCard
             }
 
-            if resolved.isConfirmed {
-                Button {
-                    showingEditor = true
-                } label: {
-                    Text("Edit Scheduled Payment")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(NwAppColors.primary)
+            if !readyToClear {
+                if resolved.isConfirmed {
+                    Button {
+                        showingEditor = true
+                    } label: {
+                        Text("Edit Scheduled Payment")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(NwAppColors.primary)
 
-                Button {
-                    showingUseEstimateConfirmation = true
-                } label: {
-                    Text("Use Estimate")
-                        .frame(maxWidth: .infinity)
+                    Button {
+                        showingUseEstimateConfirmation = true
+                    } label: {
+                        Text("Use Estimate")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(NwAppColors.liability)
+                } else {
+                    Button {
+                        showingEditor = true
+                    } label: {
+                        Text("Enter Scheduled Payment")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(NwAppColors.primary)
                 }
-                .buttonStyle(.bordered)
-                .tint(NwAppColors.liability)
-            } else {
-                Button {
-                    showingEditor = true
-                } label: {
-                    Text("Enter Scheduled Payment")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(NwAppColors.primary)
             }
         }
         .sheet(isPresented: $showingEditor) {
@@ -2800,7 +2868,7 @@ private struct CardPaymentDetailSheet: View {
         ) {
             if let transaction = selectedBoundaryTransaction {
                 Button(
-                    "Statement Closed \(shortDate(payment.closeDate))"
+                    "Move to Statement Ending \(shortDate(payment.closeDate))"
                 ) {
                     assign(
                         transaction,
@@ -2808,7 +2876,7 @@ private struct CardPaymentDetailSheet: View {
                     )
                 }
                 Button(
-                    "Next Statement \(shortDate(nextStatementCloseDate))"
+                    "Move to Statement Ending \(shortDate(nextStatementCloseDate))"
                 ) {
                     assign(
                         transaction,
@@ -2875,7 +2943,7 @@ private struct CardPaymentDetailSheet: View {
                                 .font(NwTypography.body)
                                 .foregroundStyle(NwAppColors.textPrimary)
                                 Text(
-                                    activityLabel(activity.effect)
+                                    activityLabel(activity)
                                 )
                                 .font(NwTypography.caption)
                                 .foregroundStyle(NwAppColors.textSecondary)
@@ -2909,9 +2977,7 @@ private struct CardPaymentDetailSheet: View {
         }
     }
 
-    /// The projected debit date has arrived but no matching outflow settled
-    /// on the paying account. Settled payments never reach this sheet — the
-    /// projection retires their timeline event.
+    /// An unpaid payment reaches its expected bank-debit date.
     private var isAwaitingClearance: Bool {
         calendar.startOfDay(for: resolved.paymentDate)
             <= calendar.startOfDay(for: .now)
@@ -2971,50 +3037,70 @@ private struct CardPaymentDetailSheet: View {
         }
     }
 
-    private var boundaryActivityCard: some View {
-        NwCard(style: .primary, padding: 0) {
-            VStack(spacing: 0) {
-                ForEach(Array(boundaryTransactions.enumerated()),
-                        id: \.element.id) { index, transaction in
-                    Button {
-                        selectedBoundaryTransaction = transaction
-                    } label: {
-                        HStack(spacing: NwSpacing.md) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(
-                                    transaction.payeeName
-                                        ?? transaction.categoryName
-                                        ?? "Transaction"
-                                )
-                                .font(NwTypography.body)
-                                .foregroundStyle(NwAppColors.textPrimary)
-                                Text(boundaryDateLabel(transaction))
-                                    .font(NwTypography.caption)
-                                    .foregroundStyle(
-                                        NwAppColors.textSecondary
-                                    )
-                                if let label = assignmentLabel(for: transaction) {
-                                    Text(label)
-                                        .font(NwTypography.caption)
-                                        .foregroundStyle(NwAppColors.accent)
-                                }
-                            }
-                            Spacer()
-                            NwAmountText(
-                                transaction.amount,
-                                variant: .body,
-                                showCents: true,
-                                color: transaction.amount.isNegative
-                                    ? NwAppColors.liability
-                                    : NwAppColors.positive
-                            )
-                        }
-                        .padding(NwSpacing.md)
-                        .contentShape(Rectangle())
+    private var boundaryPeriodCloseDates: [Date] {
+        let forecaster = CCPaymentForecaster(calendar: calendar)
+        let cycleDay = payment.statementCycleDay ?? calendar.component(.day, from: payment.closeDate)
+        return Set([payment.closeDate, nextStatementCloseDate] + boundaryTransactions.map {
+            forecaster.statementCloseDate(for: $0, cycleDay: cycleDay,
+                                           assignments: statementAssignmentRows.map(\.coreAssignment))
+        }).sorted()
+    }
+
+    private func boundaryActivityCard(ending closeDate: Date) -> some View {
+        let forecaster = CCPaymentForecaster(calendar: calendar)
+        let cycleDay = payment.statementCycleDay ?? calendar.component(.day, from: payment.closeDate)
+        let period = forecaster.statementPeriod(ending: closeDate, cycleDay: cycleDay)
+        let items = boundaryTransactions.filter {
+            calendar.isDate(
+                forecaster.statementCloseDate(
+                    for: $0, cycleDay: cycleDay,
+                    assignments: statementAssignmentRows.map(\.coreAssignment)
+                ), inSameDayAs: closeDate
+            )
+        }
+        return VStack(alignment: .leading, spacing: NwSpacing.sm) {
+            Text("Statement Ending \(shortDate(closeDate))")
+                .font(NwTypography.bodyEmphasis)
+            Text("\(shortDate(period.lowerBound)) – \(shortDate(period.upperBound))")
+                .font(NwTypography.caption)
+                .foregroundStyle(NwAppColors.textSecondary)
+            NwCard(style: .primary, padding: 0) {
+                VStack(spacing: 0) {
+                    if items.isEmpty {
+                        Text("No items near close")
+                            .font(NwTypography.body)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(NwSpacing.md)
                     }
-                    .buttonStyle(.plain)
-                    if index < boundaryTransactions.count - 1 {
-                        Divider().padding(.leading, NwSpacing.md)
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, transaction in
+                        Button { selectedBoundaryTransaction = transaction } label: {
+                            HStack(spacing: NwSpacing.md) {
+                                VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                                    Text(transaction.payeeName ?? transaction.categoryName ?? "Transaction")
+                                        .font(NwTypography.body)
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                    Text(boundaryDateLabel(transaction))
+                                        .font(NwTypography.caption)
+                                        .foregroundStyle(NwAppColors.textSecondary)
+                                    if assignment(for: transaction) != nil {
+                                        Text("Manually assigned")
+                                            .font(NwTypography.caption)
+                                            .foregroundStyle(NwAppColors.primary)
+                                    }
+                                }
+                                Spacer()
+                                NwAmountText(transaction.amount, variant: .body, showCents: true,
+                                             color: transaction.amount.isNegative
+                                                ? NwAppColors.liability : NwAppColors.positive)
+                            }
+                            .padding(NwSpacing.md)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if index < items.count - 1 {
+                            Divider().padding(.leading, NwSpacing.md)
+                        }
                     }
                 }
             }
@@ -3022,26 +3108,60 @@ private struct CardPaymentDetailSheet: View {
     }
 
     private func activityLabel(
-        _ effect: CardPaymentActivityEffect
+        _ activity: CardPaymentReconciliationActivity
     ) -> String {
-        switch effect {
-        case .nextStatement: "Next statement"
-        case .reducesPayment: "Reduces payment"
-        case .increasesPayment: "Increases payment"
-        case .currentBalanceOnly: "Current balance only"
+        switch activity.effect {
+        case .nextStatement:
+            let close = CCPaymentForecaster(calendar: calendar).statementCloseDate(
+                for: activity.transaction,
+                cycleDay: payment.statementCycleDay ?? calendar.component(.day, from: payment.closeDate),
+                assignments: statementAssignmentRows.map(\.coreAssignment)
+            )
+            return "Statement ending \(shortDate(close))"
+        case .reducesPayment: return "Reduces payment"
+        case .increasesPayment: return "Increases payment"
+        case .currentBalanceOnly: return "Current balance only"
         }
+    }
+
+    private var readyToClear: Bool { isSettled || !cycleSettlements.isEmpty }
+
+    private var currentBalanceOwed: Money {
+        accounts.first { $0.canonicalAccountId == payment.cardAccountId }
+            .flatMap(\.currentBalanceMilliunits)
+            .map { Money(milliunits: $0).absolute }
+            ?? payment.startingBalanceOwed
+    }
+
+    private var refreshedPayment: UpcomingCardPayment {
+        CCPaymentForecaster(calendar: calendar).refreshedClosedPayment(
+            payment, currentBalanceOwed: currentBalanceOwed, transactions: transactions,
+            assignments: statementAssignmentRows.map(\.coreAssignment), asOf: .now
+        )
+    }
+
+    private func clearReview() {
+        let context = container.modelContainer.mainContext
+        if !reviewDismissals.contains(where: { $0.paymentID == payment.id }) {
+            context.insert(DurableCardPaymentReviewDismissal(paymentID: payment.id))
+        }
+        guard context.safeSave(source: "projection.cardPayment.clearReview") else {
+            persistenceError = "Your review wasn’t cleared. Please try again."
+            return
+        }
+        dismiss()
     }
 
     private var resolved: ResolvedUpcomingCardPayment {
         CardPaymentConfirmationResolver(calendar: calendar).resolve(
-            payment,
+            refreshedPayment,
             confirmations: confirmationRows.map(\.coreConfirmation)
         )
     }
 
     private var reconciliation: CardPaymentReconciliation {
         CCPaymentForecaster(calendar: calendar).reconciliation(
-            for: payment,
+            for: refreshedPayment,
             transactions: transactions,
             statementAssignments: statementAssignmentRows.map(
                 \.coreAssignment
@@ -3072,14 +3192,6 @@ private struct CardPaymentDetailSheet: View {
             $0.transactionId == transaction.id
                 && $0.cardAccountId == payment.cardAccountId
         }.max { $0.updatedAt < $1.updatedAt }
-    }
-
-    private func assignmentLabel(for transaction: TransactionSummary) -> String? {
-        guard let assignment = assignment(for: transaction) else { return nil }
-        return calendar.isDate(
-            assignment.statementCloseDate,
-            inSameDayAs: payment.closeDate
-        ) ? "Assigned to this statement" : "Assigned to next statement"
     }
 
     private func boundaryDateLabel(_ transaction: TransactionSummary) -> String {
@@ -3153,6 +3265,16 @@ private struct CardPaymentDetailSheet: View {
         let pickedIds = Set(
             cycleSettlements.map(\.transactionId).filter { !$0.isEmpty }
         )
+        do {
+            let paymentID = payment.id
+            let reviews = try context.fetch(FetchDescriptor<CachedCardPaymentReview>(
+                predicate: #Predicate { $0.paymentID == paymentID }
+            ))
+            for row in reviews { context.delete(row) }
+        } catch {
+            persistenceError = "Your payment couldn’t be updated. Please try again."
+            return
+        }
         for row in cycleSettlements { context.delete(row) }
         guard context.safeSave(source: "projection.cardPayment.unsettle")
         else {
@@ -3243,7 +3365,6 @@ private struct CardPaymentDetailSheet: View {
             return
         }
         selectedBoundaryTransaction = nil
-        dismiss()
     }
 
     private func removeAssignment(for transaction: TransactionSummary) {
@@ -3260,7 +3381,6 @@ private struct CardPaymentDetailSheet: View {
             return
         }
         selectedBoundaryTransaction = nil
-        dismiss()
     }
 }
 
@@ -3472,7 +3592,7 @@ private struct PaycheckScheduleSheet: View {
 /// finished results.
 @ModelActor
 private actor ProjectionsDataActor {
-    func build() -> ProjectionsView.ProjectionData {
+    func build() throws -> ProjectionsView.ProjectionData {
         let context = modelContext
         let settings = try? context
             .fetch(FetchDescriptor<DurableUserSettings>()).first
@@ -3508,22 +3628,26 @@ private actor ProjectionsDataActor {
         let confirmationRows = (try? context.fetch(
             FetchDescriptor<DurableCardPaymentConfirmation>()
         )) ?? []
-        let settlementRows = (try? context.fetch(
-            FetchDescriptor<DurableCardPaymentSettlement>()
-        )) ?? []
-        let statementAssignmentRows = (try? context.fetch(
-            FetchDescriptor<DurableCardStatementAssignment>()
-        )) ?? []
+        let settlementRows = try context.fetch(FetchDescriptor<DurableCardPaymentSettlement>())
+        let statementAssignmentRows = try context.fetch(FetchDescriptor<DurableCardStatementAssignment>())
         let incomeOverrideRows = (try? context.fetch(
             FetchDescriptor<DurableIncomePatternOverride>()
         )) ?? []
-        let financialTransactions = (try? context.fetch(
+        let reviewRows = try context.fetch(FetchDescriptor<CachedCardPaymentReview>())
+        let clearedRows = try context.fetch(FetchDescriptor<DurableCardPaymentReviewDismissal>())
+        let clearedIDs = Set(clearedRows.map(\.paymentID))
+        let earliestReview = reviewRows.filter { !clearedIDs.contains($0.paymentID) }
+            .map(\.closeDate).min() ?? cutoff
+        let reviewCutoff = min(cutoff, Calendar.current.date(
+            byAdding: .day, value: -35, to: earliestReview
+        ) ?? cutoff)
+        let financialTransactions = try context.fetch(
             FetchDescriptor<CachedFinancialTransaction>(
                 predicate: #Predicate {
-                    $0.postedDate >= cutoff && !$0.deleted && !$0.pending
+                    $0.postedDate >= reviewCutoff && !$0.deleted && !$0.pending
                 }
             )
-        )) ?? []
+        )
         let categories = (try? context.fetch(
             FetchDescriptor<DurableCanonicalCategory>()
         )) ?? []
@@ -3597,7 +3721,7 @@ private actor ProjectionsDataActor {
                   !selectedIds.contains(paymentAccountId) else { return nil }
             return card.name
         }
-        let history = financialTransactions.compactMap {
+        let history = financialTransactions.filter { $0.postedDate >= cutoff }.compactMap {
             $0.toProjectionSummary()
         }
         let cardActivityHistory: [TransactionSummary] = financialTransactions.map {
@@ -3733,14 +3857,76 @@ private actor ProjectionsDataActor {
         let projectedPayments = resolvedPayments.map(\.projectedPayment)
         // A payment past its due date stays projected until its debit
         // settles on the paying account or the user resolves it in the
-        // autopay detail sheet. Settled cycles drop out here; the
-        // forecaster itself stays settlement-blind.
+        // autopay detail sheet. Settled cycles leave cash math here while
+        // remaining available for review until explicitly cleared.
         let settlementMatcher = CardPaymentSettlementMatcher()
-        let settledPaymentIds = settlementMatcher.settledPaymentIds(
-            payments: projectedPayments,
+        let accountIdsByTransactionId = Dictionary(
+            financialTransactions.map { ($0.id, $0.canonicalAccountId) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var counterpartAccountIds: [String: String] = [:]
+        for row in financialTransactions {
+            guard let twinId = row.counterpartTransactionId,
+                  let twinAccountId = accountIdsByTransactionId[twinId]
+            else { continue }
+            counterpartAccountIds[row.id] = twinAccountId
+        }
+        let latestReviews = Dictionary(
+            reviewRows.map { ($0.paymentID, $0) },
+            uniquingKeysWith: { $0.capturedAt > $1.capturedAt ? $0 : $1 }
+        )
+        for row in latestReviews.values {
+            if let account = availableAccounts.first(where: { $0.id == row.cardAccountId }),
+               row.cardName != account.name {
+                row.cardName = account.name
+            }
+        }
+        let manualSettlements = settlementRows.map(\.coreSettlement)
+        let retainedSettlements = latestReviews.values.compactMap { row -> CardPaymentSettlement? in
+            guard !manualSettlements.contains(where: {
+                $0.cardAccountId == row.cardAccountId
+                    && Calendar.current.isDate($0.statementCloseDate, inSameDayAs: row.closeDate)
+            }) else { return nil }
+            return CardPaymentReviewQueue.retainedSettlement(
+                payment: row.payment, transactionID: row.transactionID,
+                transactions: cardActivityHistory, counterpartAccountIds: counterpartAccountIds,
+                capturedAt: row.capturedAt
+            )
+        }
+        let validRetainedIDs = Set(retainedSettlements.map(\.id))
+        let retainedPayments = latestReviews.values.filter { row in
+            validRetainedIDs.contains(row.paymentID) || manualSettlements.contains {
+                $0.cardAccountId == row.cardAccountId
+                    && Calendar.current.isDate($0.statementCloseDate, inSameDayAs: row.closeDate)
+            }
+        }.map(\.payment)
+        let matchingPayments = CardPaymentReviewQueue.matchingPayments(
+            current: projectedPayments, retained: retainedPayments
+        )
+        let paymentMatches = settlementMatcher.paymentMatches(
+            payments: matchingPayments,
             transactions: cardActivityHistory,
-            settlements: settlementRows.map(\.coreSettlement),
+            counterpartAccountIds: counterpartAccountIds,
+            settlements: retainedSettlements + manualSettlements,
             asOf: .now
+        )
+        let settledPaymentIds = Set(paymentMatches.keys)
+        for payment in matchingPayments where payment.basis == .closedStatementEstimate {
+            guard let transactionID = paymentMatches[payment.id] else { continue }
+            if let row = latestReviews[payment.id] {
+                if row.transactionID != transactionID {
+                    row.update(payment: payment, transactionID: transactionID)
+                }
+            } else {
+                context.insert(CachedCardPaymentReview(payment: payment, transactionID: transactionID))
+            }
+        }
+        if context.hasChanges {
+            guard context.safeSave(source: "projection.cardPayment.retainReview", notifyDataSync: false)
+            else { throw CocoaError(.fileWriteUnknown) }
+        }
+        let reviewPayments = CardPaymentReviewQueue.readyToClear(
+            payments: matchingPayments, settledIDs: settledPaymentIds, clearedIDs: clearedIDs
         )
         let activePayments = projectedPayments.filter {
             !settledPaymentIds.contains($0.id)
@@ -3764,7 +3950,9 @@ private actor ProjectionsDataActor {
                 }
         )
         let cardActivityByPaymentID = Dictionary(uniqueKeysWithValues:
-            paymentEstimates.map { payment in
+            CardPaymentReviewQueue.matchingPayments(
+                current: paymentEstimates, retained: reviewPayments
+            ).map { payment in
                 (
                     payment.id,
                     cardActivityHistory.filter {
@@ -3806,6 +3994,8 @@ private actor ProjectionsDataActor {
         return ProjectionsView.ProjectionData(
             result: result,
             paymentEstimates: paymentEstimates,
+            reviewPayments: reviewPayments,
+            settledPaymentIDs: settledPaymentIds,
             cardActivityByPaymentID: cardActivityByPaymentID,
             overdueCandidatesByPaymentID: overdueCandidatesByPaymentID,
             selectedCashAccounts: selectedCash,

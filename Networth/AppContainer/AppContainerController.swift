@@ -128,6 +128,15 @@ public final class AppContainerController {
             }
         }
 
+        if settings.settingsSchemaVersion < 5 {
+            _ = plaidTransactionSyncCoordinator
+                .removeCardPaymentDescriptorAliases()
+            settings.settingsSchemaVersion = 5
+            if !ctx.safeSave(source: "bootstrap.migrateCardAliases") {
+                ctx.rollback()
+            }
+        }
+
         if settings.faceIDEnabled && biometricGate.isAvailable {
             // Honor the user's biometric grace window: if the app was active
             // recently and the grace minutes haven't elapsed, skip the lock.

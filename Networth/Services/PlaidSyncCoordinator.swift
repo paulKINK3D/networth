@@ -2399,9 +2399,7 @@ public final class PlaidTransactionSyncCoordinator {
                 }
             }
 
-            guard resolvedIDs.count == 1,
-                  let payeeID = resolvedIDs.first,
-                  let payee = payeeByID[payeeID] else {
+            func resetToUnresolved() {
                 row.payeeCanonicalId = nil
                 let hasModelNameSuggestion =
                     row.classificationProvenanceRaw
@@ -2419,12 +2417,15 @@ public final class PlaidTransactionSyncCoordinator {
                 row.subtransactionsData = nil
                 row.requiresNameReview = true
                 row.requiresReview = true
+            }
+
+            guard resolvedIDs.count == 1,
+                  let payeeID = resolvedIDs.first,
+                  let payee = payeeByID[payeeID] else {
+                resetToUnresolved()
                 continue
             }
 
-            row.payeeCanonicalId = payeeID
-            row.displayName = payee.name
-            row.requiresNameReview = false
             let patterns = patternsByPayee[payeeID] ?? []
             let directionPatterns = patterns.filter {
                 $0.amountSign == Int(row.amountMilliunits.signum())
@@ -2432,6 +2433,24 @@ public final class PlaidTransactionSyncCoordinator {
             let patternKeys = Set(directionPatterns.map {
                 "\($0.categoryCanonicalId ?? "")|\($0.forecastTreatmentRaw)"
             })
+            // Descriptor evidence cannot identify which card a payment debit
+            // pays — generic bank payment descriptors are shared by every
+            // card paid from the account. Card identity comes only from
+            // counterpart pairing, a settlement pick, or an explicit user
+            // choice, so a card-payment resolution stays unresolved here.
+            let prospectiveTreatmentRaw = patternKeys.count == 1
+                ? directionPatterns.first?.forecastTreatmentRaw
+                    ?? row.forecastTreatmentRaw
+                : row.forecastTreatmentRaw
+            if prospectiveTreatmentRaw
+                == TransactionType.cardPayment.rawValue {
+                resetToUnresolved()
+                continue
+            }
+
+            row.payeeCanonicalId = payeeID
+            row.displayName = payee.name
+            row.requiresNameReview = false
             if patternKeys.count == 1,
                let pattern = directionPatterns.first {
                 row.categoryCanonicalId = pattern.categoryCanonicalId
@@ -2720,6 +2739,144 @@ public final class PlaidTransactionSyncCoordinator {
         // confirms rerun the directory without a sync, and the alias-driven
         // prefill would otherwise revert matched rows until the next sync.
         applyCounterpartMatches()
+        // Debits whose card-side credit has not posted yet get identity
+        // from the payment forecast instead of descriptors or history.
+        applyProjectedCardPaymentPrefill()
+    }
+
+    /// Identity for card-payment debits that counterpart pairing cannot
+    /// reach yet: match the debit against each configured card's projected
+    /// payment. The forecast knows the expected amount and the paying
+    /// account, so a unique in-tolerance match names that card for review;
+    /// no match or an ambiguous match leaves the card choice to the user.
+    private func applyProjectedCardPaymentPrefill() {
+        let reviewRows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    $0.requiresReview && !$0.deleted && !$0.pending
+                }
+            )
+        )) ?? []
+        let unresolved = reviewRows.filter {
+            $0.forecastTreatment == .cardPayment
+                && $0.payeeCanonicalId == nil
+                && $0.counterpartTransactionId == nil
+                && $0.amountMilliunits < 0
+        }
+        guard !unresolved.isEmpty else { return }
+
+        let accounts = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialAccount>(
+                predicate: #Predicate { !$0.deleted }
+            )
+        )) ?? []
+        let nicknames = (try? mainContext.fetch(
+            FetchDescriptor<DurableAccountNickname>()
+        )) ?? []
+        let nameResolver = AccountDisplayNameResolver(nicknames: nicknames)
+        let cardSettings = (try? mainContext.fetch(
+            FetchDescriptor<DurableCardSettings>()
+        )) ?? []
+        let assignments = ((try? mainContext.fetch(
+            FetchDescriptor<DurableCardStatementAssignment>()
+        )) ?? []).map(\.coreAssignment)
+        let confirmations = ((try? mainContext.fetch(
+            FetchDescriptor<DurableCardPaymentConfirmation>()
+        )) ?? []).map(\.coreConfirmation)
+        // Statement reconstruction only reads activity since the prior
+        // close, so a generous window keeps the fetch bounded.
+        let historyCutoff = Calendar.current.date(
+            byAdding: .day, value: -180, to: .now
+        ) ?? .distantPast
+        let historyRows = (try? mainContext.fetch(
+            FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate {
+                    !$0.deleted && !$0.pending
+                        && $0.postedDate >= historyCutoff
+                }
+            )
+        )) ?? []
+        let history = historyRows.map { row in
+            TransactionSummary(
+                id: row.id,
+                accountId: row.canonicalAccountId,
+                date: row.postedDate,
+                authorizedDate: row.authorizedDate,
+                amount: Money(milliunits: row.amountMilliunits),
+                cleared: true,
+                approved: !row.requiresReview,
+                payeeName: row.displayName,
+                categoryName: row.categoryDisplayName,
+                forecastTreatment: row.forecastTreatment,
+                memo: nil,
+                deleted: row.deleted
+            )
+        }
+
+        let forecaster = CCPaymentForecaster()
+        let confirmationResolver = CardPaymentConfirmationResolver()
+        var payments: [UpcomingCardPayment] = []
+        for card in accounts where card.type == .creditCard {
+            guard let stored = cardSettings.first(where: {
+                ($0.canonicalAccountId ?? $0.accountId)
+                    == card.canonicalAccountId
+            }),
+                  let paymentAccountID = stored.canonicalPaymentAccountId
+                    ?? stored.paymentAccountId,
+                  stored.statementCycleDay >= 1,
+                  stored.paymentDueDay >= 1,
+                  !paymentAccountID.isEmpty else { continue }
+            let setting = CardStatementSettings(
+                accountId: card.canonicalAccountId,
+                statementCycleDay: stored.statementCycleDay,
+                paymentDueDay: stored.paymentDueDay,
+                paymentAccountId: paymentAccountID,
+                minimumPaymentPercent: stored.minimumPaymentPercent,
+                minimumPaymentFloor: stored.minimumPaymentFloor
+            )
+            let estimates = forecaster.upcomingPayments(
+                card: card.toAccountSnapshot(
+                    displayName: nameResolver.name(for: card)
+                ),
+                settings: setting,
+                scheduled: [],
+                historicalTransactions: history,
+                statementAssignments: assignments,
+                spendAccountIds: [],
+                asOf: .now,
+                horizonDays: 60
+            )
+            payments.append(contentsOf: estimates.map {
+                confirmationResolver.resolve(
+                    $0,
+                    confirmations: confirmations
+                ).projectedPayment
+            })
+        }
+        guard !payments.isEmpty else { return }
+
+        let resolver = CardPaymentIdentityResolver()
+        for row in unresolved {
+            guard let match = resolver.uniqueCardMatch(
+                debitAccountId: row.canonicalAccountId,
+                amount: Money(milliunits: row.amountMilliunits),
+                postedDate: row.postedDate,
+                payments: payments
+            ), let payee = resolveOrCreateCanonicalPayee(
+                named: "Payment · \(match.cardName)",
+                preferredCanonicalId: nil
+            ) else { continue }
+            row.payeeCanonicalId = payee.canonicalId
+            row.displayName = payee.name
+            row.requiresNameReview = false
+            row.categoryCanonicalId = nil
+            row.categoryName = nil
+            row.goalId = nil
+            row.classificationConfidenceRaw =
+                ClassificationConfidence.high.rawValue
+            row.classificationProvenanceRaw =
+                ClassificationProvenance.historicalMatch.rawValue
+        }
     }
 
     private func refreshCanonicalReviewCounts() {
@@ -2928,11 +3085,15 @@ public final class PlaidTransactionSyncCoordinator {
         // not its descriptor. Generic bank descriptors ("Online Transfer /
         // Payment: Debit") are shared by payments to many destinations, so
         // aliasing one to a card-specific payee would mislabel every future
-        // transfer that lacks a monitored twin.
-        let identityFromCounterpart = (row.counterpartTransactionId != nil
-            || identityFromAccountRelationship)
-            && (treatment == .cardPayment || treatment == .internalTransfer)
-        if !identityFromCounterpart {
+        // transfer that lacks a monitored twin. Card payments never alias —
+        // even a user-confirmed card choice is a per-transaction decision,
+        // because the same descriptor pays every card from this account.
+        let identityFromAccountRelationshipOnly =
+            treatment == .cardPayment
+            || ((row.counterpartTransactionId != nil
+                || identityFromAccountRelationship)
+                && treatment == .internalTransfer)
+        if !identityFromAccountRelationshipOnly {
             assignAliases(for: [row], to: payee)
         }
         let externalId = row.externalId
@@ -4329,13 +4490,46 @@ public final class PlaidTransactionSyncCoordinator {
         return candidates.count
     }
 
+    /// One-time cleanup for descriptor aliases learned from card-payment
+    /// confirms before card payments stopped aliasing. Generic bank payment
+    /// descriptors bound to one card payee made every later unpaired debit
+    /// resolve to that card. Removes aliases pointing at payees used
+    /// exclusively as card payments; the caller saves.
+    @discardableResult
+    public func removeCardPaymentDescriptorAliases() -> Int {
+        let decisions = (try? mainContext.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )) ?? []
+        var treatmentsByPayeeID: [String: Set<String>] = [:]
+        for decision in decisions {
+            guard let payeeID = decision.payeeCanonicalId else { continue }
+            treatmentsByPayeeID[payeeID, default: []]
+                .insert(decision.forecastTreatmentRaw)
+        }
+        let cardPayeeIDs = Set(
+            treatmentsByPayeeID.filter {
+                $0.value == [TransactionType.cardPayment.rawValue]
+            }.keys
+        )
+        guard !cardPayeeIDs.isEmpty else { return 0 }
+        let aliases = (try? mainContext.fetch(
+            FetchDescriptor<DurablePayeeAlias>()
+        )) ?? []
+        var removedCount = 0
+        for alias in aliases
+        where cardPayeeIDs.contains(alias.payeeCanonicalId) {
+            mainContext.delete(alias)
+            removedCount += 1
+        }
+        return removedCount
+    }
+
     /// A settlement pick in the autopay detail sheet is a direct user
     /// identification: this debit is the card's statement payment. Confirm
     /// it as a card payment named for the card so the review queue agrees
     /// with the projection. The identity comes from the account
     /// relationship, so the generic bank descriptor stays unaliased,
-    /// exactly as counterpart-matched confirmations do. A debit the user
-    /// already confirmed as a card payment keeps its classification.
+    /// exactly as counterpart-matched confirmations do.
     @discardableResult
     public func confirmCardPaymentSettlement(
         transactionId: String,
@@ -4350,9 +4544,6 @@ public final class PlaidTransactionSyncCoordinator {
               !row.pending,
               row.amountMilliunits < 0 else {
             return false
-        }
-        if !row.requiresReview, row.forecastTreatment == .cardPayment {
-            return true
         }
         let accounts = (try? mainContext.fetch(
             FetchDescriptor<CachedFinancialAccount>(

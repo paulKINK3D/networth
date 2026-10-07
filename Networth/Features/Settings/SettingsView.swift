@@ -3635,7 +3635,7 @@ struct PlaidTransactionReviewEditor: View {
     }
 
     private func resolveDisplayedSelections() {
-        if payeeCanonicalId == nil {
+        if payeeCanonicalId == nil, treatment != .cardPayment {
             let suggestion = displayName.trimmed
             let matches = canonicalPayees.filter {
                 !$0.archived

@@ -1,5 +1,201 @@
 # WORKING
 
+## Statement-review rollout findings (2026-10-07)
+
+- Read-only inspection of the physical iPhone’s active shared-container cache
+  and durable stores passed SQLite integrity checks. The reported Ready to
+  Clear row corresponded to an exact-amount September checking debit and its
+  linked card credit; both transactions were already reviewed. There was no
+  manual settlement or scheduled-payment confirmation for that cycle.
+- The checking debit’s saved display name named a different card than its
+  linked counterpart. Matching used the account relationship, not that label.
+  No device records, classifications, or review-completion decisions were
+  changed during this investigation. Raw device copies remain outside git.
+- **Known rollout issue, not fixed:** the first projection build captures all
+  matching closed cycles still emitted by the forecaster, including payments
+  completed before this feature existed. With no Clear decision, those older
+  cycles surface as Ready to Clear. Transaction approval and statement-review
+  completion are independent; the badge does not mean a new transaction arrived.
+- Follow-up: establish a first-use baseline for previously completed payments
+  while retaining newly matched payments until explicit Clear. Do not infer
+  that ordinary transaction approval means statement review is complete.
+- **Known presentation gap, not fixed:** retained rows display the saved
+  projected/scheduled amount and statement-close date, not the matched debit’s
+  amount, posting date, account, or a link to its detail. The investigated case
+  matched exactly; an estimate-versus-actual discrepancy was not its cause.
+  Future work should expose the matching evidence and distinguish manual
+  paid-outside-account decisions.
+- **Separate reported issue, not fixed:** opening All Categories from item
+  detail, activating search, and typing are very slow. Rendering currently
+  recomputes merchant/account suggestions from durable transaction decisions.
+  This is a suspected contributor, not a profiled cause; cache/index suggestions
+  and isolate search filtering as a focused follow-up.
+- User requested documentation, commit, and push of the current work; the
+  rollout/presentation/performance follow-ups above are not implemented in it.
+
+## Statement review retention (2026-10-07)
+
+- Implements the approved three-part review change: keep statement detail open
+  after moving/restoring assignments, retain matched payments until explicit
+  Clear, and group boundary items by dated statement periods.
+- Settlement and review completion are separate. Matched rows use theme green
+  and Ready to Clear; Clear appears in the detail and never affects cash math.
+- CachedCardPaymentReview retains matched-cycle evidence in NetworthLocalCache
+  across app restarts and statement rollover. It contains provider-derived
+  amounts/balances and never enters CloudKit. DurableCardPaymentReviewDismissal
+  stores only payment identity and completion date in NetworthDurable.
+- Schema additions are new entities with defaulted fields; no field renames,
+  deletions, store resets, or changes to existing CloudKit records. Duplicate
+  completion records converge by payment ID. Clearing the disposable cache
+  preserves completion decisions, but older unmatched review evidence cannot
+  be reconstructed beyond the cycles emitted by the current forecaster.
+- Includes the related pending payment-identity/sync fixes. The user tested
+  the new review UI on the physical phone. This agent did not install the app,
+  run a simulator, or deploy a backend. Device inspection above was read-only.
+- Validation: 42 focused domain tests passed. Generic-device Debug app/test-target
+  compilation and Release app build passed. App-level persistence coverage was
+  compiled, not executed (no simulator requested). Existing Settings actor-isolation
+  warnings remain unrelated. Fresh temporary DerivedData was needed because the
+  ordinary incremental build did not rebuild the changed local package.
+- Physical-device review: move/restore items without leaving the sheet; check
+  the green matched row and Clear; reopen after restart and statement rollover.
+
+## Payment repair follow-up (2026-10-05)
+
+- Supersedes the open-regression implementation described below; all work
+  remains uncommitted. No device installation or deployment performed.
+- User approved keeping cash reserved when the card credit posts before
+  checking is debited. Closed-statement forecasts now retain that reserve
+  before the due date as well as afterward.
+- Posted checking debits settle a closed cycle through counterpart identity
+  or a unique forecast match, including early payments. Ambiguous, pending,
+  and already explicitly allocated debits cannot auto-settle another card.
+- The review editor no longer infers a card contact from display-name matching.
+  An explicit settlement pick replaces a previously confirmed wrong-card
+  contact. The original device report has not been reproduced in this session.
+- One-time alias cleanup and architecture work remain untouched.
+- Validation: 38 focused Core tests pass; generic-device Debug, Release,
+  and build-for-testing pass. The app-level wrong-card correction test is
+  compiled but not executed; no simulator or device tests were run.
+
+## Current handoff — Card-payment identity rework, OPEN REGRESSION (2026-10-05)
+
+**Status: uncommitted work on `main`, handed off for repair. One known
+regression (projection "Waiting to clear" sticks) plus one unverified user
+report. Everything below is in the working tree only — nothing committed.**
+
+### User-reported bugs this session addressed
+
+1. A credit-card payment debit posting in checking before the card-side
+   credit was guessed onto the wrong card (usually AppleCard) and shown as
+   Ready to Confirm in transaction review.
+2. The projected card autopay disappeared from Projections as soon as any
+   amount-close debit appeared, before the user reconciled anything.
+
+### Root causes found (verified in code and in the live device store)
+
+- Review identity for unpaired card-payment debits came from
+  `DurablePayeeAlias` rows: generic bank descriptors ("Online Transfer /
+  Payment: Debit") had been alias-bound to the AppleCard payee by past
+  ordinary confirms, because the no-alias guard in
+  `confirmCanonicalTransaction` only covered counterpart-identified rows.
+  Review readiness for a card payment requires only a non-nil
+  `payeeCanonicalId`, so the guess landed in Ready to Confirm.
+- `CardPaymentSettlementMatcher.isAutoMatch` settled projected payments on
+  paying-account + amount tolerance alone — no card identity — so a debit
+  could retire the wrong card's projected payment.
+
+### Changes in the working tree (all uncommitted)
+
+`Networth/Services/PlaidSyncCoordinator.swift`:
+- `applyCanonicalDirectory`: a resolution whose prospective treatment is
+  `.cardPayment` is reset to unresolved (`resetToUnresolved()` nested
+  helper) — descriptor aliases and name fallback can no longer commit a
+  card payee. Counterpart pairing still assigns identity afterward.
+- `confirmCanonicalTransaction`: `assignAliases` is now skipped for every
+  `.cardPayment` confirm (`identityFromAccountRelationshipOnly`), not just
+  counterpart-identified ones. Internal-transfer behavior unchanged.
+- New `removeCardPaymentDescriptorAliases()`: one-time cleanup deleting
+  `DurablePayeeAlias` rows whose payee is used exclusively by
+  `cardPayment` decisions. Caller saves.
+- New `applyProjectedCardPaymentPrefill()`, called at the end of
+  `applyCurrentCanonicalState` after `applyCounterpartMatches`: for
+  unreviewed, negative, payee-less, unpaired `.cardPayment` rows, builds
+  `CCPaymentForecaster` estimates per configured card (scheduled: `[]`,
+  180-day history cutoff, `CardPaymentConfirmationResolver`-resolved) and,
+  on a unique match from `CardPaymentIdentityResolver`, prefills payee
+  `"Payment · <card>"` (nickname-resolved name), confidence high,
+  provenance `historicalMatch`. Ambiguous or no match → row stays in
+  Needs Attention for a manual card pick.
+
+`Networth/AppContainer/AppContainerController.swift`:
+- `settingsSchemaVersion` 5 migration runs the alias cleanup
+  (`bootstrap.migrateCardAliases`).
+
+`NetworthCore/Sources/Projections/CardPaymentSettlement.swift`:
+- `CardPaymentSettlementMatcher.isWithinPaymentTolerance(actual:expected:)`
+  — shared max($5, 1%) tolerance, used by settlement and identity.
+- `settledPaymentIds` gained `counterpartAccountIds: [String: String]`
+  (transaction id → twin's account id). **`isAutoMatch` now additionally
+  requires `counterpartAccountIds[transaction.id] == payment.cardAccountId`.
+  This is the regression source — see below.**
+- New `CardPaymentIdentityResolver.uniqueCardMatch(debitAccountId:amount:postedDate:payments:)`
+  — unique-card amount match on the configured paying account, posted
+  after close, within shared tolerance; nil on ambiguity.
+
+`Networth/Features/Projections/ProjectionsView.swift`:
+- Builds the `counterpartAccountIds` map from cached rows'
+  `counterpartTransactionId` and passes it to `settledPaymentIds`.
+
+`NetworthCore/Tests/NetworthCoreTests/CardPaymentSettlementTests.swift`:
+- Settlement tests rewritten for the pairing-required contract; new
+  resolver tests (unique match, cross-card ambiguity, account/window/
+  tolerance/sign gates, same-card multi-cycle).
+
+### OPEN REGRESSION to fix (user-confirmed intent)
+
+A projected card payment now stays "Waiting to clear" even after the
+paying-account debit has posted, because auto-settle requires the
+card-side credit to post and counterpart-pair first (card feeds lag days).
+The user's intent: **if either side clears and the card identity is
+determinable, the projected outflow must go away.** Proposed rule
+(discussed with the user, not yet approved as implemented): in
+`settledPaymentIds`, a due payment auto-settles when the debit is
+counterpart-paired to that card **or** the debit uniquely identity-matches
+that card (reuse `CardPaymentIdentityResolver` logic across the due
+payments: paying account, post-close window, shared tolerance, unique
+card). Only a genuinely ambiguous debit (two cards expecting near-equal
+amounts from one account) keeps "Waiting to clear" until the card credit
+pairs or the user picks the transaction in the autopay detail sheet. The
+explicit settlement pick flow (f81daa0) is unchanged and remains the
+manual fallback.
+
+Also unverified: after installing the fixed build, the user reported the
+review item "still defaulting". The pulled store contradicted this (row
+`plaid:mbBBr8VB3bI6XZzgPeMoUqRgE8aag6c8LDaQQ`, the −$5,907.17 debit, had
+nil payee / needs-attention state), and the forecast-prefill feature was
+built afterward — the report was never reproduced or explained.
+`SettingsView.resolveDisplayedSelections()` (editor-side name re-matching
+via `namesReferToSamePayee`) was under investigation when work stopped;
+AppleCard payee `sourceName` is clean ("AppleCard"), so no match path was
+confirmed.
+
+### Device/data state (physical iPhone, verified via devicectl + sqlite3)
+
+- A build containing the review-side fixes and the settlement regression
+  is installed. `settingsSchemaVersion` = 5; zero `DurablePayeeAlias` rows
+  point at the AppleCard payee (`networth:4c9cf0c9-ae6c-425b-89b1-bbaf5faa8533`).
+  The alias deletion is durable (private CloudKit) and was user-approved.
+- Active stores resolve under `group.com.bluelava.me.financial`
+  (`NetworthLocalCache.store`, `NetworthDurable.store`).
+
+### Validation at handoff
+
+- NetworthCore: 299/299 tests pass.
+- Generic-device Debug and Release builds pass for the first change batch;
+  Debug for the forecast-prefill batch. No app-target test was added for
+  `applyProjectedCardPaymentPrefill`.
+
 ## Current handoff — Spending Room redesign and spending-vs-average drill-downs (2026-09-12)
 
 - Committed and pushed as `b8264fe` on `main`.

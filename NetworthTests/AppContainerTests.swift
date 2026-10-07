@@ -8,6 +8,81 @@ import NetworthCore
 @Suite("AppContainer wiring")
 struct AppContainerTests {
 
+    @Test func clearingCardReviewPersistsSeparatelyFromCachedEvidenceAndSettlement() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let payment = UpcomingCardPayment(
+            cardAccountId: "card", paymentAccountId: "cash", cardName: "Card",
+            closeDate: Date(timeIntervalSince1970: 1_780_000_000),
+            dueDate: Date(timeIntervalSince1970: 1_781_000_000),
+            amount: .dollars(800), basis: .closedStatementEstimate
+        )
+        let cached = CachedCardPaymentReview(payment: payment, transactionID: "bank-debit")
+        context.insert(cached)
+        context.insert(DurableCardPaymentReviewDismissal(paymentID: payment.id))
+        try context.save()
+        let fresh = ModelContext(container)
+        #expect(try fresh.fetch(FetchDescriptor<CachedCardPaymentReview>()).first?.payment.id == payment.id)
+        #expect(try fresh.fetch(FetchDescriptor<DurableCardPaymentSettlement>()).isEmpty)
+        context.delete(cached)
+        try context.save()
+        let reopened = ModelContext(container)
+        #expect(try reopened.fetch(FetchDescriptor<CachedCardPaymentReview>()).isEmpty)
+        #expect(try reopened.fetch(FetchDescriptor<DurableCardPaymentReviewDismissal>()).first?.paymentID == payment.id)
+        let cache = try #require(container.configurations.first { $0.name == "NetworthLocalCache" })
+        let durable = try #require(container.configurations.first { $0.name == "NetworthDurable" })
+        #expect(cache.schema?.entities.contains { $0.name == "CachedCardPaymentReview" } == true)
+        #expect(durable.schema?.entities.contains { $0.name == "DurableCardPaymentReviewDismissal" } == true)
+        #expect(durable.schema?.entities.contains { $0.name == "CachedCardPaymentReview" } == false)
+    }
+
+    @Test func settlementPickReplacesPreviouslyConfirmedWrongCard() throws {
+        let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = modelContainer.mainContext
+        let summary = try #require(PlaidTransactionDTO(
+            id: "payment-debit", accountId: "checking", date: "2026-10-05",
+            amount: 800, name: "Online Transfer / Payment: Debit"
+        ).financialSummary(canonicalAccountId: "checking"))
+        let transaction = CachedFinancialTransaction(
+            summary: summary,
+            classification: TransactionClassifier().classify(summary, rules: [])
+        )
+        context.insert(transaction)
+        context.insert(CachedFinancialAccount(
+            canonicalAccountId: "correct-card", externalId: "correct-card",
+            itemId: "item", source: .plaid, institutionName: "Bank",
+            name: "Correct Card", officialName: nil, mask: nil,
+            type: .creditCard, subtype: "credit card",
+            currentBalanceMilliunits: 800_000, availableBalanceMilliunits: nil,
+            creditLimitMilliunits: nil, isoCurrencyCode: "USD"
+        ))
+        try context.save()
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(),
+            mainContext: context
+        )
+        #expect(coordinator.confirmTransaction(
+            id: transaction.id, displayName: "Payment · Wrong Card",
+            categoryName: nil, treatment: .cardPayment
+        ))
+        #expect(!transaction.requiresReview)
+        #expect(coordinator.confirmCardPaymentSettlement(
+            transactionId: transaction.id, cardAccountId: "correct-card"
+        ))
+        #expect(transaction.displayName == "Payment · Correct Card")
+        #expect(!transaction.requiresReview)
+        let decisions = try context.fetch(
+            FetchDescriptor<DurableCanonicalTransactionDecision>()
+        )
+        #expect(decisions.contains {
+            $0.transactionExternalId == transaction.externalId
+                && $0.payeeNameSnapshot == "Payment · Correct Card"
+                && $0.reviewed
+        })
+        #expect(try context.fetch(FetchDescriptor<DurablePayeeAlias>()).isEmpty)
+    }
+
     @Test func ynabRetirementPurgesOnlyDisposableLocalRows() throws {
         let container = AppContainerController.makePreview()
         let context = container.modelContainer.mainContext

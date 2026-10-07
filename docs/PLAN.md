@@ -434,6 +434,17 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
   opening a budget rather than encoded with brown or pale-yellow treatments.
   Financial calculations, detail sheets, event actions, and the four-tab
   information architecture are unchanged.
+- **2026-10-07** — Matching a credit-card payment settles its cash obligation
+  immediately but does not finish statement review. Projections retains the
+  matched statement with a theme-green amount and `Ready to Clear` badge until
+  the user explicitly selects `Clear` in its detail. Clear affects visibility
+  only. Statement assignment edits stay on the open detail, refresh estimates
+  in place, and group close-boundary items by explicit statement date ranges.
+  Matched financial evidence stays in the local cache; the per-cycle Clear
+  decision is durable private-CloudKit data.
+  Known initial-rollout limitation: existing matched cycles can surface because
+  they have no Clear decision yet. A first-use baseline and matched-transaction
+  evidence in the review UI remain follow-ups; neither is implemented here.
 - **2026-08-30** — Projection timing corrections never rewrite imported Plaid
   dates. Weekly and biweekly paycheck detection uses the dominant recent
   weekday so an isolated holiday shift does not move the future schedule. A

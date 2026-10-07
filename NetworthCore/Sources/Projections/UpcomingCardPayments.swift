@@ -217,6 +217,53 @@ public struct CardPaymentReconciliation: Sendable, Hashable {
 }
 
 extension CCPaymentForecaster {
+    /// The issuer cycle used by both review labels and estimate math. An
+    /// explicit assignment wins; otherwise posting on close day is inclusive.
+    public func statementCloseDate(
+        for transaction: TransactionSummary,
+        cycleDay: Int,
+        assignments: [CardStatementAssignment] = []
+    ) -> Date {
+        if let assignment = statementAssignment(for: transaction, assignments: assignments) {
+            return calendar.startOfDay(for: assignment.statementCloseDate)
+        }
+        return nextCloseDate(asOf: transaction.date, cycleDay: cycleDay)
+    }
+
+    public func statementPeriod(ending closeDate: Date, cycleDay: Int) -> ClosedRange<Date> {
+        let close = calendar.startOfDay(for: closeDate)
+        let previous = previousCloseDate(asOf: close, cycleDay: cycleDay)
+        return dayAfter(previous)...close
+    }
+
+    /// Refresh an open detail after an assignment without replacing its
+    /// presentation identity or losing a user-confirmed amount/date.
+    public func refreshedClosedPayment(
+        _ payment: UpcomingCardPayment,
+        currentBalanceOwed: Money,
+        transactions: [TransactionSummary],
+        assignments: [CardStatementAssignment],
+        asOf today: Date
+    ) -> UpcomingCardPayment {
+        guard payment.basis == .closedStatementEstimate else { return payment }
+        let amount = remainingBalanceForPastStatement(
+            currentOwed: currentBalanceOwed, cardAccountId: payment.cardAccountId,
+            closeDate: payment.closeDate, today: today, history: transactions,
+            assignments: assignments
+        ) + postClosePaymentCredits(
+            cardAccountId: payment.cardAccountId, closeDate: payment.closeDate,
+            today: today, history: transactions, assignments: assignments
+        )
+        return UpcomingCardPayment(
+            cardAccountId: payment.cardAccountId, paymentAccountId: payment.paymentAccountId,
+            cardName: payment.cardName, closeDate: payment.closeDate,
+            statementCycleDay: payment.statementCycleDay, dueDate: payment.dueDate,
+            amount: amount, basis: payment.basis, startingBalanceOwed: currentBalanceOwed,
+            scheduledCharges: payment.scheduledCharges, scheduledCredits: payment.scheduledCredits,
+            priorStatementPaymentsApplied: payment.priorStatementPaymentsApplied
+        )
+    }
+
     /// Activity after a closed statement explains why today's card balance
     /// differs from the remaining statement autopay. Purchases belong to the
     /// next statement, actual payments reduce the prior statement, and other
@@ -308,7 +355,14 @@ extension CCPaymentForecaster {
         var pending: [(date: Date, amount: Money)] = []
         if lastDue > start {
             pending.append((lastDue, lastStatement))
-            if lastDue <= end, !lastStatement.isZero {
+            let unsettledAmount = lastStatement + postClosePaymentCredits(
+                cardAccountId: card.id,
+                closeDate: lastClose,
+                today: start,
+                history: historicalTransactions,
+                assignments: statementAssignments
+            )
+            if lastDue <= end, !unsettledAmount.isZero {
                 payments.append(UpcomingCardPayment(
                     cardAccountId: card.id,
                     paymentAccountId: paymentAccountId,
@@ -316,7 +370,7 @@ extension CCPaymentForecaster {
                     closeDate: lastClose,
                     statementCycleDay: settings.statementCycleDay,
                     dueDate: lastDue,
-                    amount: lastStatement,
+                    amount: unsettledAmount,
                     basis: .closedStatementEstimate,
                     startingBalanceOwed: card.balance.absolute
                 ))

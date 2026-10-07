@@ -102,7 +102,7 @@ struct UpcomingCardPaymentsTests {
         #expect(payments[0].basis == .closedStatementEstimate)
     }
 
-    @Test func postClosePaymentReducesRemainingStatementAutopay() {
+    @Test func cardOnlyPartialPaymentKeepsCashReserved() {
         let f = CCPaymentForecaster(calendar: utc)
         let ihg = card(balance: Money(milliunits: -59_990))
         let settings = CardStatementSettings(
@@ -137,7 +137,7 @@ struct UpcomingCardPaymentsTests {
         )
 
         #expect(payments.count == 1)
-        #expect(payments[0].amount == Money(milliunits: 59_990))
+        #expect(payments[0].amount == Money(milliunits: 165_190))
         #expect(payments[0].basis == .closedStatementEstimate)
     }
 
@@ -362,7 +362,7 @@ struct UpcomingCardPaymentsTests {
         #expect(overdueRow?.dueDate == date(2026, 6, 5))
     }
 
-    @Test func overdueAmountAddsBackPostedCardCredit() {
+    @Test(arguments: [5, 12]) func unsettledAmountAddsBackPostedCardCredit(dueDay: Int) {
         // The card-side autopay credit posted Jun 6 but the bank debit has
         // not settled. The overdue payment self-corrects to the actual
         // credited amount, and the next statement keeps only the new
@@ -372,7 +372,7 @@ struct UpcomingCardPaymentsTests {
         let settings = CardStatementSettings(
             accountId: "card-1",
             statementCycleDay: 21,
-            paymentDueDay: 5,
+            paymentDueDay: dueDay,
             paymentAccountId: "checking-1"
         )
         let history = [
@@ -757,6 +757,59 @@ struct UpcomingCardPaymentsTests {
             )
 
         #expect(following == date(2027, 3, 31))
+    }
+
+    @Test func reviewMembershipAndEstimateRefreshUseTheSameAssignment() {
+        let forecaster = CCPaymentForecaster(calendar: utc)
+        let payment = UpcomingCardPayment(
+            cardAccountId: "card-1", paymentAccountId: "checking-1", cardName: "Visa",
+            closeDate: date(2026, 3, 15), statementCycleDay: 15,
+            dueDate: date(2026, 4, 11), amount: .dollars(1_000),
+            basis: .closedStatementEstimate, startingBalanceOwed: .dollars(1_000)
+        )
+        let purchase = TransactionSummary(
+            id: "purchase", accountId: "card-1", date: date(2026, 3, 15),
+            authorizedDate: date(2026, 3, 14), amount: .dollars(-200),
+            cleared: true, approved: true, payeeName: "Shop", categoryName: nil,
+            memo: nil, deleted: false
+        )
+        let moved = CardStatementAssignment(
+            id: "assignment", transactionId: purchase.id, cardAccountId: "card-1",
+            statementCloseDate: date(2026, 4, 15), updatedAt: date(2026, 3, 20)
+        )
+        #expect(forecaster.statementCloseDate(for: purchase, cycleDay: 15) == date(2026, 3, 15))
+        #expect(forecaster.statementCloseDate(for: purchase, cycleDay: 15,
+                                              assignments: [moved]) == date(2026, 4, 15))
+        let updated = forecaster.refreshedClosedPayment(
+            payment, currentBalanceOwed: .dollars(1_000), transactions: [purchase],
+            assignments: [moved], asOf: date(2026, 3, 20)
+        )
+        #expect(updated.id == payment.id)
+        #expect(updated.amount == .dollars(800))
+        let restored = forecaster.refreshedClosedPayment(
+            updated, currentBalanceOwed: .dollars(1_000), transactions: [purchase],
+            assignments: [], asOf: date(2026, 3, 20)
+        )
+        #expect(restored.amount == .dollars(1_000))
+        let confirmation = CardPaymentConfirmation(
+            id: "confirmed", cardAccountId: "card-1", statementCloseDate: payment.closeDate,
+            amount: .dollars(950), paymentDate: date(2026, 4, 10), updatedAt: date(2026, 3, 20)
+        )
+        let resolved = CardPaymentConfirmationResolver(calendar: utc).resolve(
+            updated, confirmations: [confirmation]
+        )
+        #expect(resolved.amount == .dollars(950))
+        #expect(resolved.paymentDate == date(2026, 4, 10))
+    }
+
+    @Test func reviewPeriodsHandleMonthEndAndYearRollover() {
+        let forecaster = CCPaymentForecaster(calendar: utc)
+        #expect(forecaster.statementPeriod(ending: date(2027, 2, 28), cycleDay: 31)
+                == date(2027, 2, 1)...date(2027, 2, 28))
+        #expect(forecaster.statementPeriod(ending: date(2027, 3, 31), cycleDay: 31)
+                == date(2027, 3, 1)...date(2027, 3, 31))
+        #expect(forecaster.statementPeriod(ending: date(2027, 1, 15), cycleDay: 15)
+                == date(2026, 12, 16)...date(2027, 1, 15))
     }
 
 }

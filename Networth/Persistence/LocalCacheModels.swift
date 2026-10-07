@@ -999,3 +999,48 @@ public final class LegacyTransactionMatchRow {
         self.createdAt = createdAt
     }
 }
+
+/// Re-fetchable evidence for a matched statement. Kept locally so a new
+/// statement cycle does not remove unfinished review. Never enters CloudKit.
+@Model
+public final class CachedCardPaymentReview {
+    public var paymentID: String = ""
+    public var transactionID: String = ""
+    public var cardAccountId: String = ""
+    public var paymentAccountId: String = ""
+    public var cardName: String = ""
+    public var closeDate: Date = Date.now
+    public var cycleDay: Int? = nil
+    public var dueDate: Date = Date.now
+    public var amountMilliunits: Int64 = 0
+    public var startingBalanceMilliunits: Int64 = 0
+    public var capturedAt: Date = Date.now
+
+    public init(payment: UpcomingCardPayment, transactionID: String, capturedAt: Date = .now) {
+        update(payment: payment, transactionID: transactionID, capturedAt: capturedAt)
+    }
+
+    public func update(payment: UpcomingCardPayment, transactionID: String, capturedAt: Date = .now) {
+        self.transactionID = transactionID
+        paymentID = payment.id
+        cardAccountId = payment.cardAccountId
+        paymentAccountId = payment.paymentAccountId
+        cardName = payment.cardName
+        closeDate = payment.closeDate
+        cycleDay = payment.statementCycleDay
+        dueDate = payment.dueDate
+        amountMilliunits = payment.amount.milliunits
+        startingBalanceMilliunits = payment.startingBalanceOwed.milliunits
+        self.capturedAt = capturedAt
+    }
+
+    public var payment: UpcomingCardPayment {
+        UpcomingCardPayment(
+            cardAccountId: cardAccountId, paymentAccountId: paymentAccountId,
+            cardName: cardName, closeDate: closeDate, statementCycleDay: cycleDay,
+            dueDate: dueDate, amount: Money(milliunits: amountMilliunits),
+            basis: .closedStatementEstimate,
+            startingBalanceOwed: Money(milliunits: startingBalanceMilliunits)
+        )
+    }
+}

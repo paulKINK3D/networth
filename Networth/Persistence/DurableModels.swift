@@ -2384,3 +2384,17 @@ struct PlaidContributionResolver {
             && account.currentBalance != nil
     }
 }
+
+/// User-authored review completion only. This never settles a payment or
+/// changes forecast math. Additive, defaulted fields preserve CloudKit rows.
+@Model
+public final class DurableCardPaymentReviewDismissal {
+    public var id: UUID = UUID()
+    public var paymentID: String = ""
+    public var clearedAt: Date = Date.now
+
+    public init(paymentID: String, clearedAt: Date = .now) {
+        self.paymentID = paymentID
+        self.clearedAt = clearedAt
+    }
+}
