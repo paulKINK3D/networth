@@ -1353,6 +1353,7 @@ public final class PlaidTransactionSyncCoordinator {
         case reserveUnavailable
         case savingsUnavailable
         case encodingFailed
+        case reimbursementAllocation(String)
         case saveFailed
 
         public var errorDescription: String? {
@@ -1387,6 +1388,8 @@ public final class PlaidTransactionSyncCoordinator {
                 "Choose a Savings month for every Savings split."
             case .encodingFailed:
                 "The split details could not be prepared for saving."
+            case .reimbursementAllocation(let message):
+                message
             case .saveFailed:
                 "The transaction could not be saved. Your changes are still on screen."
             }
@@ -3159,6 +3162,12 @@ public final class PlaidTransactionSyncCoordinator {
         advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
         applyCurrentCanonicalState(reapplyDecisions: false)
+        do {
+            try ReimbursementAllocationService(context: mainContext).stageConfirmation(for: row)
+        } catch {
+            mainContext.rollback()
+            return false
+        }
         guard mainContext.safeSave(
             source: "plaidTransactions.canonicalTransactionReview"
         ) else {
@@ -3586,6 +3595,12 @@ public final class PlaidTransactionSyncCoordinator {
         advanceRecurringExpectations(for: [row])
         updateCachedPayeeName(payee)
         applyCurrentCanonicalState(reapplyDecisions: false)
+        do {
+            try ReimbursementAllocationService(context: mainContext).stageConfirmation(for: row)
+        } catch {
+            mainContext.rollback()
+            return .failure(.reimbursementAllocation(error.localizedDescription))
+        }
         guard mainContext.safeSave(
             source: "plaidTransactions.canonicalSplitReview"
         ) else {
@@ -5625,5 +5640,151 @@ private extension String {
 
     var nilIfEmpty: String? {
         isEmpty ? nil : self
+    }
+}
+
+
+/// Allocation writes share the review's save/rollback boundary. Draft writes
+/// happen separately on every selection; imported financial amounts never change.
+@MainActor
+struct ReimbursementAllocationService {
+    let context: ModelContext
+
+    enum Failure: LocalizedError {
+        case unavailable, alreadyPaid, exceedsAmount, linkedExpenseChanged
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: "An expense is no longer available for reimbursement. Review your selections."
+            case .alreadyPaid: "An expense has already been reimbursed elsewhere. Review your selections."
+            case .exceedsAmount: "Selected expenses exceed the reimbursement amount. Adjust the selection or split."
+            case .linkedExpenseChanged: "This expense is linked to a reimbursement. Remove its allocation before changing its amount or type."
+            }
+        }
+    }
+
+    static func expenseAmount(_ row: CachedFinancialTransaction) -> Money {
+        guard !row.deleted, !row.pending, !row.requiresReview,
+              row.amountMilliunits < 0, !row.subtransactionsDecodeFailed else { return .zero }
+        if row.isSplit {
+            return row.subtransactions.filter {
+                !$0.deleted && $0.forecastTreatment == .reimbursement && $0.amount < .zero
+            }.map { $0.amount.absolute }.sum()
+        }
+        return row.forecastTreatment == .reimbursement
+            ? Money(milliunits: row.amountMilliunits).absolute : .zero
+    }
+
+    func draft(for sourceID: String) throws -> DurableReimbursementAllocationDraft? {
+        try context.fetch(FetchDescriptor<DurableReimbursementAllocationDraft>())
+            .filter { $0.sourceTransactionId == sourceID }
+            .max { $0.updatedAt < $1.updatedAt }
+    }
+
+    func selections(for sourceID: String) throws -> [String: [String]] {
+        if let draft = try draft(for: sourceID), draft.active,
+           let data = draft.selectionsData {
+            return try JSONDecoder().decode([String: [String]].self, from: data)
+        }
+        let links = try context.fetch(FetchDescriptor<DurableReimbursementAllocation>())
+            .filter { $0.sourceTransactionId == sourceID && $0.active }
+        return Dictionary(grouping: links, by: \.sourceLineId)
+            .mapValues { Array(Set($0.map(\.expenseTransactionId))).sorted() }
+    }
+
+    func saveDraft(sourceID: String, reviewData: Data, selections: [String: [String]]) throws {
+        let data = try JSONEncoder().encode(selections)
+        let row = try draft(for: sourceID) ?? {
+            let value = DurableReimbursementAllocationDraft(sourceTransactionId: sourceID)
+            context.insert(value)
+            return value
+        }()
+        row.reviewData = reviewData
+        row.selectionsData = data
+        row.active = true
+        row.updatedAt = .now
+        guard context.safeSave(source: "transactions.reimbursementDraft") else {
+            context.rollback()
+            throw Failure.unavailable
+        }
+    }
+
+    func stageConfirmation(for source: CachedFinancialTransaction) throws {
+        let allLinks = try context.fetch(FetchDescriptor<DurableReimbursementAllocation>())
+        let marks = try context.fetch(FetchDescriptor<DurableReimbursementPaidBack>())
+        let expenseLinks = allLinks.filter { $0.active && $0.expenseTransactionId == source.id }
+        if !expenseLinks.isEmpty,
+           expenseLinks.contains(where: { $0.amountMilliunits != Self.expenseAmount(source).milliunits }) {
+            throw Failure.linkedExpenseChanged
+        }
+        let ownLinks = allLinks.filter { $0.sourceTransactionId == source.id }
+        let selected = try selections(for: source.id)
+        var amounts: [String: Money] = [:]
+        if source.amountMilliunits > 0 {
+            if source.isSplit {
+                for leg in source.subtransactions where !leg.deleted
+                    && leg.forecastTreatment == .reimbursement && leg.amount > .zero {
+                    amounts[leg.id] = leg.amount
+                }
+            } else if source.forecastTreatment == .reimbursement {
+                amounts[""] = Money(milliunits: source.amountMilliunits)
+            }
+        }
+        let ids = Array(Set(amounts.keys.flatMap { selected[$0] ?? [] }))
+        var descriptor = FetchDescriptor<CachedFinancialTransaction>(
+            predicate: #Predicate { ids.contains($0.id) }
+        )
+        descriptor.fetchLimit = ids.count + 1
+        let rows = ids.isEmpty ? [] : try context.fetch(descriptor)
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        var used = Set<String>()
+        var planned: [(String, CachedFinancialTransaction, Money)] = []
+        for (line, available) in amounts {
+            for id in selected[line] ?? [] {
+                guard id != source.id, used.insert(id).inserted,
+                      let expense = byID[id], Self.expenseAmount(expense) > .zero else {
+                    throw Failure.unavailable
+                }
+                guard !marks.contains(where: {
+                    $0.transactionId == id && $0.reimbursementSourceTransactionId != source.id
+                }), !allLinks.contains(where: {
+                    $0.active && $0.expenseTransactionId == id && $0.sourceTransactionId != source.id
+                }) else { throw Failure.alreadyPaid }
+                let amount = Self.expenseAmount(expense)
+                planned.append((line, expense, amount))
+            }
+            let expenseAmounts = Dictionary(uniqueKeysWithValues: planned.filter { $0.0 == line }
+                .map { ($0.1.id, $0.2) })
+            guard ReimbursementAllocationMath.canAllocate(available: available,
+                expenses: expenseAmounts, selectedIDs: selected[line] ?? []) else {
+                throw Failure.exceedsAmount
+            }
+        }
+        // Release only this source's links/marks, then replace its selection.
+        for link in ownLinks { link.active = false; link.updatedAt = .now }
+        for mark in marks where mark.reimbursementSourceTransactionId == source.id {
+            context.delete(mark)
+        }
+        for (line, expense, amount) in planned {
+            let link = ownLinks.first { $0.expenseTransactionId == expense.id } ?? {
+                let value = DurableReimbursementAllocation(sourceTransactionId: source.id,
+                    sourceLineId: line, expenseTransactionId: expense.id,
+                    amountMilliunits: amount.milliunits)
+                context.insert(value)
+                return value
+            }()
+            link.sourceLineId = line
+            link.amountMilliunits = amount.milliunits
+            link.active = true
+            link.updatedAt = .now
+            let mark = DurableReimbursementPaidBack(transactionId: expense.id,
+                payeeName: expense.displayName, transactionDate: expense.postedDate,
+                amountMilliunits: -amount.milliunits)
+            mark.reimbursementSourceTransactionId = source.id
+            context.insert(mark)
+        }
+        if let draft = try draft(for: source.id) {
+            draft.active = false
+            draft.updatedAt = .now
+        }
     }
 }

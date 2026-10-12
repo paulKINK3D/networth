@@ -1738,7 +1738,9 @@ struct FinancialAccountTransactionHistoryView: View {
                     )
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    if isReimbursementFlavored(transaction) {
+                    if isReimbursementFlavored(transaction), !paidBackMarks.contains(where: {
+                        $0.transactionId == transaction.id && !$0.reimbursementSourceTransactionId.isEmpty
+                    }) {
                         let isPaidBack = paidBackIds.contains(transaction.id)
                         Button {
                             togglePaidBack(transaction)
@@ -1808,6 +1810,9 @@ struct FinancialAccountTransactionHistoryView: View {
         .task {
             guard transactions.isEmpty else { return }
             loadNextPage()
+        }
+        .onChange(of: paidBackIds) {
+            if typeFilter?.outstandingOnly == true { restartLoad() }
         }
         .environment(
             \.editMode,
@@ -1933,6 +1938,9 @@ struct FinancialAccountTransactionHistoryView: View {
     private func togglePaidBack(
         _ transaction: CachedFinancialTransaction
     ) {
+        guard !paidBackMarks.contains(where: {
+            $0.transactionId == transaction.id && !$0.reimbursementSourceTransactionId.isEmpty
+        }) else { return }
         let transactionId = transaction.id
         let descriptor = FetchDescriptor<DurableReimbursementPaidBack>(
             predicate: #Predicate { $0.transactionId == transactionId }

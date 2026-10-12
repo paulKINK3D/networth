@@ -8,6 +8,126 @@ import NetworthCore
 @Suite("AppContainer wiring")
 struct AppContainerTests {
 
+    @Test func transactionNotePersistsIndependentlyOfReviewRollback() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let notesContext = ModelContext(container)
+        let note = DurableTransactionNote(transactionId: "plaid:amazon",
+                                          text: "Replacement vacuum filters")
+        notesContext.insert(note)
+        try notesContext.save()
+        container.mainContext.rollback()
+
+        let reopened = ModelContext(container)
+        let saved = try #require(reopened.fetch(FetchDescriptor<DurableTransactionNote>()).first)
+        #expect(saved.transactionId == "plaid:amazon")
+        #expect(saved.text == "Replacement vacuum filters")
+        saved.text = ""
+        try reopened.save()
+        let again = ModelContext(container)
+        #expect(try again.fetch(FetchDescriptor<DurableTransactionNote>()).first?.text == "")
+    }
+
+    @Test func reimbursementSplitRejectsOverAllocationAndPreservesDraftOnRollback() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        func row(_ id: String, amount: Decimal) throws -> CachedFinancialTransaction {
+            let summary = try #require(PlaidTransactionDTO(id: id, accountId: "cash",
+                date: "2026-10-05", amount: amount, name: id)
+                .financialSummary(canonicalAccountId: "cash"))
+            let value = CachedFinancialTransaction(summary: summary,
+                classification: TransactionClassifier().classify(summary, rules: []))
+            value.requiresReview = false
+            value.forecastTreatmentRaw = TransactionType.reimbursement.rawValue
+            context.insert(value)
+            return value
+        }
+        let source = try row("deposit", amount: -200)
+        let expense = try row("purchase", amount: 75)
+        func split(_ amount: Money) throws -> Data {
+            try JSONEncoder().encode([
+                SubTransactionSummary(id: "repaid-part", amount: amount,
+                    categoryId: nil, categoryName: nil, forecastTreatment: .reimbursement,
+                    payeeName: nil, memo: nil, deleted: false),
+                SubTransactionSummary(id: "income-part", amount: .dollars(200) - amount,
+                    categoryId: nil, categoryName: nil, forecastTreatment: .income,
+                    payeeName: nil, memo: nil, deleted: false)
+            ])
+        }
+        source.subtransactionsData = try split(.dollars(50))
+        try context.save()
+        let service = ReimbursementAllocationService(context: context)
+        try service.saveDraft(sourceID: source.id, reviewData: Data("split-draft".utf8),
+                              selections: ["repaid-part": [expense.id]])
+        #expect(throws: ReimbursementAllocationService.Failure.self) {
+            try service.stageConfirmation(for: source)
+        }
+        context.rollback()
+        #expect(try service.draft(for: source.id)?.active == true)
+        #expect(try context.fetch(FetchDescriptor<DurableReimbursementPaidBack>()).isEmpty)
+        source.subtransactionsData = try split(.dollars(100))
+        try service.stageConfirmation(for: source)
+        // A failed final save rolls back both links and paid-back marks.
+        context.rollback()
+        #expect(try service.draft(for: source.id)?.active == true)
+        #expect(try context.fetch(FetchDescriptor<DurableReimbursementPaidBack>()).isEmpty)
+        source.subtransactionsData = try split(.dollars(100))
+        try service.stageConfirmation(for: source)
+        try context.save()
+        let link = try #require(context.fetch(FetchDescriptor<DurableReimbursementAllocation>()).first)
+        #expect(link.sourceLineId == "repaid-part")
+        #expect(link.amountMilliunits == 75_000)
+        #expect(try service.selections(for: source.id)["repaid-part"] == [expense.id])
+    }
+
+    @Test func reimbursementDraftSurvivesAndConfirmationLinksExpenses() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        func row(_ id: String, bankAmount: Decimal) throws -> CachedFinancialTransaction {
+            let summary = try #require(PlaidTransactionDTO(id: id, accountId: "cash",
+                date: "2026-10-05", amount: bankAmount, name: id)
+                .financialSummary(canonicalAccountId: "cash"))
+            let value = CachedFinancialTransaction(summary: summary,
+                classification: TransactionClassifier().classify(summary, rules: []))
+            value.forecastTreatmentRaw = TransactionType.reimbursement.rawValue
+            value.requiresReview = false
+            context.insert(value)
+            return value
+        }
+        let incoming = try row("repayment", bankAmount: -200)
+        let expense = try row("expense", bankAmount: 75)
+        let other = try row("other-repayment", bankAmount: -200)
+        try context.save()
+        let service = ReimbursementAllocationService(context: context)
+        try service.saveDraft(sourceID: incoming.id, reviewData: Data("draft".utf8),
+                              selections: ["": [expense.id]])
+        let fresh = ReimbursementAllocationService(context: ModelContext(container))
+        #expect(try fresh.selections(for: incoming.id)[""] == [expense.id])
+        #expect(try context.fetch(FetchDescriptor<DurableReimbursementPaidBack>()).isEmpty)
+        try service.stageConfirmation(for: incoming)
+        try context.save()
+        #expect(try context.fetch(FetchDescriptor<DurableReimbursementPaidBack>()).first?.transactionId == expense.id)
+        #expect(try context.fetch(FetchDescriptor<DurableReimbursementAllocation>()).first?.amountMilliunits == 75_000)
+        #expect(try service.draft(for: incoming.id)?.active == false)
+        try service.saveDraft(sourceID: other.id, reviewData: Data(), selections: ["": [expense.id]])
+        #expect(throws: ReimbursementAllocationService.Failure.self) {
+            try service.stageConfirmation(for: other)
+        }
+        context.rollback()
+        // Deselecting a confirmed link releases its generated mark, not money.
+        try service.saveDraft(sourceID: incoming.id, reviewData: Data(), selections: [:])
+        try service.stageConfirmation(for: incoming)
+        try context.save()
+        #expect(try context.fetch(FetchDescriptor<DurableReimbursementPaidBack>()).isEmpty)
+        #expect(expense.amountMilliunits == -75_000)
+        #expect(incoming.amountMilliunits == 200_000)
+        let durable = try #require(container.configurations.first { $0.name == "NetworthDurable" })
+        let cache = try #require(container.configurations.first { $0.name == "NetworthLocalCache" })
+        for name in ["DurableReimbursementAllocation", "DurableReimbursementAllocationDraft"] {
+            #expect(durable.schema?.entities.contains { $0.name == name } == true)
+            #expect(cache.schema?.entities.contains { $0.name == name } == false)
+        }
+    }
+
     @Test func savingsSuggestionDismissalPersistsWithoutRecordingTransfer() throws {
         let container = try ModelContainerFactory.makeContainer(inMemory: true)
         let context = container.mainContext

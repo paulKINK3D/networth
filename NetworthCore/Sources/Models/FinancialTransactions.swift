@@ -540,3 +540,19 @@ private extension String {
         return trimmed.isEmpty ? nil : trimmed
     }
 }
+
+
+/// Full-expense allocation only; unallocated reimbursement money is allowed.
+public enum ReimbursementAllocationMath {
+    public static func canAllocate(available: Money, expenses: [String: Money],
+                                   selectedIDs: [String]) -> Bool {
+        guard available > .zero, Set(selectedIDs).count == selectedIDs.count else { return false }
+        var total = Money.zero
+        for id in selectedIDs {
+            guard let amount = expenses[id], amount > .zero,
+                  amount <= available - total else { return false }
+            total += amount
+        }
+        return true
+    }
+}

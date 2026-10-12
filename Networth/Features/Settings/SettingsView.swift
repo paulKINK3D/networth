@@ -2116,7 +2116,7 @@ private enum PlaidReviewReadiness: Equatable {
 
 }
 
-private struct PlaidSplitDraft: Identifiable {
+private struct PlaidSplitDraft: Identifiable, Codable, Equatable {
     let id: UUID
     var persistedID: String?
     var categoryID: String?
@@ -2148,6 +2148,24 @@ private struct PlaidSplitDraft: Identifiable {
         self.savingsMonth = savingsMonth
         self.amountText = amountText
     }
+}
+
+private struct ReimbursementReviewDraft: Codable, Equatable {
+    var displayName: String
+    var payeeID: String?
+    var categoryName: String
+    var categoryID: String?
+    var treatment: ForecastTreatment
+    var goalID: UUID?
+    var funding: ExpenseFundingChoice
+    var savingsMonth: BudgetMonth
+    var isSplit: Bool
+    var splits: [PlaidSplitDraft]
+}
+
+private struct ReimbursementPickerTarget: Identifiable {
+    let id: String
+    let amount: Money
 }
 
 /// One cluster of unreviewed transactions sharing the same
@@ -3112,16 +3130,85 @@ struct ClusterBatchEditSheet: View {
     }
 }
 
-private enum ExpenseFundingChoice: Hashable {
+private enum ExpenseFundingChoice: Hashable, Codable {
     case monthlyBudget
     case reserve(UUID)
     case goal(UUID)
 }
 
-/// Lazy stand-in for list rows: NavigationLink builds its destination value
-/// inside every row, and the editor's many queries and drafts make that value
-/// expensive enough to hang long lists. Rows carry this wrapper instead; the
-/// editor itself is only built when a row is pushed.
+private struct TransactionNoteField: View {
+    @SwiftUI.Environment(\.modelContext) private var parentContext
+    @SwiftUI.Environment(\.scenePhase) private var scenePhase
+    let transactionID: String
+    @State private var context: ModelContext?
+    @State private var note: DurableTransactionNote?
+    @State private var loadFailed = false
+    @State private var saveFailed = false
+
+    var body: some View {
+        NwCard(style: .primary) {
+            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                Text("Note")
+                    .font(NwTypography.bodyEmphasis)
+                TextField("Add a note", text: Binding(
+                    get: { note?.text ?? "" },
+                    set: { value in
+                        guard let context else { return }
+                        if note == nil {
+                            let created = DurableTransactionNote(transactionId: transactionID)
+                            context.insert(created)
+                            note = created
+                        }
+                        note?.text = value
+                        note?.updatedAt = .now
+                        save()
+                    }
+                ), axis: .vertical)
+                .font(NwTypography.body)
+                .lineLimit(2...6)
+                .disabled(context == nil || loadFailed)
+                .accessibilityLabel("Transaction note")
+                if loadFailed {
+                    Button("Couldn’t load note. Retry", action: load)
+                } else if saveFailed {
+                    Button("Note not saved. Retry", action: save)
+                }
+            }
+            .foregroundStyle(NwAppColors.textPrimary)
+        }
+        .onAppear { if context == nil { load() } }
+        .onDisappear { save() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { save() }
+        }
+    }
+
+    private func load() {
+        // Isolate immediate note saves from staged review edits and rollbacks.
+        let noteContext = ModelContext(parentContext.container)
+        let id = transactionID
+        var query = FetchDescriptor<DurableTransactionNote>(
+            predicate: #Predicate { $0.transactionId == id },
+            sortBy: [SortDescriptor(\DurableTransactionNote.updatedAt, order: .reverse)]
+        )
+        query.fetchLimit = 1
+        do {
+            note = try noteContext.fetch(query).first
+            context = noteContext
+            loadFailed = false
+        } catch {
+            loadFailed = true
+        }
+    }
+
+    private func save() {
+        guard let context, context.hasChanges else { return }
+        // Retain the model's edited text on failure so Retry can save it.
+        saveFailed = !context.safeSave(source: "transactions.note")
+    }
+}
+
+/// Lazy stand-in for list rows: build the expensive editor only when pushed.
 struct PlaidTransactionReviewDestination: View {
     let transaction: CachedFinancialTransaction
     var dismissAfterSave = false
@@ -3186,6 +3273,13 @@ struct PlaidTransactionReviewEditor: View {
     @State private var editorIsVisible = false
     @State private var savingsStatuses: [SavingsMonthStatus] = []
     @State private var savingsRefreshRevision = 0
+    @State private var reimbursementSelections: [String: [String]] = [:]
+    @State private var reimbursementPicker: ReimbursementPickerTarget?
+    @State private var allocationDraftStarted = false
+    @State private var allocationDraftLoaded = false
+    @State private var allocationLoadFailed = false
+    @State private var reimbursementExpenseAmounts: [String: Money] = [:]
+
     @SwiftUI.Environment(\.modelContext) private var modelContext
 
     init(
@@ -3309,6 +3403,28 @@ struct PlaidTransactionReviewEditor: View {
             resolveExistingExpenseFunding()
             resolveExistingSavingsMonths()
             rebuildCategorySuggestions()
+            restoreAllocationDraft()
+        }
+        .onChange(of: reimbursementReviewDraft) {
+            if allocationDraftStarted { _ = persistAllocationDraft() }
+        }
+        .sheet(item: $reimbursementPicker) { target in
+            ReimbursementAllocationPicker(
+                sourceID: transaction.id, amount: target.amount,
+                selectedIDs: reimbursementSelections[target.id] ?? [],
+                excludedIDs: Set(reimbursementSelections.filter {
+                    $0.key != target.id && activeReimbursementLineIDs.contains($0.key)
+                }.values.flatMap { $0 }),
+                onChange: { ids, amounts in
+                    reimbursementExpenseAmounts.merge(amounts) { _, new in new }
+                    let old = reimbursementSelections
+                    reimbursementSelections[target.id] = ids
+                    if persistAllocationDraft() { return true }
+                    reimbursementSelections = old
+                    return false
+                }
+            )
+            .environment(container)
         }
         .onDisappear { editorIsVisible = false }
         .task(id: savingsRefreshRevision) {
@@ -3336,8 +3452,9 @@ struct PlaidTransactionReviewEditor: View {
             // The picker owns value snapshots. Defer background saves until
             // returning to the editor, whose onAppear refreshes all inputs.
             guard editorIsVisible else { return }
-            savingsRefreshRevision += 1
             let source = notification.object as? String
+            guard source != "transactions.note" else { return }
+            savingsRefreshRevision += 1
             if CategorySuggestionRefreshPolicy.refreshDirectory(source: source) {
                 prepareDirectoryIndexes()
             }
@@ -3473,6 +3590,9 @@ struct PlaidTransactionReviewEditor: View {
                 splitControls
             }
 
+            TransactionNoteField(transactionID: transaction.id)
+                .id(transaction.id)
+
             if onPrevious != nil || onNext != nil {
                 reviewNavigationControls
             }
@@ -3490,6 +3610,7 @@ struct PlaidTransactionReviewEditor: View {
     private var classificationControls: some View {
         VStack(alignment: .leading, spacing: NwSpacing.md) {
             NwCard(style: .primary, padding: 0) { contactRow }
+            if isSplit, transaction.amountMilliunits < 0 { linkedReimbursementRow }
             if !isSplit {
                 NwReviewCard(showsDetails: treatment.requiresCategory
                     || TransactionTypeRules.requiresGoal(treatment) || treatment == .savings
@@ -3503,14 +3624,21 @@ struct PlaidTransactionReviewEditor: View {
                     }
                 } details: {
                     NwReviewChoices {
-                        categorySection
-                    } trailing: {
                         if showsExpenseFunding { sourceChoice }
+                    } trailing: {
+                        categorySection
                     }
                     if treatment == .savings {
                         savingsMonthSection(selection: $savingsMonth)
                     }
-                    if treatment == .reimbursement { reimbursementPaidBackRow }
+                    if treatment == .reimbursement {
+                        if transaction.amountMilliunits > 0 {
+                            reimbursementAllocationRow(lineID: "", amount: Money(milliunits: transaction.amountMilliunits))
+                        } else {
+                            reimbursementPaidBackRow
+                            linkedReimbursementRow
+                        }
+                    }
                 }
                 Button("Split transaction") {
                     isSplit = true
@@ -4084,7 +4212,9 @@ struct PlaidTransactionReviewEditor: View {
     private func splitCard(_ draft: Binding<PlaidSplitDraft>) -> some View {
         NwReviewCard(showsDetails: draft.wrappedValue.treatment?.requiresCategory == true
             || draft.wrappedValue.treatment.map { TransactionTypeRules.requiresGoal($0) } == true
-            || draft.wrappedValue.treatment == .savings || splitDrafts.count > 2) {
+            || draft.wrappedValue.treatment == .savings
+            || (isIncomingSplit && draft.wrappedValue.treatment == .reimbursement)
+            || splitDrafts.count > 2) {
             HStack(spacing: NwSpacing.md) {
                 NwAmountText(parsedSplitAmount(draft.wrappedValue) ?? .zero,
                              variant: .metricSmall, showCents: true,
@@ -4136,9 +4266,9 @@ struct PlaidTransactionReviewEditor: View {
 
         } details: {
             NwReviewChoices {
-                splitCategoryChoice(draft)
-            } trailing: {
                 splitSourceChoice(draft)
+            } trailing: {
+                splitCategoryChoice(draft)
             }
 
             if draft.wrappedValue.treatment == .savings {
@@ -4159,6 +4289,10 @@ struct PlaidTransactionReviewEditor: View {
                 .accessibilityLabel("Savings month")
             }
 
+            if isIncomingSplit, draft.wrappedValue.treatment == .reimbursement {
+                reimbursementAllocationRow(lineID: splitPersistedID(for: draft.wrappedValue),
+                                           amount: parsedSplitAmount(draft.wrappedValue) ?? .zero)
+            }
             if splitDrafts.count > 2 {
                 Button("Remove") { deleteSplitDraft(id: draft.wrappedValue.id) }
                     .font(NwTypography.footnote)
@@ -4386,6 +4520,7 @@ struct PlaidTransactionReviewEditor: View {
     }
 
     private var canSaveReview: Bool {
+        if allocationLoadFailed { return false }
         if isSplit {
             return payeeCanonicalId != nil
                 && reviewedSplitTransactions != nil
@@ -4453,6 +4588,7 @@ struct PlaidTransactionReviewEditor: View {
             ? transaction.rawDescription
             : displayName.trimmed
         splitSaveError = nil
+        if allocationDraftStarted, !persistAllocationDraft() { return }
         if isSplit {
             guard let splitTransactions = reviewedSplitTransactions else {
                 splitSaveError = "Complete every split with an amount and "
@@ -4516,11 +4652,14 @@ struct PlaidTransactionReviewEditor: View {
                     ? savingsMonth : nil
             ) else {
                 splitSaveError =
-                    "The transaction could not be saved. Check its classification, then try again."
+                    reimbursementSelections.values.contains(where: { !$0.isEmpty })
+                        ? "The transaction could not be saved. Check that selected expenses are still outstanding and fit the reimbursement amount."
+                        : "The transaction could not be saved. Check its classification, then try again."
                 return
             }
             confirmCounterpartIfEligible(savedTreatment: storedTreatment)
         }
+        allocationDraftStarted = false
         onSaved()
         if dismissAfterSave {
             dismiss()
@@ -4541,6 +4680,101 @@ struct PlaidTransactionReviewEditor: View {
     /// sync pass linked one.
     /// Manual reimbursement bookkeeping, independent of the Confirm
     /// decision: the mark saves immediately and never affects totals.
+    private var activeReimbursementLineIDs: Set<String> {
+        guard transaction.amountMilliunits > 0 else { return [] }
+        if isSplit {
+            return Set(splitDrafts.filter { $0.treatment == .reimbursement }.map {
+                splitPersistedID(for: $0)
+            })
+        }
+        return treatment == .reimbursement ? [""] : []
+    }
+
+    private var reimbursementReviewDraft: ReimbursementReviewDraft {
+        ReimbursementReviewDraft(displayName: displayName, payeeID: payeeCanonicalId,
+            categoryName: categoryName, categoryID: categoryCanonicalId,
+            treatment: treatment, goalID: goalId, funding: expenseFunding,
+            savingsMonth: savingsMonth, isSplit: isSplit, splits: splitDrafts)
+    }
+
+    private func restoreAllocationDraft() {
+        guard !allocationDraftLoaded else { return }
+        allocationDraftLoaded = true
+        do {
+            let service = ReimbursementAllocationService(context: modelContext)
+            reimbursementSelections = try service.selections(for: transaction.id)
+            let ids = Array(Set(reimbursementSelections.values.flatMap { $0 }))
+            if !ids.isEmpty {
+                let rows = try modelContext.fetch(FetchDescriptor<CachedFinancialTransaction>(
+                    predicate: #Predicate { ids.contains($0.id) }
+                ))
+                reimbursementExpenseAmounts = Dictionary(uniqueKeysWithValues: rows.map {
+                    ($0.id, ReimbursementAllocationService.expenseAmount($0))
+                })
+            }
+            if let row = try service.draft(for: transaction.id), row.active,
+               let data = row.reviewData {
+                let value = try JSONDecoder().decode(ReimbursementReviewDraft.self, from: data)
+                displayName = value.displayName
+                payeeCanonicalId = value.payeeID
+                categoryName = value.categoryName
+                categoryCanonicalId = value.categoryID
+                treatment = value.treatment
+                goalId = value.goalID
+                expenseFunding = value.funding
+                savingsMonth = value.savingsMonth
+                isSplit = value.isSplit
+                splitDrafts = value.splits
+                allocationDraftStarted = true
+            }
+        } catch {
+            allocationLoadFailed = true
+            splitSaveError = "Saved reimbursement selections couldn't be loaded. Reopen this transaction to try again."
+        }
+    }
+
+    @discardableResult
+    private func persistAllocationDraft() -> Bool {
+        guard !allocationLoadFailed else { return false }
+        do {
+            let data = try JSONEncoder().encode(reimbursementReviewDraft)
+            try ReimbursementAllocationService(context: modelContext).saveDraft(
+                sourceID: transaction.id, reviewData: data, selections: reimbursementSelections)
+            allocationDraftStarted = true
+            return true
+        } catch {
+            splitSaveError = "Reimbursement selections couldn't be saved. Please try again."
+            return false
+        }
+    }
+
+    private func reimbursementAllocationRow(lineID: String, amount: Money) -> some View {
+        Button {
+            guard persistAllocationDraft() else { return }
+            reimbursementPicker = ReimbursementPickerTarget(id: lineID, amount: amount)
+        } label: {
+            HStack {
+                Text("Allocate reimbursement")
+                Spacer()
+                let count = reimbursementSelections[lineID]?.count ?? 0
+                if count > 0 {
+                    let total = (reimbursementSelections[lineID] ?? []).compactMap {
+                        reimbursementExpenseAmounts[$0]
+                    }.sum()
+                    Text("\(count) expense\(count == 1 ? "" : "s") · \(CurrencyFormatter.currency(total))")
+                        .foregroundStyle(NwAppColors.textSecondary)
+                }
+                NwIcon.chevron.image
+            }
+            .font(NwTypography.body)
+            .foregroundStyle(NwAppColors.primary)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(amount <= .zero || allocationLoadFailed)
+    }
+
     private var reimbursementPaidBackRow: some View {
         Toggle(
             "Paid back",
@@ -4554,6 +4788,38 @@ struct PlaidTransactionReviewEditor: View {
             )
         )
         .padding(NwSpacing.md)
+        .disabled(reimbursementPaidBackRows.contains {
+            $0.transactionId == transaction.id && !$0.reimbursementSourceTransactionId.isEmpty
+        })
+    }
+
+    @ViewBuilder
+    private var linkedReimbursementRow: some View {
+        if let mark = reimbursementPaidBackRows.first(where: {
+            $0.transactionId == transaction.id && !$0.reimbursementSourceTransactionId.isEmpty
+        }) {
+            let sourceID = mark.reimbursementSourceTransactionId
+            if let source = try? modelContext.fetch(FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate { $0.id == sourceID }
+            )).first {
+                NavigationLink {
+                    PlaidTransactionReviewDestination(transaction: source,
+                        dismissAfterSave: true, onSaved: {})
+                        .environment(container)
+                } label: {
+                    HStack {
+                        Text("View reimbursement")
+                        Spacer()
+                        NwIcon.chevron.image
+                    }
+                    .font(NwTypography.body)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(NwAppColors.primary)
+            }
+        }
     }
 
     private func toggleReimbursementPaidBack() {
@@ -4834,7 +5100,7 @@ enum CategorySuggestionRefreshPolicy {
 
     private static func knownUnrelated(_ source: String) -> Bool {
         ["settings.", "projection.", "spending.", "transactions.reimbursementPaidBack",
-         "canonicalCategories.", "canonicalGroups.", "snapshot", "goals."]
+         "transactions.note", "canonicalCategories.", "canonicalGroups.", "snapshot", "goals."]
             .contains { source.hasPrefix($0) }
     }
 }
@@ -6446,5 +6712,136 @@ struct RecurringExpectationForm: View {
             return
         }
         dismiss()
+    }
+}
+
+
+private struct ReimbursementAllocationPicker: View {
+    @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(AppContainerController.self) private var container
+    let sourceID: String
+    let amount: Money
+    @State var selectedIDs: [String]
+    let excludedIDs: Set<String>
+    let onChange: ([String], [String: Money]) -> Bool
+    @State private var expenses: [CachedFinancialTransaction] = []
+    @State private var searchText = ""
+    @State private var errorMessage: String?
+
+    private var selectedTotal: Money {
+        expenses.filter { selectedIDs.contains($0.id) }
+            .map { ReimbursementAllocationService.expenseAmount($0) }.sum()
+    }
+
+    private var expenseAmounts: [String: Money] {
+        Dictionary(uniqueKeysWithValues: expenses.map {
+            ($0.id, ReimbursementAllocationService.expenseAmount($0))
+        })
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    NwAmountText(amount, variant: .large, showCents: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } header: { Text("Reimbursement amount") }
+
+                Section("Unreimbursed expenses") {
+                    ForEach(expenses.filter {
+                        searchText.isEmpty || $0.displayName.localizedCaseInsensitiveContains(searchText)
+                    }) { expense in
+                        let selected = selectedIDs.contains(expense.id)
+                        let expenseAmount = ReimbursementAllocationService.expenseAmount(expense)
+                        Button {
+                            let proposed = selected
+                                ? selectedIDs.filter { $0 != expense.id }
+                                : selectedIDs + [expense.id]
+                            if onChange(proposed, expenseAmounts) { selectedIDs = proposed }
+                            else { errorMessage = "Your selection couldn't be saved. Please try again." }
+                        } label: {
+                            HStack(spacing: NwSpacing.md) {
+                                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                    .font(NwTypography.titleSmall)
+                                    .foregroundStyle(selected ? NwAppColors.primary : NwAppColors.textSecondary)
+                                NwTransactionRow(title: expense.displayName,
+                                    subtitle: expense.postedDate.formatted(date: .abbreviated, time: .omitted),
+                                    amount: expenseAmount)
+                            }
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!selected && selectedTotal + expenseAmount > amount)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                    ForEach(selectedIDs.filter { id in !expenses.contains { $0.id == id } }, id: \.self) { id in
+                        Button("Remove unavailable expense") {
+                            let proposed = selectedIDs.filter { $0 != id }
+                            if onChange(proposed, expenseAmounts) { selectedIDs = proposed }
+                            else { errorMessage = "Your selection couldn't be saved. Please try again." }
+                        }
+                        .foregroundStyle(NwAppColors.liability)
+                    }
+                    if expenses.isEmpty, selectedIDs.isEmpty {
+                        Text("No outstanding expenses").foregroundStyle(NwAppColors.textSecondary)
+                    }
+                }
+            }
+            .nwScreenBackground()
+            .navigationTitle("Allocate reimbursement")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "Search outstanding expenses")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: NwSpacing.sm) {
+                    HStack {
+                        Text("\(selectedIDs.count) expenses selected")
+                        Spacer()
+                        NwAmountText(selectedTotal, showCents: true)
+                    }
+                    HStack {
+                        Text("Left to allocate")
+                        Spacer()
+                        NwAmountText(amount - selectedTotal, showCents: true,
+                            color: selectedTotal == amount ? NwAppColors.positive : NwAppColors.caution)
+                    }
+                    Button("Use selected expenses") { dismiss() }
+                        .buttonStyle(NwPrimaryButtonStyle())
+                }
+                .font(NwTypography.body)
+                .padding(NwSpacing.screenPadding)
+                .background(NwAppColors.cardSurface)
+            }
+            .task { loadExpenses() }
+            .alert("Reimbursement allocation", isPresented: Binding(
+                get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
+            )) { Button("OK", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+        }
+    }
+
+    private func loadExpenses() {
+        do {
+            let context = container.modelContainer.mainContext
+            let marks = try context.fetch(FetchDescriptor<DurableReimbursementPaidBack>())
+            let unavailable = Set(marks.filter {
+                $0.reimbursementSourceTransactionId != sourceID
+            }.map(\.transactionId))
+            let rows = try context.fetch(FetchDescriptor<CachedFinancialTransaction>(
+                predicate: #Predicate { !$0.deleted && !$0.pending && !$0.requiresReview && $0.amountMilliunits < 0 },
+                sortBy: [SortDescriptor(\.postedDate, order: .reverse)]
+            ))
+            expenses = rows.filter {
+                $0.id != sourceID && !excludedIDs.contains($0.id)
+                    && (!unavailable.contains($0.id) || selectedIDs.contains($0.id))
+                    && ReimbursementAllocationService.expenseAmount($0) > .zero
+            }
+        } catch {
+            errorMessage = "Outstanding expenses couldn't be loaded. Please reopen this screen."
+        }
     }
 }

@@ -219,6 +219,17 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
 
 ## Key Decisions Log
 
+- **2026-10-11** — Incoming Reimbursement transactions and incoming Reimbursement
+  split parts can allocate to multiple outstanding reimbursable expenses. Each
+  selected expense is covered in full (the full reimbursable portion of a split
+  expense); partial expense repayment is excluded. Selections may leave incoming
+  money unallocated but may not exceed their source amount or reuse an expense.
+  Selections and their review/split context autosave as durable drafts on each
+  change, including when leaving the picker or review. Confirmation applies links
+  and paid-back marks together; drafts never settle expenses. History reopens the
+  allocation, and linked expenses provide View reimbursement. Editing a confirmed
+  source releases removed links without changing imported amounts or cash flow.
+
 - **2026-10-11** — Closed-month Savings prompts are optional opportunities,
   labeled "available to save", not obligations. A month-specific Dismiss action
   hides its prompt persistently and reveals the next eligible month without

@@ -1,5 +1,49 @@
 # WORKING
 
+## Transaction notes (2026-10-11)
+
+- Review/Edit Transaction includes one optional multiline Note below the regular
+  or split cards. Every edit saves immediately in an isolated context; review
+  cancellation/rollback does not undo notes. Reopening history loads the note.
+- Additive DurableTransactionNote model, keyed by provider transaction ID, is
+  registered only in durable/private CloudKit and unified schemas. All fields
+  have defaults. No existing fields removed/renamed or cache data changed.
+- Failed saves retain edited text and show Retry; failed loads disable entry
+  until retried. Note saves skip review's category/savings refresh work.
+- Review card source now precedes category for both whole and split entries.
+- Validation: generic-device Debug app/test compilation and Release build passed.
+  Fresh-context note persistence/clearing test compiled, not executed; no simulator.
+- Device check: type an Amazon note, leave without confirming, reopen; edit and
+  clear the note, and repeat with a split transaction.
+
+## Reimbursement allocation (2026-10-11)
+
+- Incoming whole/split Reimbursement shows Allocate reimbursement; a searchable
+  multi-select picker lists approved outstanding reimbursement expenses, tracks
+  selected total and remaining amount, and selects each expense's reimbursable
+  portion in full. Unallocated incoming remainder is allowed; oversubscription
+  and reuse across split parts or confirmed sources are rejected.
+- Every selection saves a durable draft plus the review's split IDs, amounts,
+  types and other choices. Close/swipe/back retain selection; reopening history
+  restores it. Confirm stages links and generated paid-back marks with canonical
+  review in the same save/rollback boundary. Removed links release only their
+  generated marks. Manual paid-back marks remain independent.
+- View reimbursement on linked expenses returns to the incoming transaction.
+  Generated marks cannot be undone with the independent manual toggle/swipe.
+- Schema: new DurableReimbursementAllocationDraft and
+  DurableReimbursementAllocation entities live only in private CloudKit/durable
+  plus unified schemas. Existing DurableReimbursementPaidBack gains an additive
+  default-empty source ID; legacy marks remain manual. No field rename/deletion,
+  legacy-data cleanup or destructive migration. Financial amounts are unchanged.
+- Tests cover full-amount validation, duplicates/over-allocation, fresh-context
+  draft recovery, confirmation/release, split allocation rollback, and store tiers.
+- Validation: 33 source-neutral transaction domain tests passed. Generic iPhone Debug app/test-target compilation and Release build passed; app persistence tests compiled but were not executed (no simulator launched).
+- Suggested future AGENTS rule: persist stable split identities before attaching durable per-split selections, and keep draft choices separate from financial completion.
+- Device review: allocate a whole reimbursement and an incoming split; leave and
+  reopen before confirming; confirm and reopen allocations; remove a link; check
+  outstanding filters and View reimbursement. Confirm errors preserve drafts.
+
+
 ## Optional Savings suggestions (2026-10-11)
 
 - Future says "available to save" and the detail offers "Dismiss for [month]".

@@ -4,6 +4,22 @@ import Testing
 
 @Suite("Source-neutral financial transactions")
 struct FinancialTransactionsTests {
+    @Test func reimbursementAllocationCoversWholeExpensesOnly() {
+        let expenses: [String: Money] = ["taxi": .dollars(48), "supplies": .dollars(74.50)]
+        #expect(ReimbursementAllocationMath.canAllocate(available: .dollars(186.40),
+            expenses: expenses, selectedIDs: ["taxi", "supplies"]))
+        #expect(ReimbursementAllocationMath.canAllocate(available: .dollars(122.50),
+            expenses: expenses, selectedIDs: ["taxi", "supplies"]))
+        #expect(!ReimbursementAllocationMath.canAllocate(available: .dollars(100),
+            expenses: expenses, selectedIDs: ["taxi", "supplies"]))
+        #expect(!ReimbursementAllocationMath.canAllocate(available: .dollars(200),
+            expenses: expenses, selectedIDs: ["taxi", "taxi"]))
+        #expect(!ReimbursementAllocationMath.canAllocate(available: .dollars(200),
+            expenses: expenses, selectedIDs: ["missing"]))
+        #expect(!ReimbursementAllocationMath.canAllocate(available: .dollars(200),
+            expenses: ["invalid": .dollars(-1)], selectedIDs: ["invalid"]))
+    }
+
     @Test func plaidAmountIsNormalizedToNetworthSignConvention() throws {
         let dto = PlaidTransactionDTO(
             id: "transaction-1",
