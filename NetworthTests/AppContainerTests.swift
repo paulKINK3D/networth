@@ -3555,6 +3555,66 @@ struct AppContainerTests {
         #expect(ranked == ["coffee", "travel", "dining"])
     }
 
+    @Test func categorySuggestionRefreshSkipsUnrelatedSaves() {
+        for source in ["settings.backgroundPhoto", "projection.cardPayment.clearReview",
+                       "spending.groupBudget.save", "transactions.reimbursementPaidBack",
+                       "plaidTransactions.lastSyncedAt"] {
+            #expect(!CategorySuggestionRefreshPolicy.refreshHistory(source: source))
+            #expect(!CategorySuggestionRefreshPolicy.refreshDirectory(source: source))
+        }
+        for source in ["plaidTransactions.canonicalTransactionReview", "plaidTransactions.page",
+                       "canonicalPayees.merge", "newUnknownSource"] {
+            #expect(CategorySuggestionRefreshPolicy.refreshHistory(source: source))
+            #expect(CategorySuggestionRefreshPolicy.refreshDirectory(source: source))
+        }
+        for source in ["canonicalCategories.update", "canonicalGroups.delete",
+                       "spending.groupManagement.moveCategory"] {
+            #expect(!CategorySuggestionRefreshPolicy.refreshHistory(source: source))
+            #expect(CategorySuggestionRefreshPolicy.refreshDirectory(source: source))
+        }
+        #expect(CategorySuggestionRefreshPolicy.refreshHistory(source: nil))
+        #expect(CategorySuggestionRefreshPolicy.refreshDirectory(source: nil))
+    }
+
+    @Test func indexedCategorySuggestionsPreserveRankingAndScopes() {
+        var records: [MerchantCategoryHistoryRecord] = []
+        for i in 0..<300 {
+            let treatment: ForecastTreatment = i % 3 == 0 ? .refund : .ordinarySpending
+            records.append(MerchantCategoryHistoryRecord(
+                transactionID: "transaction-\(i % 170)",
+                payeeCanonicalID: "merchant-\(i % 4)",
+                categoryCanonicalID: "category-\(i % 7)",
+                treatment: treatment,
+                amountSign: i % 3 == 0 ? 1 : -1,
+                reviewed: i % 11 != 0,
+                isSplit: i % 13 == 0,
+                updatedAt: Date(timeIntervalSince1970: Double(i))
+            ))
+        }
+        let accountIDs = Set((0..<85).map { "transaction-\($0)" })
+        let index = MerchantCategorySuggestionIndex(records: records, accountTransactionIDs: accountIDs)
+        let available: Set<String> = ["category-0", "category-2", "category-3", "category-5"]
+        for treatment: ForecastTreatment in [.ordinarySpending, .refund] {
+            for sign in [-1, 1] {
+                for limit in [0, 1, 3, 10] {
+                    for payee in ["merchant-0", "merchant-1", "missing"] {
+                        #expect(index.rank(payeeID: payee, treatment: treatment,
+                            amountSign: sign, availableCategoryIDs: available, limit: limit)
+                            == MerchantCategorySuggestionRanker.rank(records,
+                                payeeCanonicalID: payee, treatment: treatment,
+                                amountSign: sign, availableCategoryIDs: available, limit: limit))
+                    }
+                    #expect(index.rank(payeeID: nil, treatment: treatment,
+                        amountSign: sign, availableCategoryIDs: available, limit: limit)
+                        == MerchantCategorySuggestionRanker.rankScoped(
+                            records.filter { accountIDs.contains($0.transactionID) },
+                            treatment: treatment, amountSign: sign,
+                            availableCategoryIDs: available, limit: limit))
+                }
+            }
+        }
+    }
+
     @Test func spendingHistoryUsesOnlyUserGroupsAndMarksYNABAssignmentsUnassigned() async throws {
         let modelContainer = try ModelContainerFactory.makeContainer(
             inMemory: true

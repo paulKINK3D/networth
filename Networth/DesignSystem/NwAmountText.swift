@@ -127,6 +127,7 @@ private struct NwCurrencyInputModifier: ViewModifier {
     @Binding var text: String
     let title: String
     let precision: NwCurrencyInputPrecision
+    var remainingAmount: Money? = nil
     let onFocusChange: (Bool) -> Void
     @State private var showingKeypad = false
 
@@ -160,7 +161,8 @@ private struct NwCurrencyInputModifier: ViewModifier {
             NwCurrencyEntryPadSheet(
                 title: title,
                 value: $text,
-                precision: precision
+                precision: precision,
+                remainingAmount: remainingAmount
             )
         }
     }
@@ -172,6 +174,7 @@ private struct NwCurrencyEntryPadSheet: View {
     let title: String
     @Binding var value: String
     let precision: NwCurrencyInputPrecision
+    var remainingAmount: Money? = nil
 
     @State private var draft = ""
     @State private var replaceOnNextNumber = false
@@ -196,6 +199,16 @@ private struct NwCurrencyEntryPadSheet: View {
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, NwSpacing.md)
                 .nwCardStyle(.secondary, padding: 0)
+
+            if let remainingAmount, remainingAmount > .zero {
+                Button("Use remaining · " + CurrencyFormatter.currency(remainingAmount)) {
+                    draft = CurrencyInputFormatter.text(for: remainingAmount)
+                    replaceOnNextNumber = true
+                }
+                .font(NwTypography.body)
+                .foregroundStyle(NwAppColors.primary)
+                .frame(minHeight: 44)
+            }
 
             LazyVGrid(
                 columns: Array(
@@ -259,7 +272,7 @@ private struct NwCurrencyEntryPadSheet: View {
                 value = draft
             }
         }
-        .presentationDetents([.height(480)])
+        .presentationDetents([.height(remainingAmount == nil ? 480 : 540)])
         .presentationDragIndicator(.visible)
     }
 
@@ -290,12 +303,14 @@ extension View {
     func nwCurrencyInput(
         text: Binding<String>,
         title: String = "Amount",
+        remainingAmount: Money? = nil,
         onFocusChange: @escaping (Bool) -> Void = { _ in }
     ) -> some View {
         modifier(NwCurrencyInputModifier(
             text: text,
             title: title,
             precision: .cents,
+            remainingAmount: remainingAmount,
             onFocusChange: onFocusChange
         ))
     }

@@ -1,5 +1,95 @@
 # WORKING
 
+## Transaction review — accepted design (2026-10-11)
+
+- User reviewed the implementation on phone and accepted the design.
+- Regular and split review share the same two-row card, medium-weight category,
+  type and source selections, bold amounts, muted consistent chevrons, and one
+  inset divider. No category/source row titles, pills, or amount underlines.
+  Long selections stack when necessary. Contact and merchant summary match.
+- Category selection opens the full picker with merchant suggestions. Savings
+  month and Goal use the same compact selection treatment. Confirm uses adaptive
+  positive green. Split cancellation is labeled Cancel; allocation status says
+  Left to assign or Over by.
+- Use remaining lives in the staged amount-entry sheet, with the remaining value
+  shown in its action. Cancel discards the draft; Done retains it. Split cards
+  keep only applicable Remove actions. Superseded review controls were removed.
+- Validation: final generic iPhone Debug build passed, with existing Settings
+  actor-isolation warnings. Earlier ranking/refresh standalone checks passed and
+  the app test target compiled; app tests were not run. No simulator launched.
+- Keyboard-delay investigation is paused at user request. A physical-device
+  trace was captured but not analyzed. First-use-only delay remains a hypothesis;
+  the changes below are not proof that keyboard latency is resolved.
+- Future design changes must compare regular and split review together and keep
+  their shared controls aligned. Suggested AGENTS addition: review both modes
+  together before approving transaction-editor visual changes.
+- Unrelated staged architecture audit and exploratory HTML mockup are excluded
+  from this transaction-review commit.
+
+## Editor-wide work reduction and timing (2026-10-10)
+
+- User confirmed category search is visible, but tapping it still takes 3+
+  seconds to show the keyboard; requested review of the entire editor path.
+- Hidden split UI is now conditionally constructed, with drafts retained in
+  parent state. Suggestion/directory rebuilds pause while the editor is offscreen
+  and resume on return. Known unrelated save sources skip history refresh;
+  unknown sources conservatively refresh. Category-directory changes still
+  refresh directory data independently of transaction-history ranking.
+- Picker results are stored and rebuilt only when query/groups/preferred
+  categories change, rather than during focus/layout rendering.
+- InteractionTiming OSLog/signposts cover directory rebuilding, history fetch
+  and indexing, role/search filtering, counterpart fetch, savings calculation,
+  editor control construction, and chip measurement/placement. Keyboard spans
+  separate callback-to-show, focus-to-will-show, and will-show-to-did-show.
+  Names are static; only durations and cancellation flags are logged, never
+  search strings, category names, financial values, or identifiers. Operations
+  over 16 ms are visible in Console; all signposts are available in Instruments.
+- These are instrumentation, not measured device results. The activation span
+  begins when the app receives a tap/focus callback; Time Profiler is needed
+  for any stall before event delivery. Control-construction timing is not total
+  SwiftUI rendering time. Canceled keyboard spans are labeled as canceled.
+- Generic-device Debug app/test-target compilation passed. Standalone refresh-
+  policy checks passed; app tests were compiled, not run. Phone repro must use
+  the updated build.
+- If the user resumes profiling, open the category picker and tap search; inspect
+  InteractionTiming alongside a main-thread Time Profiler recording.
+
+## Category search activation follow-up (2026-10-10)
+
+- User verified All Categories now opens quickly, but reported approximately
+  10 seconds before the search bar appears and additional delay before focus.
+- Replaced only the category picker’s navigation-bar search and automatic
+  focus task with an always-visible content search field above the list.
+  Keyboard activation is now by tap; a labeled clear control resets the query.
+  Removed obsolete search focus state. Filtering and category selection remain
+  unchanged. Contact search is unchanged.
+- This removes navigation-search presentation/focus from this path; it is not
+  proof of the cause of the device delay. Phone verification still needed:
+  open All Categories, tap Search categories, and type.
+- Validation: generic-device Debug build passed; no simulator/device launched.
+
+## Category suggestion performance follow-up (2026-10-08)
+
+- Removed repeated full-history mapping, deduplication, and ranking from the
+  transaction editor’s category-chip rendering. A value index now ranks merchant
+  and account history once on editor appearance and refreshes after debounced
+  saves. Lookup filters available categories before applying the result limit.
+- Removed the editor’s full-history decision query and obsolete account-ID state.
+  Suggestion refresh failures retain the last index and log privately.
+- Category search already owns local search state; no search interaction or
+  ranking policy was changed. This addresses a verified repeated-work path,
+  not a device-profiled cause. Physical-phone latency remains unverified.
+- Validation: standalone execution of the actual pure index/ranker and new
+  parity test passed (merchant/account scopes, duplicate decisions, direction,
+  treatment, availability, limits). Generic-device Debug app build and test-target
+  compilation passed. App tests were not run; no simulator or device launched.
+- Review on phone: item detail → All Categories → type a category; also change
+  merchant/type and verify suggestions, including split lines.
+- Suggested future AGENTS rule: keep full-history suggestion ranking out of
+  SwiftUI rendering; refresh indexed suggestions at explicit data boundaries.
+- Statement baseline and matched-payment presentation follow-ups below remain
+  unchanged. The staged architecture document is unrelated and untouched.
+
 ## Statement-review rollout findings (2026-10-07)
 
 - Read-only inspection of the physical iPhone’s active shared-container cache
