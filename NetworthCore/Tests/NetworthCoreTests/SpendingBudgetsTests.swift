@@ -762,15 +762,21 @@ struct SpendingBudgetsTests {
 
         let statuses = SavingsMonthStatusResolver().statuses(
             groupIdentity: "savings",
-            rules: [
-                rule(id: "base", group: "savings", year: 2026,
-                     month: 8, target: 1_000)
-            ],
-            choices: [choice],
+            budgetsByMonth: Dictionary(uniqueKeysWithValues: [august, september].map { month in
+                (month, resolver.summary(
+                    for: month,
+                    groups: [group(id: "savings", name: "Savings",
+                                   spent: month == august ? 600_000 : 1_000_000)],
+                    rules: [rule(id: "base", group: "savings", year: 2026,
+                                 month: 8, target: 1_000)],
+                    savingsChoices: [choice]
+                ))
+            }),
             savedByMonth: [
                 august: Money.dollars(integer: 600),
                 september: Money.dollars(integer: 1_000),
             ],
+            closedBefore: september.next,
             through: september
         )
 
@@ -779,4 +785,107 @@ struct SpendingBudgetsTests {
             .zero,
         ])
     }
+    @Test("Savings obligations follow the resolved remainder and later budget edits")
+    func savingsStatusesUseResolvedBudgets() {
+        let month = BudgetMonth(year: 2026, month: 9)
+        let choices = [SavingsBudgetChoice(
+            id: "choice", month: month, sourceGroupIdentity: "spending",
+            savingsGroupIdentity: "savings", amount: Money.dollars(integer: 125),
+            note: "", occurredAt: date(2026, 9, 1), updatedAt: date(2026, 9, 1)
+        )]
+        func status(spendingTarget: Int, saved: Int = 0,
+                    reserve: Int = 0) -> SavingsMonthStatus? {
+            let budget = resolver.summary(
+                for: month,
+                groups: [group(id: "spending", name: "Spending", spent: 0),
+                         group(id: "savings", name: "Savings", spent: Money.dollars(integer: saved).milliunits)],
+                rules: [rule(id: "spending", group: "spending", year: 2026,
+                             month: 9, target: spendingTarget),
+                        rule(id: "old", group: "savings", year: 2026,
+                             month: 9, target: 2300)],
+                savingsChoices: choices,
+                reserveAssignments: [SpendingSinkingFundContribution(
+                    id: "reserve", fundID: "fund", month: month,
+                    sourceGroupIdentity: "savings", amount: Money.dollars(integer: reserve),
+                    updatedAt: date(2026, 9, 1)
+                )],
+                funded: Money(milliunits: 10_036_950),
+                remainderGroupIdentity: "savings"
+            )
+            return SavingsMonthStatusResolver().statuses(
+                groupIdentity: "savings", budgetsByMonth: [month: budget],
+                savedByMonth: [month: Money.dollars(integer: saved)],
+                closedBefore: month, through: month
+            ).first
+        }
+        #expect(status(spendingTarget: 10_000)?.target == Money(milliunits: 161_950))
+        #expect(status(spendingTarget: 10_000, saved: 100)?.outstanding == Money(milliunits: 61_950))
+        #expect(status(spendingTarget: 10_000, saved: 200)?.outstanding == .zero)
+        #expect(status(spendingTarget: 10_000, reserve: 50)?.target == Money(milliunits: 111_950))
+        #expect(status(spendingTarget: 10_100)?.outstanding == Money(milliunits: 61_950))
+        #expect(status(spendingTarget: 10_200) == nil)
+    }
+
+    @Test("Savings status keeps completed history and excludes future months")
+    func savingsStatusWithoutActiveBudget() {
+        let month = BudgetMonth(year: 2026, month: 9)
+        let statuses = SavingsMonthStatusResolver().statuses(
+            groupIdentity: "savings", budgetsByMonth: [:],
+            savedByMonth: [month: Money.dollars(integer: 100),
+                           month.next: Money.dollars(integer: 200)],
+            closedBefore: month.next,
+            through: month
+        )
+        #expect(statuses.count == 1)
+        #expect(statuses.first?.month == month)
+        #expect(statuses.first?.target == .zero)
+        #expect(statuses.first?.saved == Money.dollars(integer: 100))
+        #expect(statuses.first?.outstanding == .zero)
+    }
+
+    @Test("Closed months offer all Retained and subtract savings only once")
+    func closedSavingsUsesAllRetained() {
+        let month = BudgetMonth(year: 2026, month: 9)
+        func status(saved: Int, spending: Int = 700, reserve: Int = 50,
+                    extraSavings: Int = 25) -> SavingsMonthStatus? {
+            let budget = resolver.summary(
+                for: month,
+                groups: [group(id: "spending", name: "Spending",
+                               spent: Money.dollars(integer: spending).milliunits),
+                         group(id: "savings", name: "Savings",
+                               spent: Money.dollars(integer: saved).milliunits)],
+                rules: [rule(id: "spending", group: "spending", year: 2026,
+                             month: 9, target: 900),
+                        rule(id: "savings", group: "savings", year: 2026,
+                             month: 9, target: 100)],
+                savingsChoices: [SavingsBudgetChoice(
+                    id: "choice", month: month, sourceGroupIdentity: "spending",
+                    savingsGroupIdentity: "savings", amount: Money.dollars(integer: extraSavings),
+                    note: "", occurredAt: date(2026, 9, 1), updatedAt: date(2026, 9, 1)
+                )],
+                reserveAssignments: [SpendingSinkingFundContribution(
+                    id: "reserve", fundID: "fund", month: month,
+                    sourceGroupIdentity: "spending", amount: Money.dollars(integer: reserve),
+                    updatedAt: date(2026, 9, 1)
+                )],
+                funded: Money.dollars(integer: 1000), remainderGroupIdentity: "savings"
+            )
+            return SavingsMonthStatusResolver().statuses(
+                groupIdentity: "savings", budgetsByMonth: [month: budget],
+                savedByMonth: [month: Money.dollars(integer: saved)],
+                closedBefore: month.next, through: month
+            ).first
+        }
+        // 1,000 funded - 700 spent - 50 reserved = 250 available across groups.
+        #expect(status(saved: 0)?.outstanding == Money.dollars(integer: 250))
+        #expect(status(saved: 100)?.target == Money.dollars(integer: 250))
+        #expect(status(saved: 100)?.outstanding == Money.dollars(integer: 150))
+        #expect(status(saved: 250)?.outstanding == .zero)
+        #expect(status(saved: 300)?.outstanding == .zero)
+        #expect(status(saved: 0, spending: 1100) == nil)
+        #expect(status(saved: 0, reserve: 100)?.outstanding == Money.dollars(integer: 200))
+        // Moving money between monthly groups cannot change total Retained.
+        #expect(status(saved: 0, extraSavings: 75)?.outstanding == Money.dollars(integer: 250))
+    }
+
 }

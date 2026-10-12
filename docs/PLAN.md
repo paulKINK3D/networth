@@ -218,6 +218,23 @@ Modeled directly on WorkoutApp's `Lift*` system, prefixed `Nw*`:
 The foundational capabilities have shipped. Projections serves the cash-confidence north star, while Net Worth and its account and investment drill-downs provide the supporting scorecard. The 2026-08-14 four-tab consolidation is implemented. Plaid's Worker and iOS implementation are complete on `feature/plaid-integration`; Sandbox linking and unlinking were validated before the Worker moved to Production Trial, where Link, account review, and real investment holdings were validated on-device.
 
 ## Key Decisions Log
+
+- **2026-10-11** — Closed-month Savings prompts are optional opportunities,
+  labeled "available to save", not obligations. A month-specific Dismiss action
+  hides its prompt persistently and reveals the next eligible month without
+  changing Retained, allocations, transfers, or transaction month eligibility.
+  Dismissals live separately in private CloudKit and survive relaunches; later
+  amount changes do not reopen a dismissed month.
+
+- **2026-10-11** — Closed-month Savings transfers use all positive Retained
+  across the reconciled monthly budgets, not only the Savings group's remaining
+  allocation. Monthly budgets do not carry unused money forward. Reserve
+  assignments are already excluded from Retained; Savings transfers credited to
+  that month reduce its available amount exactly once. Moving budget between
+  groups does not change the closed month's total available. The current month
+  retains its planned Savings allocation. The transfer prompt and transaction
+  review's outstanding-month choices share this calculation; no historical
+  transaction or budget records are rewritten.
 - **2026-09-12** — Spending group budget targets are seeded from evidence,
   never live-linked to it. A user-triggered, repeatable seeding action fills
   each ordinary group's monthly target from its observed historical spending

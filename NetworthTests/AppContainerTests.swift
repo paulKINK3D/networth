@@ -8,6 +8,26 @@ import NetworthCore
 @Suite("AppContainer wiring")
 struct AppContainerTests {
 
+    @Test func savingsSuggestionDismissalPersistsWithoutRecordingTransfer() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let august = BudgetMonth(year: 2026, month: 8)
+        context.insert(DurableSavingsSuggestionDismissal(month: august))
+        // CloudKit can deliver duplicates; the UI treats dismissal as a set.
+        context.insert(DurableSavingsSuggestionDismissal(month: august))
+        try context.save()
+        let fresh = ModelContext(container)
+        let rows = try fresh.fetch(FetchDescriptor<DurableSavingsSuggestionDismissal>())
+        #expect(Set(rows.map(\.month)) == [august])
+        #expect(!Set(rows.map(\.month)).contains(august.next))
+        #expect(try fresh.fetch(FetchDescriptor<DurableSavingsTransferAssignment>()).isEmpty)
+        #expect(try fresh.fetch(FetchDescriptor<DurableSavingsBudgetChoice>()).isEmpty)
+        let cache = try #require(container.configurations.first { $0.name == "NetworthLocalCache" })
+        let durable = try #require(container.configurations.first { $0.name == "NetworthDurable" })
+        #expect(durable.schema?.entities.contains { $0.name == "DurableSavingsSuggestionDismissal" } == true)
+        #expect(cache.schema?.entities.contains { $0.name == "DurableSavingsSuggestionDismissal" } == false)
+    }
+
     @Test func clearingCardReviewPersistsSeparatelyFromCachedEvidenceAndSettlement() throws {
         let container = try ModelContainerFactory.makeContainer(inMemory: true)
         let context = container.mainContext

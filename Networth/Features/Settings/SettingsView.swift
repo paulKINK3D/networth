@@ -3153,9 +3153,6 @@ struct PlaidTransactionReviewEditor: View {
     private var reserveFundRows: [DurableSpendingSinkingFund]
     @Query private var reserveExpenseRows:
         [DurableSpendingSinkingFundExpense]
-    @Query private var savingsBudgetRuleRows:
-        [DurableSpendingGroupBudgetRule]
-    @Query private var savingsChoiceRows: [DurableSavingsBudgetChoice]
     @Query private var savingsAssignmentRows:
         [DurableSavingsTransferAssignment]
     @Query private var reimbursementPaidBackRows:
@@ -3187,6 +3184,8 @@ struct PlaidTransactionReviewEditor: View {
     @State private var splitAmountFocusedID: UUID?
     @State private var categorySuggestionIndex = MerchantCategorySuggestionIndex(records: [], accountTransactionIDs: [])
     @State private var editorIsVisible = false
+    @State private var savingsStatuses: [SavingsMonthStatus] = []
+    @State private var savingsRefreshRevision = 0
     @SwiftUI.Environment(\.modelContext) private var modelContext
 
     init(
@@ -3312,6 +3311,9 @@ struct PlaidTransactionReviewEditor: View {
             rebuildCategorySuggestions()
         }
         .onDisappear { editorIsVisible = false }
+        .task(id: savingsRefreshRevision) {
+            await refreshSavingsStatuses()
+        }
         .toolbar {
             if showsExpenseFunding {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -3334,6 +3336,7 @@ struct PlaidTransactionReviewEditor: View {
             // The picker owns value snapshots. Defer background saves until
             // returning to the editor, whose onAppear refreshes all inputs.
             guard editorIsVisible else { return }
+            savingsRefreshRevision += 1
             let source = notification.object as? String
             if CategorySuggestionRefreshPolicy.refreshDirectory(source: source) {
                 prepareDirectoryIndexes()
@@ -3869,19 +3872,29 @@ struct PlaidTransactionReviewEditor: View {
             .max(by: { $0.updatedAt < $1.updatedAt })
     }
 
-    private var savingsStatuses: [SavingsMonthStatus] {
-        let timing = NwPerformanceTrace.begin("Review savings calculation")
-        defer { NwPerformanceTrace.end(timing) }
-        guard let group = activeSavingsGroup else { return [] }
-        return SavingsMonthStatusResolver().statuses(
-            groupIdentity: group.groupIdentity,
-            rules: savingsBudgetRuleRows.map(\.coreRule),
-            choices: savingsChoiceRows.map(\.coreChoice),
-            savedByMonth: recognizedSavingsByMonth(
-                groupIdentity: group.groupIdentity
-            ),
-            through: BudgetMonth(containing: transaction.postedDate)
-        )
+    private func refreshSavingsStatuses() async {
+        guard activeSavingsGroup != nil else {
+            savingsStatuses = []
+            return
+        }
+        do {
+            // Use the same off-main history and resolved budgets as Spending;
+            // never rebuild history while rendering the month picker.
+            let modelContainer = container.modelContainer
+            let model = try await Task.detached(priority: .userInitiated) {
+                let actor = SpendingHistoryBuildActor(modelContainer: modelContainer)
+                return try await actor.build(now: .now)
+            }.value
+            try Task.checkCancellation()
+            savingsStatuses = model.savingsStatuses(
+                through: BudgetMonth(containing: transaction.postedDate)
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            Logger(subsystem: "com.bluelava.me.networth", category: "savings")
+                .error("Could not refresh Savings months: \(error.localizedDescription, privacy: .private)")
+        }
     }
 
     private var defaultSavingsMonth: BudgetMonth {
@@ -3921,53 +3934,6 @@ struct PlaidTransactionReviewEditor: View {
             }
         ).compactMapValues { rows in
             rows.max(by: { $0.updatedAt < $1.updatedAt })
-        }
-    }
-
-    private func recognizedSavingsByMonth(
-        groupIdentity: String
-    ) -> [BudgetMonth: Money] {
-        let assignments = latestSavingsAssignments.values.filter {
-            $0.active && $0.savingsGroupIdentity == groupIdentity
-        }
-        guard !assignments.isEmpty else { return [:] }
-        // Targeted fetch, not a standing @Query: the editor must stay cheap
-        // to construct, and only assignment-referenced rows matter here.
-        let ids = Array(Set(assignments.map(\.transactionId)))
-        let descriptor = FetchDescriptor<CachedFinancialTransaction>(
-            predicate: #Predicate { ids.contains($0.id) }
-        )
-        let rows = (try? container.modelContainer.mainContext
-            .fetch(descriptor)) ?? []
-        let transactionByID = Dictionary(
-            uniqueKeysWithValues: rows.map { ($0.id, $0) }
-        )
-        return assignments.reduce(into: [:]) {
-            result, assignment in
-            guard let row = transactionByID[assignment.transactionId],
-                  !row.deleted, !row.pending, !row.requiresReview else {
-                return
-            }
-            let amount: Money?
-            if assignment.subtransactionId.isEmpty {
-                if row.forecastTreatment == .savings,
-                   row.amountMilliunits < 0 {
-                    amount = Money(milliunits: -row.amountMilliunits)
-                } else if row.forecastTreatment == .internalTransfer {
-                    amount = Money(milliunits: row.amountMilliunits)
-                } else {
-                    amount = nil
-                }
-            } else if let leg = row.subtransactions.first(where: {
-                $0.id == assignment.subtransactionId
-            }), !leg.deleted, leg.forecastTreatment == .savings,
-               leg.amount < .zero {
-                amount = leg.amount.absolute
-            } else {
-                amount = nil
-            }
-            guard let amount else { return }
-            result[assignment.assignedBudgetMonth, default: .zero] += amount
         }
     }
 

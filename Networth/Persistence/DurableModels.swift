@@ -712,6 +712,26 @@ public final class DurableSpendingRemainderRule {
     }
 }
 
+/// Hides one optional closed-month Savings suggestion without changing money.
+/// Additive private-CloudKit entity; duplicates collapse by month when read.
+@Model
+public final class DurableSavingsSuggestionDismissal {
+    public var id: UUID = UUID()
+    public var budgetYear: Int = 2000
+    public var budgetMonth: Int = 1
+    public var dismissedAt: Date = Date.now
+
+    public init(month: BudgetMonth, dismissedAt: Date = .now) {
+        self.budgetYear = month.year
+        self.budgetMonth = month.month
+        self.dismissedAt = dismissedAt
+    }
+
+    public var month: BudgetMonth {
+        BudgetMonth(year: budgetYear, month: budgetMonth)
+    }
+}
+
 /// A one-month allocation moved from an ordinary budget group into the
 /// designated Savings group. This is user-authored private-CloudKit data and
 /// never creates or modifies a financial transaction. Every field has a

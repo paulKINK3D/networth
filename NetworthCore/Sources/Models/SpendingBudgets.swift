@@ -147,55 +147,39 @@ public struct SavingsMonthStatus: Identifiable, Hashable, Sendable {
     }
 }
 
-/// Resolves the closed Savings obligations without rolling one month into the
-/// next. Callers supply only explicitly recognized Savings activity.
+/// Closed months make all positive Retained available to transfer. Open months
+/// retain the planned Savings allocation. Budgets already include Savings
+/// activity in spent, so closed-month transfers must not be subtracted twice.
 public struct SavingsMonthStatusResolver: Sendable {
     public init() {}
 
     public func statuses(
         groupIdentity: String,
-        rules: [SpendingGroupBudgetRule],
-        choices: [SavingsBudgetChoice],
+        budgetsByMonth: [BudgetMonth: SpendingBudgetSummary],
         savedByMonth: [BudgetMonth: Money],
+        closedBefore currentMonth: BudgetMonth,
         through endMonth: BudgetMonth
     ) -> [SavingsMonthStatus] {
-        let relevantRules = rules.filter {
-            $0.groupIdentity == groupIdentity
-                && $0.effectiveMonth <= endMonth
-        }
-        let relevantChoices = choices.filter {
-            $0.savingsGroupIdentity == groupIdentity
-                && $0.month <= endMonth
-                && $0.amount > .zero
-        }
-        let starts = relevantRules.map(\.effectiveMonth)
-            + relevantChoices.map(\.month)
-            + savedByMonth.keys.filter { $0 <= endMonth }
-        guard var month = starts.min() else { return [] }
-        let budgetResolver = SpendingGroupBudgetResolver()
-        var result: [SavingsMonthStatus] = []
-        while month <= endMonth {
-            let rule = budgetResolver.activeRule(
-                for: groupIdentity,
-                month: month,
-                rules: relevantRules
-            )
-            let baseTarget = rule?.enabled == true ? rule?.target ?? .zero : .zero
-            let additional = relevantChoices.filter { $0.month == month }
-                .map(\.amount).sum()
+        let months = Set(budgetsByMonth.keys).union(savedByMonth.keys)
+        return months.filter { $0 <= endMonth }.sorted().compactMap { month in
             let saved = savedByMonth[month] ?? .zero
-            let target = baseTarget + additional
-            if target > .zero || saved > .zero {
-                result.append(SavingsMonthStatus(
-                    month: month,
-                    target: target,
-                    saved: saved
-                ))
+            let budget = budgetsByMonth[month]
+            let target: Money
+            if month < currentMonth, let budget {
+                // Remaining already includes transfers and Reserve assignments.
+                // Restore saved only to express the detail's gross total;
+                // SavingsMonthStatus.outstanding subtracts it exactly once.
+                target = max(.zero, budget.remaining + saved)
+            } else {
+                target = budget?.groups.first {
+                    $0.groupIdentity == groupIdentity
+                }?.target ?? .zero
             }
-            month = month.next
+            guard target > .zero || saved > .zero else { return nil }
+            return SavingsMonthStatus(month: month, target: target, saved: saved)
         }
-        return result
     }
+
 }
 
 /// A factual comparison between budget used and calendar time elapsed.

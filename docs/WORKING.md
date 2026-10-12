@@ -1,5 +1,31 @@
 # WORKING
 
+## Optional Savings suggestions (2026-10-11)
+
+- Future says "available to save" and the detail offers "Dismiss for [month]".
+  Successful dismissal hides only that month's prompt, revealing the next
+  eligible month. Transfer eligibility, Retained and all money records remain
+  unchanged; failures keep the sheet open and surface an error.
+- Added DurableSavingsSuggestionDismissal only to the durable/private-CloudKit
+  and unified schemas. Every field has a default; no unique constraints or
+  existing-field changes. This is an additive entity, with no legacy cleanup or
+  destructive migration. No dismissal rows means existing suggestions remain
+  visible. Duplicate CloudKit rows collapse to a month set when read.
+- A persistence test checks fresh-context visibility, duplicate handling,
+  month specificity, tier registration, and that no transfer/allocation is made.
+- Validation: generic iPhone Debug app/test-target compilation and Release build passed. Persistence tests compiled but were not executed; no simulator launched.
+- Device review: dismiss August, confirm September appears, then relaunch and
+  confirm August stays hidden. Retained and transfer history should be unchanged.
+
+
+## Savings transfer reconciliation (2026-10-11)
+
+- Phone-store read-only inspection confirmed the transfer prompt used a stored fixed Savings target even when Savings was the automatic remainder group. The budget itself already resolved the remainder correctly. No phone records were changed; raw copies remain outside git.
+- SavingsMonthStatusResolver uses all positive Retained for closed months and the resolved Savings allocation for open months. Closed-month remaining already includes transfers and Reserve assignments; transfers are not deducted again. Spending prompts and transaction-review month options share this calculation.
+- Review month options load from the existing off-main Spending builder and are cached; removed the duplicate fixed-target calculation and targeted transfer aggregation. Saved month assignments remain intact.
+- Validation: generic iPhone Debug build passed with existing Settings warnings. Focused budget tests (25) cover remainder changes, reserve allocations, partial/completed transfers, independent months, and inactive-budget history.
+- Review on phone: September Savings transfer should match positive Retained across all budgets. Moving money between groups should not change that total; actual spending, transfers, and Reserve assignments should. No migration required.
+
 ## Transaction review — accepted design (2026-10-11)
 
 - User reviewed the implementation on phone and accepted the design.

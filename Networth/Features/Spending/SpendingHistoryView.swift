@@ -208,6 +208,8 @@ struct SpendingHistoryView: View {
     @Query private var spendingAccountPins: [DurableSpendingAccountPin]
     @Query private var accountNicknames: [DurableAccountNickname]
 
+    @Query private var savingsSuggestionDismissals: [DurableSavingsSuggestionDismissal]
+
     private struct DisplayedPeriod {
         let months: [SpendingHistoryMonth]
         let summary: SpendingHistoryMonth
@@ -310,7 +312,9 @@ struct SpendingHistoryView: View {
                 .environment(container)
         }
         .sheet(item: $savingsTransferPromptSelection) { selection in
-            SavingsTransferPromptDetailSheet(selection: selection)
+            SavingsTransferPromptDetailSheet(selection: selection) {
+                dismissSavingsSuggestion(for: selection.status.month)
+            }
         }
         .sheet(isPresented: $showingIndividualReview) {
             PlaidClassificationReviewSheet().environment(container)
@@ -988,7 +992,10 @@ struct SpendingHistoryView: View {
             $0.groupIdentity == model.savingsGroupIdentity
         }
         let closedSavingsStatuses = closedSavingsStatuses(for: model)
-        let savingsTransferStatus = closedSavingsStatuses.first
+        let dismissedMonths = Set(savingsSuggestionDismissals.map(\.month))
+        let savingsTransferStatus = closedSavingsStatuses.first {
+            !dismissedMonths.contains($0.month)
+        }
         let hasSinkingFunds = model.sinkingFunds.contains { !$0.archived }
         let hasPlan = !ordinaryBudgets.isEmpty
         let hasFuture = savingsBudget != nil || hasSinkingFunds
@@ -1123,6 +1130,21 @@ struct SpendingHistoryView: View {
         )
     }
 
+    private func dismissSavingsSuggestion(for month: BudgetMonth) -> Bool {
+        if savingsSuggestionDismissals.contains(where: { $0.month == month }) {
+            return true
+        }
+        let context = container.modelContainer.mainContext
+        let dismissal = DurableSavingsSuggestionDismissal(month: month)
+        context.insert(dismissal)
+        guard context.safeSave(source: "spending.savingsSuggestion.dismiss") else {
+            // Revert only this unsaved insertion; preserve unrelated edits.
+            context.delete(dismissal)
+            return false
+        }
+        return true
+    }
+
     private func savingsTransferPromptCard(
         status: SavingsMonthStatus,
         action: @escaping () -> Void
@@ -1134,11 +1156,11 @@ struct SpendingHistoryView: View {
             NwCard(style: .primary) {
                 HStack(spacing: NwSpacing.md) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Savings transfer")
+                        Text("Savings opportunity")
                             .font(NwTypography.footnoteEm)
                             .foregroundStyle(NwAppColors.textPrimary)
                         Text(
-                            "\(CurrencyFormatter.currency(status.outstanding, showCents: false)) to transfer"
+                            "\(CurrencyFormatter.currency(status.outstanding, showCents: false)) available to save"
                         )
                         .font(NwTypography.headline)
                         .foregroundStyle(NwAppColors.primary)
@@ -1159,9 +1181,9 @@ struct SpendingHistoryView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            "Savings transfer for \(monthLabel), \(CurrencyFormatter.currency(status.outstanding, showCents: false)) remaining"
+            "\(CurrencyFormatter.currency(status.outstanding, showCents: false)) available to save for \(monthLabel)"
         )
-        .accessibilityHint("Shows this month's Savings transfer progress")
+        .accessibilityHint("Shows savings activity and the option to dismiss this suggestion")
     }
 
     private func sinkingFundsCard(
@@ -3114,9 +3136,11 @@ struct SpendingHistoryModel: Sendable {
         ).mapValues { $0.map(\.amount).sum() }
         return SavingsMonthStatusResolver().statuses(
             groupIdentity: savingsGroupIdentity,
-            rules: budgetRules,
-            choices: savingsChoices,
+            budgetsByMonth: Dictionary(uniqueKeysWithValues: months.filter {
+                BudgetMonth(containing: $0.month) <= month
+            }.map { (BudgetMonth(containing: $0.month), budgetSummary(for: $0)) }),
             savedByMonth: savedByMonth,
+            closedBefore: BudgetMonth(containing: Date.now),
             through: month
         )
     }
@@ -3536,12 +3560,14 @@ private struct SavingsTransferPromptDetailSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
 
     let selection: SavingsTransferPromptSelection
+    let onDismissSuggestion: () -> Bool
+    @State private var dismissalFailed = false
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    LabeledContent("Total to transfer") {
+                    LabeledContent("Retained before transfers") {
                         NwAmountText(selection.status.target, variant: .body)
                     }
                 } header: {
@@ -3576,7 +3602,7 @@ private struct SavingsTransferPromptDetailSheet: View {
                 }
 
                 Section {
-                    LabeledContent("Remaining") {
+                    LabeledContent("Available to save") {
                         NwAmountText(
                             selection.status.outstanding,
                             variant: .body,
@@ -3586,9 +3612,24 @@ private struct SavingsTransferPromptDetailSheet: View {
                         )
                     }
                 }
+                Section {
+                    Button("Dismiss for " + selection.status.month.startDate().formatted(.dateTime.month(.wide))) {
+                        if onDismissSuggestion() {
+                            dismiss()
+                        } else {
+                            dismissalFailed = true
+                        }
+                    }
+                    .foregroundStyle(NwAppColors.primary)
+                }
+            }
+            .alert("Couldn't dismiss suggestion", isPresented: $dismissalFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Your changes couldn't be saved. Please try again.")
             }
             .nwScreenBackground()
-            .navigationTitle("Savings transfer")
+            .navigationTitle("Savings opportunity")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
