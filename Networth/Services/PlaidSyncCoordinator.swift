@@ -3739,7 +3739,7 @@ public final class PlaidTransactionSyncCoordinator {
                 $0.id.uuidString == best.id
             }) else { continue }
             target.nextOccurrenceAt = RecurringExpectations.advance(
-                target.nextOccurrenceAt,
+                best.nextOccurrence,
                 cadence: target.cadence,
                 calendar: calendar
             )

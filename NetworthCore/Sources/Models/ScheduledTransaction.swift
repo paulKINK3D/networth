@@ -39,6 +39,7 @@ public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifi
     public let deleted: Bool
     public let source: ScheduledTransactionSource?
     public let sourceID: String?
+    public let skippedDates: [Date]?
 
     public init(
         id: String,
@@ -53,7 +54,8 @@ public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifi
         memo: String? = nil,
         deleted: Bool = false,
         source: ScheduledTransactionSource? = nil,
-        sourceID: String? = nil
+        sourceID: String? = nil,
+        skippedDates: [Date]? = nil
     ) {
         self.id = id
         self.accountId = accountId
@@ -68,6 +70,7 @@ public struct ScheduledTransactionSummary: Sendable, Hashable, Codable, Identifi
         self.deleted = deleted
         self.source = source
         self.sourceID = sourceID
+        self.skippedDates = skippedDates
     }
 }
 
@@ -83,6 +86,7 @@ extension ScheduledTransactionSummary {
     ) -> [Date] {
         let rangeStart = calendar.startOfDay(for: start)
         let rangeEnd = calendar.startOfDay(for: end)
+        let skipped = Set((skippedDates ?? []).map { calendar.startOfDay(for: $0) })
         guard rangeStart <= rangeEnd else { return [] }
 
         // Civil dates are anchored to local midnight at parse. Snap to the
@@ -93,7 +97,7 @@ extension ScheduledTransactionSummary {
         let effectiveStart = max(rangeStart, normalizedFirstDate ?? rangeStart)
         guard effectiveStart <= rangeEnd else { return [] }
         if frequency == .never {
-            return (anchor >= effectiveStart && anchor <= rangeEnd) ? [anchor] : []
+            return (anchor >= effectiveStart && anchor <= rangeEnd && !skipped.contains(anchor)) ? [anchor] : []
         }
         var dates: [Date] = []
 
@@ -111,7 +115,7 @@ extension ScheduledTransactionSummary {
             fwdCursor = step(c, calendar: calendar, direction: 1)
         }
 
-        return dates.sorted()
+        return dates.filter { !skipped.contains($0) }.sorted()
     }
 
     private func dateOnly(_ date: Date, in calendar: Calendar) -> Date {

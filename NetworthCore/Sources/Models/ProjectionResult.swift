@@ -100,6 +100,8 @@ public struct CashProjectionEvent: Sendable, Hashable, Codable, Identifiable {
     public let cardAccountId: String?
     public let source: ScheduledTransactionSource?
     public let sourceID: String?
+    /// Original schedule date, preserved when overdue cash lands on today.
+    public let scheduledDate: Date?
 
     public init(
         id: String,
@@ -110,7 +112,8 @@ public struct CashProjectionEvent: Sendable, Hashable, Codable, Identifiable {
         accountId: String? = nil,
         cardAccountId: String? = nil,
         source: ScheduledTransactionSource? = nil,
-        sourceID: String? = nil
+        sourceID: String? = nil,
+        scheduledDate: Date? = nil
     ) {
         self.id = id
         self.date = date
@@ -121,6 +124,7 @@ public struct CashProjectionEvent: Sendable, Hashable, Codable, Identifiable {
         self.cardAccountId = cardAccountId
         self.source = source
         self.sourceID = sourceID
+        self.scheduledDate = scheduledDate
     }
 }
 

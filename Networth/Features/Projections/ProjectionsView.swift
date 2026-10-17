@@ -133,7 +133,10 @@ struct ProjectionsView: View {
     @State private var showingAllUpcomingActivity = false
     @State private var showingPaycheckSchedule = false
     @State private var openPaycheckAfterAssumptions = false
-    @State private var editingRecurringIncome: DurableRecurringExpectation?
+    @State private var selectedRecurringEvent: CashProjectionEvent?
+    @State private var paymentToSkip: CashProjectionEvent?
+    @State private var skipPaymentError: String?
+    @State private var isSkippingPayment = false
     /// Forecast cache: computing the projection is the single most expensive
     /// render-path operation in the app; body must never do it per frame
     /// (chart scrubbing re-evaluates body continuously).
@@ -315,9 +318,22 @@ struct ProjectionsView: View {
                     .environment(container)
                 }
             }
-            .sheet(item: $editingRecurringIncome) { expectation in
-                RecurringExpectationForm(expectation: expectation)
+            .sheet(item: $selectedRecurringEvent) { event in
+                if let expectation = recurringExpectations.first(where: {
+                    $0.id.uuidString == event.sourceID
+                }) {
+                    RecurringExpectationForm(
+                        expectation: expectation,
+                        onSkipPayment: event.amount.isNegative && event.scheduledDate != nil ? {
+                            skipPaymentError = nil
+                            paymentToSkip = event
+                        } : nil
+                    )
                     .environment(container)
+                    .sheet(item: $paymentToSkip) { payment in
+                        skipPaymentSheet(payment)
+                    }
+                }
             }
     }
 
@@ -759,17 +775,89 @@ struct ProjectionsView: View {
         } else if event.source == .recurringExpectation,
                   let sourceID = event.sourceID,
                   let expectationID = UUID(uuidString: sourceID),
-                  let expectation = recurringExpectations.first(where: {
+                  recurringExpectations.contains(where: {
                       $0.id == expectationID
                   }) {
             Button {
-                editingRecurringIncome = expectation
+                selectedRecurringEvent = event
             } label: { row }
                 .buttonStyle(.plain)
-                .accessibilityHint("Edits recurring income")
+                .accessibilityHint("Shows recurring payment details")
         } else {
             row
         }
+    }
+
+    private func skipPaymentSheet(_ event: CashProjectionEvent) -> some View {
+        NwModalLayout(title: "Skip Payment", onClose: {
+            if !isSkippingPayment { paymentToSkip = nil }
+        }) {
+            NwCard(style: .primary) {
+                VStack(alignment: .leading, spacing: NwSpacing.md) {
+                    Text(event.title).font(NwTypography.headline)
+                    Text(event.scheduledDate ?? event.date, format: .dateTime.month(.wide).day().year())
+                        .foregroundStyle(NwAppColors.textSecondary)
+                    NwAmountText(event.amount.absolute, variant: .body, showCents: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Button("Skip This Payment") { Task { await skipPayment(event) } }
+                .buttonStyle(NwPrimaryButtonStyle())
+                .disabled(isSkippingPayment)
+        }
+        .background(NwAppColors.background.ignoresSafeArea())
+        .presentationDetents([.medium])
+        .interactiveDismissDisabled(isSkippingPayment)
+        .alert("Couldn’t Skip Payment", isPresented: Binding(
+            get: { skipPaymentError != nil },
+            set: { if !$0 { skipPaymentError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(skipPaymentError ?? "Please try again.")
+        }
+    }
+
+    private func skipPayment(_ event: CashProjectionEvent) async {
+        // Recheck after a sheet has been open: sync may have settled this
+        // occurrence or another device may have changed its schedule.
+        guard !isSkippingPayment else { return }
+        isSkippingPayment = true
+        defer { isSkippingPayment = false }
+        let modelContainer = container.modelContainer
+        let latest: ProjectionData
+        do {
+            latest = try await Task.detached(priority: .userInitiated) {
+                try await ProjectionsDataActor(modelContainer: modelContainer).build()
+            }.value
+        } catch {
+            skipPaymentError = "The payment couldn’t be checked. Please try again."
+            return
+        }
+        guard latest.result.events.contains(where: { $0.id == event.id }),
+              let date = event.scheduledDate,
+              let expectation = recurringExpectations.first(where: {
+                  $0.id.uuidString == event.sourceID && !$0.archived
+              }) else {
+            skipPaymentError = "This payment has changed. Close this sheet and check Projections again."
+            return
+        }
+        let previousDates = expectation.skippedOccurrenceDates
+        let previousUpdate = expectation.updatedAt
+        let previousNext = expectation.nextOccurrenceAt
+        expectation.skippedOccurrenceDates.append(date)
+        expectation.nextOccurrenceAt = expectation.toCore().nextOccurrence
+        expectation.updatedAt = .now
+        guard container.modelContainer.mainContext.safeSave(source: "projection.skipPayment") else {
+            expectation.skippedOccurrenceDates = previousDates
+            expectation.updatedAt = previousUpdate
+            expectation.nextOccurrenceAt = previousNext
+            skipPaymentError = "Your skip wasn’t saved. Please try again."
+            return
+        }
+        paymentToSkip = nil
+        selectedRecurringEvent = nil
+        refreshCache(force: true)
     }
 
     private func expectedPaycheckRow(
@@ -3749,7 +3837,24 @@ private actor ProjectionsDataActor {
                 predicate: #Predicate { !$0.archived }
             )
         )) ?? []).map { $0.toCore() }
-        var scheduledSummaries = expectations.map { $0.toScheduledSummary() }
+        let postedExpectationActivity = financialTransactions.map { row in
+            TransactionSummary(
+                id: row.id, accountId: row.canonicalAccountId,
+                date: row.postedDate,
+                amount: Money(milliunits: row.amountMilliunits),
+                cleared: true, approved: !row.requiresReview,
+                payeeName: row.displayName, categoryName: row.categoryName,
+                payeeCanonicalId: row.payeeCanonicalId,
+                categoryCanonicalId: row.categoryCanonicalId,
+                forecastTreatment: row.forecastTreatment == .unknown
+                    ? nil : row.forecastTreatment,
+                memo: nil, deleted: row.deleted
+            )
+        }
+        var scheduledSummaries = RecurringExpectations.projectionSchedules(
+            expectations: expectations,
+            postedTransactions: postedExpectationActivity
+        )
         // Detected paycheck: confirmed Plaid income history projects future
         // paydays as exact dated inflows (phase-priced, pool-scoped). A
         // manual recurring-income expectation for the same payer always

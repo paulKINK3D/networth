@@ -1,5 +1,67 @@
 # WORKING
 
+## Transaction and recurring-editor readability (2026-10-17)
+
+- Review/Edit Transaction uses the same solid theme background from both
+  Review and transaction history, including behind the confirmation button.
+  Navigation and split behavior are unchanged.
+- Recurring editing leads with an elevated payee/fully formatted currency
+  card. Amount entry retains the shared staged currency keypad. Details use
+  one grouped surface; schedule uses the warm planning surface. Section
+  headings and the Remove category row were removed at the user's request.
+- Both source and destination account pickers use the shared nickname-first
+  display resolver. Imported account names are not overwritten.
+- Skip This Payment is a centered secondary button inside the event detail,
+  with the separate per-occurrence confirmation retained.
+- User reviewed and approved the final appearance on device. Final UI changes
+  passed a generic-device Debug build. No simulator used.
+
+## Skip a projected payment directly (2026-10-17)
+
+- Tap a recurring outgoing cash event in Projections to open its detail,
+  which contains Skip This Payment. The timeline has no separate skip button.
+  A confirmation sheet shows payee, original scheduled date, and amount.
+  Saving omits only that occurrence; other dates remain.
+- CashProjectionEvent carries the original schedule date separately from
+  its projected date so an overdue item can be skipped without accidentally
+  skipping today's or another cycle's payment. No generated-ID parsing.
+- Additive default-empty skippedOccurrenceDates array on the existing
+  private-CloudKit DurableRecurringExpectation; no fields removed/renamed,
+  no store-tier changes, and no legacy cleanup needed. Existing rows have no
+  skips. The domain schedule excludes those dates and matching advances past
+  skipped cycles. Skipping the next date advances the editable next date.
+- Confirmation rechecks the forecast before saving. Failure restores edited
+  fields and keeps the sheet open with a retryable error; imported transactions
+  are untouched. Successful saves refresh Projections immediately.
+- Validation: 40 focused tests passed, including overdue/future skips and
+  matching across a skipped cycle. Generic-device Debug app/test compilation
+  and Release build passed. Fresh-context persistence test compiled but was
+  not executed; no simulator used.
+- The follow-up move into payment details passed a generic-device Debug build.
+- Device review: skip an overdue payment, then a later occurrence; confirm
+  only each selected date disappears, then relaunch to check persistence.
+
+## Unsettled scheduled outflows (2026-10-17)
+
+- Recurring outgoing expectations remain in cash projections on their due
+  date and afterward, applied on day zero until resolved. Expansion starts
+  at the unresolved occurrence, never at invented earlier cycles. Overdue
+  income is not pulled into spendable cash.
+- Projection-only matching advances a copy of the schedule for posted debits,
+  including transactions awaiting review. Existing identity/date/amount
+  matching applies; pending/deleted activity cannot settle an occurrence and
+  one actual matches at most one expectation. The retention fix itself needs
+  no new storage; the separate per-occurrence skip extension above adds the
+  durable skip dates and makes approval advance past skipped cycles.
+- Validation: 38 focused recurring-expectation/cash-projector tests and the
+  generic-device Debug build passed. No simulator used.
+- Device review: check a due or overdue scheduled outgoing payment before
+  posting, after posting but before review, and after confirming it. The
+  current payment should remain reserved until posting and the next cycle
+  should remain visible afterward.
+- Suggested AGENTS rule: a scheduled date passing is never settlement evidence
+  for an outgoing cash obligation; posted matching must work before review.
+
 ## Transaction notes (2026-10-11)
 
 - Review/Edit Transaction includes one optional multiline Note below the regular

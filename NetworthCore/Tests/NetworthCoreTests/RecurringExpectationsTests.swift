@@ -6,6 +6,125 @@ import Foundation
 
 @Suite("Recurring expectations")
 struct RecurringExpectationsTests {
+    @Test func skipOnlySelectedOccurrenceIncludingOverdueDates() {
+        for skipped in [date(2026, 10, 16), date(2026, 11, 16)] {
+            let bill = RecurringExpectation(
+                id: "bill", accountId: "checking", payeeName: "Bill",
+                treatment: .ordinarySpending, cadence: .monthly,
+                nextOccurrence: date(2026, 10, 16), amount: .dollars(-234),
+                skippedDates: [skipped]
+            )
+            let schedules = RecurringExpectations.projectionSchedules(
+                expectations: [bill], postedTransactions: [], calendar: utc
+            )
+            let result = CashPositionProjector(calendar: utc).project(
+                cashAccounts: [account("checking", balance: 1_000)],
+                selectedCashAccountIds: ["checking"], cardAccountIds: [],
+                fundedCardAccountIds: [], cardPayments: [], scheduled: schedules,
+                historicalTransactions: [], asOf: date(2026, 10, 17), horizonDays: 65,
+                minimumCashBuffer: .zero
+            )
+            #expect(result.events.count == 2)
+            #expect(!result.events.contains { $0.scheduledDate == skipped })
+            #expect(result.events.contains { $0.scheduledDate == date(2026, 12, 16) })
+            #expect(result.projectedEndingBalance == .dollars(532))
+        }
+    }
+
+    @Test func postedMatchAdvancesPastSkippedNextCycle() {
+        let bill = RecurringExpectation(
+            id: "bill", accountId: "checking", payeeName: "Landlord",
+            treatment: .ordinarySpending, cadence: .monthly,
+            nextOccurrence: date(2026, 10, 16), amount: .dollars(-234),
+            skippedDates: [date(2026, 11, 16)]
+        )
+        let schedules = RecurringExpectations.projectionSchedules(
+            expectations: [bill], postedTransactions: [historical(
+                id: "posted", date: date(2026, 10, 17), amount: .dollars(-234), payee: "Landlord"
+            )], calendar: utc
+        )
+        #expect(schedules.first?.nextDate == date(2026, 12, 16))
+    }
+
+    @Test func outgoingOccurrenceRemainsReservedUntilPosted() {
+        let friday = date(2026, 10, 16)
+        let bill = expectation(amount: .dollars(-234), next: friday)
+        for day in [16, 17, 20] {
+            let today = date(2026, 10, day)
+            let schedules = RecurringExpectations.projectionSchedules(
+                expectations: [bill], postedTransactions: [], calendar: utc
+            )
+            let result = CashPositionProjector(calendar: utc).project(
+                cashAccounts: [account("checking", balance: 1_000)],
+                selectedCashAccountIds: ["checking"], cardAccountIds: [],
+                fundedCardAccountIds: [], cardPayments: [], scheduled: schedules,
+                historicalTransactions: [], asOf: today, horizonDays: 2,
+                minimumCashBuffer: .zero
+            )
+            #expect(result.events.count == 1)
+            #expect(result.events.first?.date == today)
+            #expect(result.projectedEndingBalance == .dollars(766))
+        }
+    }
+
+    @Test func postedUnreviewedDebitReplacesOccurrenceWithoutDoubleDeduction() {
+        let friday = date(2026, 10, 16)
+        let saturday = date(2026, 10, 17)
+        let bill = expectation(amount: .dollars(-234), next: friday)
+        let posted = TransactionSummary(
+            id: "posted", accountId: "checking", date: saturday,
+            amount: .dollars(-234), cleared: true, approved: false,
+            payeeName: "Landlord", categoryName: nil,
+            forecastTreatment: nil, memo: nil, deleted: false
+        )
+        let schedules = RecurringExpectations.projectionSchedules(
+            expectations: [bill], postedTransactions: [posted], calendar: utc
+        )
+        let result = CashPositionProjector(calendar: utc).project(
+            cashAccounts: [account("checking", balance: 766)],
+            selectedCashAccountIds: ["checking"], cardAccountIds: [],
+            fundedCardAccountIds: [], cardPayments: [], scheduled: schedules,
+            historicalTransactions: [], asOf: saturday, horizonDays: 35,
+            minimumCashBuffer: .zero
+        )
+        #expect(result.events.count == 1)
+        #expect(result.events.first?.date == date(2026, 11, 16))
+        #expect(result.projectedEndingBalance == .dollars(532))
+        #expect(bill.nextOccurrence == friday)
+    }
+
+    @Test func pendingOrUnrelatedDebitDoesNotReleaseScheduledMoney() {
+        let bill = expectation(next: date(2026, 10, 16))
+        let pending = TransactionSummary(
+            id: "pending", accountId: "checking", date: date(2026, 10, 17),
+            amount: .dollars(-1_500), cleared: false, approved: false,
+            payeeName: "Landlord", categoryName: nil,
+            forecastTreatment: nil, memo: nil, deleted: false
+        )
+        let unrelated = historical(
+            id: "other", date: date(2026, 10, 17), amount: .dollars(-1_500),
+            payee: "Other merchant"
+        )
+        let schedules = RecurringExpectations.projectionSchedules(
+            expectations: [bill], postedTransactions: [pending, unrelated], calendar: utc
+        )
+        #expect(schedules.first?.nextDate == bill.nextOccurrence)
+    }
+
+    @Test func onePostedDebitCannotSettleTwoExpectations() {
+        let first = expectation(id: "a", next: date(2026, 10, 16))
+        let second = expectation(id: "b", next: date(2026, 10, 16))
+        let actual = historical(
+            id: "posted", date: date(2026, 10, 17), amount: .dollars(-1_500),
+            payee: "Landlord"
+        )
+        let schedules = RecurringExpectations.projectionSchedules(
+            expectations: [first, second], postedTransactions: [actual], calendar: utc
+        )
+        #expect(schedules.filter { $0.nextDate == date(2026, 11, 16) }.count == 1)
+        #expect(schedules.filter { $0.nextDate == date(2026, 10, 16) }.count == 1)
+    }
+
     private var utc: Calendar {
         var value = Calendar(identifier: .gregorian)
         value.timeZone = TimeZone(identifier: "UTC")!

@@ -6,6 +6,36 @@ import Testing
 @testable import Networth
 
 @MainActor
+@Suite("Recurring payment skips")
+struct RecurringPaymentSkipPersistenceTests {
+    @Test func selectedDateSurvivesFreshContextWithoutChangingSchedule() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        let calendar = Calendar.current
+        let due = calendar.date(from: DateComponents(year: 2026, month: 10, day: 16))!
+        let later = calendar.date(from: DateComponents(year: 2026, month: 11, day: 16))!
+        let expectation = DurableRecurringExpectation(
+            accountCanonicalId: "checking", payeeName: "Bill",
+            nextOccurrenceAt: due, amountMilliunits: -234_000
+        )
+        #expect(expectation.skippedOccurrenceDates.isEmpty)
+        expectation.skippedOccurrenceDates = [later]
+        context.insert(expectation)
+        try context.save()
+
+        let fresh = ModelContext(container)
+        let restored = try #require(fresh.fetch(FetchDescriptor<DurableRecurringExpectation>()).first)
+        #expect(restored.skippedOccurrenceDates == [later])
+        #expect(restored.nextOccurrenceAt == due)
+        #expect(!restored.archived)
+        let occurrences = restored.toCore().toScheduledSummary().occurrences(
+            from: due, through: later, calendar: calendar
+        )
+        #expect(occurrences == [due])
+    }
+}
+
+@MainActor
 @Suite("Canonical category directory")
 struct CanonicalDirectoryServiceTests {
     @Test func groupDeletionMovesEveryCategoryCopyToUnassigned() throws {

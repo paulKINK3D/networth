@@ -787,7 +787,7 @@ struct SettingsView: View {
                                 let prior = expectation.nextOccurrenceAt
                                 expectation.nextOccurrenceAt =
                                     RecurringExpectations.advance(
-                                        expectation.nextOccurrenceAt,
+                                        expectation.toCore().nextOccurrence,
                                         cadence: expectation.cadence,
                                         calendar: Calendar.current
                                     )
@@ -3389,7 +3389,7 @@ struct PlaidTransactionReviewEditor: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .nwTaskFieldBackground()
+        .background(NwAppColors.background.ignoresSafeArea())
         .navigationTitle(
             transaction.requiresReview
                 ? "Review Transaction"
@@ -3483,7 +3483,7 @@ struct PlaidTransactionReviewEditor: View {
             .opacity(canSaveReview ? 1 : 0.4)
             .padding(.horizontal, NwSpacing.screenPadding)
             .padding(.vertical, NwSpacing.sm)
-            .background(.ultraThinMaterial)
+            .background(NwAppColors.background)
         }
         .alert(
             "Couldn't Save Transaction",
@@ -6369,7 +6369,9 @@ struct RecurringExpectationForm: View {
     @Query(sort: \DurableCanonicalCategory.name)
     private var canonicalCategories: [DurableCanonicalCategory]
     @Query private var durableCategoryGroups: [DurableCategoryGroup]
+    @Query private var accountNicknames: [DurableAccountNickname]
     let expectation: DurableRecurringExpectation?
+    var onSkipPayment: (() -> Void)? = nil
 
     @State private var payeeName = ""
     @State private var payeeCanonicalId: String?
@@ -6379,8 +6381,7 @@ struct RecurringExpectationForm: View {
     @State private var categoryName = ""
     @State private var categoryCanonicalId: String?
     @State private var cadence: CommitmentCadence = .monthly
-    // Projection events start tomorrow; a today-dated expectation would be
-    // silently absent until its next cycle.
+    // Default new schedules to tomorrow; due outgoing payments stay reserved.
     @State private var nextDate = Calendar.current.date(
         byAdding: .day, value: 1, to: .now
     ) ?? .now
@@ -6388,6 +6389,10 @@ struct RecurringExpectationForm: View {
     @State private var saveError: String?
     @State private var recent: [CachedFinancialTransaction] = []
     @State private var loaded = false
+
+    private var accountNameResolver: AccountDisplayNameResolver {
+        AccountDisplayNameResolver(nicknames: accountNicknames)
+    }
 
     private var openAccounts: [CachedFinancialAccount] {
         financialAccounts.filter { !$0.deleted }
@@ -6462,24 +6467,45 @@ struct RecurringExpectationForm: View {
                     }
                 }
 
-                Section("Details") {
-                    NavigationLink {
-                        CanonicalPayeePicker(
-                            selection: $payeeCanonicalId,
-                            displayName: $payeeName,
-                            payees: canonicalPayees
-                        )
-                    } label: {
-                        LabeledContent("Payee") {
-                            Text(
-                                payeeName.trimmed.isEmpty
-                                    ? "Select payee"
-                                    : payeeName
-                            )
-                            .foregroundStyle(.secondary)
+                Section {
+                    NwCard(style: .primary) {
+                        VStack(alignment: .leading, spacing: NwSpacing.lg) {
+                            NavigationLink {
+                                CanonicalPayeePicker(
+                                    selection: $payeeCanonicalId,
+                                    displayName: $payeeName,
+                                    payees: canonicalPayees
+                                )
+                            } label: {
+                                Text(payeeName.trimmed.isEmpty ? "Select payee" : payeeName)
+                                    .font(NwTypography.title)
+                                    .foregroundStyle(NwAppColors.primary)
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+
+                            VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                                Text("Expected amount")
+                                    .font(NwTypography.footnoteEm)
+                                    .foregroundStyle(NwAppColors.textSecondary)
+                                Text(CurrencyFormatter.currency(parsedAmount ?? .zero, showCents: true))
+                                    .font(NwTypography.display)
+                                    .foregroundStyle(NwAppColors.textPrimary)
+                                    .monospacedDigit()
+                                    .minimumScaleFactor(0.7)
+                                    .lineLimit(1)
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .nwCurrencyInput(text: $amountText, title: "Expected amount")
+                            }
                         }
-                        .contentShape(Rectangle())
                     }
+                    .nwShadow(NwShadow.elevated)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                }
+
+                Section {
                     Picker("Type", selection: $treatment) {
                         ForEach(
                             RecurringExpectations.allowedTreatments,
@@ -6503,7 +6529,7 @@ struct RecurringExpectationForm: View {
                     Picker("Account", selection: $accountId) {
                         Text("Select account").tag("")
                         ForEach(sourceAccounts, id: \.canonicalAccountId) {
-                            Text($0.name).tag($0.canonicalAccountId)
+                            Text(accountNameResolver.name(for: $0)).tag($0.canonicalAccountId)
                         }
                     }
                     if treatment == .internalTransfer {
@@ -6513,7 +6539,7 @@ struct RecurringExpectationForm: View {
                                 transferDestinationAccounts,
                                 id: \.canonicalAccountId
                             ) {
-                                Text($0.name).tag($0.canonicalAccountId)
+                                Text(accountNameResolver.name(for: $0)).tag($0.canonicalAccountId)
                             }
                         }
                     }
@@ -6537,22 +6563,11 @@ struct RecurringExpectationForm: View {
                             }
                             .contentShape(Rectangle())
                         }
-                        if !categoryName.trimmed.isEmpty {
-                            Button {
-                                categoryName = ""
-                                categoryCanonicalId = nil
-                            } label: {
-                                Label(
-                                    "Remove category",
-                                    systemImage: "xmark.circle"
-                                )
-                            }
-                            .foregroundStyle(NwAppColors.liability)
-                        }
+
                     }
                 }
 
-                Section("Schedule") {
+                Section {
                     Picker("Repeats", selection: $cadence) {
                         ForEach(CommitmentCadence.allCases) {
                             Text($0.displayName).tag($0)
@@ -6564,10 +6579,15 @@ struct RecurringExpectationForm: View {
                         displayedComponents: .date
                     )
                 }
+                .listRowBackground(NwAppColors.planningSurface)
 
-                Section("Expected Amount") {
-                    TextField("Amount", text: $amountText)
-                        .nwCurrencyInput(text: $amountText)
+                if let onSkipPayment {
+                    Section {
+                        Button("Skip This Payment", action: onSkipPayment)
+                            .buttonStyle(NwSecondaryButtonStyle())
+                            .listRowInsets(EdgeInsets())
+                            .listRowBackground(Color.clear)
+                    }
                 }
 
                 if let saveError {
@@ -6578,7 +6598,8 @@ struct RecurringExpectationForm: View {
                     }
                 }
             }
-            .nwScreenBackground()
+            .scrollContentBackground(.hidden)
+            .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle(
                 expectation == nil ? "New Recurring" : "Edit Recurring"
             )

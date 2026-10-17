@@ -2301,6 +2301,8 @@ public final class DurableRecurringExpectation {
     public var forecastTreatmentRaw: String = ForecastTreatment.ordinarySpending.rawValue
     public var cadenceRaw: String = CommitmentCadence.monthly.rawValue
     public var nextOccurrenceAt: Date = Date.now
+    /// One-cycle omissions only; private CloudKit retains the schedule.
+    public var skippedOccurrenceDates: [Date] = []
     /// Signed: negative outflow, positive income.
     public var amountMilliunits: Int64 = 0
     public var archived: Bool = false
@@ -2359,8 +2361,9 @@ public final class DurableRecurringExpectation {
             treatment: forecastTreatment,
             cadence: cadence,
             nextOccurrence: nextOccurrenceAt,
-            amount: amount
-        )
+            amount: amount,
+            skippedDates: skippedOccurrenceDates
+        ).resolvingSkippedOccurrences()
     }
 }
 

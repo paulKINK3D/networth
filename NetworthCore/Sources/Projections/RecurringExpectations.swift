@@ -24,6 +24,7 @@ public struct RecurringExpectation: Sendable, Hashable, Identifiable {
     /// User-entered, signed: negative outflow, positive income. The sign is
     /// the expectation's direction.
     public let amount: Money
+    public let skippedDates: [Date]
 
     public init(
         id: String,
@@ -36,7 +37,8 @@ public struct RecurringExpectation: Sendable, Hashable, Identifiable {
         treatment: ForecastTreatment,
         cadence: CommitmentCadence,
         nextOccurrence: Date,
-        amount: Money
+        amount: Money,
+        skippedDates: [Date] = []
     ) {
         self.id = id
         self.accountId = accountId
@@ -49,6 +51,7 @@ public struct RecurringExpectation: Sendable, Hashable, Identifiable {
         self.cadence = cadence
         self.nextOccurrence = nextOccurrence
         self.amount = amount
+        self.skippedDates = skippedDates
     }
 
     /// The projector/forecaster integration: an expectation compiles into
@@ -72,6 +75,7 @@ public struct RecurringExpectation: Sendable, Hashable, Identifiable {
         return ScheduledTransactionSummary(
             id: "expectation:\(id)",
             accountId: accountId,
+            firstDate: nextOccurrence,
             nextDate: nextOccurrence,
             frequency: cadence.scheduleFrequency,
             amount: projectedAmount,
@@ -81,7 +85,25 @@ public struct RecurringExpectation: Sendable, Hashable, Identifiable {
                 ? destinationAccountId
                 : nil,
             source: .recurringExpectation,
-            sourceID: id
+            sourceID: id,
+            skippedDates: skippedDates
+        )
+    }
+
+    public func resolvingSkippedOccurrences(calendar: Calendar = .current) -> Self {
+        let skipped = Set(skippedDates.map { calendar.startOfDay(for: $0) })
+        var next = nextOccurrence
+        while skipped.contains(calendar.startOfDay(for: next)) {
+            let advanced = RecurringExpectations.advance(next, cadence: cadence, calendar: calendar)
+            guard advanced > next else { break }
+            next = advanced
+        }
+        return Self(
+            id: id, accountId: accountId, destinationAccountId: destinationAccountId,
+            payeeName: payeeName, payeeCanonicalId: payeeCanonicalId,
+            categoryCanonicalId: categoryCanonicalId, categoryName: categoryName,
+            treatment: treatment, cadence: cadence, nextOccurrence: next,
+            amount: amount, skippedDates: skippedDates
         )
     }
 }
@@ -100,6 +122,43 @@ extension CommitmentCadence {
 }
 
 public enum RecurringExpectations {
+    /// Resolve posted debits for projection without waiting for review or
+    /// changing the durable schedule. Pending activity is not settlement.
+    /// Each actual replaces at most one occurrence across all expectations.
+    public static func projectionSchedules(
+        expectations: [RecurringExpectation],
+        postedTransactions: [TransactionSummary],
+        calendar: Calendar = .current
+    ) -> [ScheduledTransactionSummary] {
+        var remaining = expectations.map { $0.resolvingSkippedOccurrences(calendar: calendar) }
+        for transaction in postedTransactions.filter({
+            !$0.deleted && $0.cleared && $0.amount.isNegative
+        }).sorted(by: {
+            $0.date == $1.date ? $0.id < $1.id : $0.date < $1.date
+        }) {
+            guard let match = bestOccurrenceMatch(
+                for: transaction, among: remaining, calendar: calendar
+            ), let index = remaining.firstIndex(where: { $0.id == match.id }) else {
+                continue
+            }
+            remaining[index] = RecurringExpectation(
+                id: match.id, accountId: match.accountId,
+                destinationAccountId: match.destinationAccountId,
+                payeeName: match.payeeName,
+                payeeCanonicalId: match.payeeCanonicalId,
+                categoryCanonicalId: match.categoryCanonicalId,
+                categoryName: match.categoryName, treatment: match.treatment,
+                cadence: match.cadence,
+                nextOccurrence: advance(
+                    match.nextOccurrence, cadence: match.cadence, calendar: calendar
+                ),
+                amount: match.amount,
+                skippedDates: match.skippedDates
+            ).resolvingSkippedOccurrences(calendar: calendar)
+        }
+        return remaining.map { $0.toScheduledSummary() }
+    }
+
     /// Treatments an expectation may carry. Card payments stay with the
     /// statement/autopay forecaster.
     public static let allowedTreatments: [ForecastTreatment] = [

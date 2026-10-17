@@ -181,7 +181,7 @@ public struct CashPositionProjector: Sendable {
         var cursor = start
 
         while cursor <= end {
-            // Day-zero events exist only for past-due card payments; they
+            // Day-zero events include unsettled scheduled debits; they
             // apply before the first point so today's balance is already
             // net of the committed debit. Expected spending still starts
             // tomorrow.
@@ -350,9 +350,15 @@ public struct CashPositionProjector: Sendable {
                 ? item.payeeName!
                 : (item.transferAccountId.flatMap { accountNames[$0] } ?? fallback)
 
-            for occurrence in item.occurrences(from: firstFutureDay, through: end, calendar: calendar) {
+            // The next unresolved outgoing expectation remains committed on
+            // its due date and afterward. Never invent earlier occurrences
+            // or pull overdue income into spendable cash.
+            let occurrenceStart = item.source == .recurringExpectation && item.amount.isNegative
+                ? min(start, calendar.startOfDay(for: item.nextDate))
+                : firstFutureDay
+            for occurrence in item.occurrences(from: occurrenceStart, through: end, calendar: calendar) {
                 let eventId = "scheduled:\(item.id):\(Int(occurrence.timeIntervalSince1970))"
-                let eventDate = calendar.startOfDay(for: occurrence)
+                let eventDate = max(start, calendar.startOfDay(for: occurrence))
 
                 if !(sourceSelected && destinationSelected) {
                     result.pool.append(CashProjectionEvent(
@@ -363,7 +369,8 @@ public struct CashPositionProjector: Sendable {
                         title: title,
                         accountId: sourceSelected ? item.accountId : item.transferAccountId,
                         source: item.source,
-                        sourceID: item.sourceID
+                        sourceID: item.sourceID,
+                        scheduledDate: occurrence
                     ))
                 }
 
@@ -380,7 +387,8 @@ public struct CashPositionProjector: Sendable {
                         title: sourceTitle,
                         accountId: item.accountId,
                         source: item.source,
-                        sourceID: item.sourceID
+                        sourceID: item.sourceID,
+                        scheduledDate: occurrence
                     ))
                 }
                 if destinationSelected, let destinationId = item.transferAccountId {
@@ -395,7 +403,8 @@ public struct CashPositionProjector: Sendable {
                         title: destinationTitle,
                         accountId: destinationId,
                         source: item.source,
-                        sourceID: item.sourceID
+                        sourceID: item.sourceID,
+                        scheduledDate: occurrence
                     ))
                 }
             }
