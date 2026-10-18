@@ -1,5 +1,23 @@
 # WORKING
 
+## Category picker search and background (2026-10-17)
+
+- Category picker explicitly dismisses navigation search on appearance and
+  removes the native search toolbar item, leaving its existing inline field.
+  The origin of the competing native bar was not confirmed on device.
+- Inline search remains tap-to-focus. It replaced native search/autofocus
+  while investigating delayed search presentation and keyboard activation;
+  neither the original cause nor a latency improvement has been measured.
+  Existing filtering and keyboard timing instrumentation remains available.
+- Both Review and transaction-detail entry points now use a solid theme
+  background throughout the category picker. User verified the background.
+- Generic-device Debug builds passed. No simulator used. Still verify one
+  search field, prompt keyboard activation, and live filtering on device;
+  use the existing timing instrumentation if activation remains slow.
+- Savings follow-up required no code change: reconcile a prior month's
+  opportunity using the outgoing transfer's Savings type and Savings month;
+  the receiving deposit stays an Internal transfer.
+
 ## Transaction and recurring-editor readability (2026-10-17)
 
 - Review/Edit Transaction uses the same solid theme background from both

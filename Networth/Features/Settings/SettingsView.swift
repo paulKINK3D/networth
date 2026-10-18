@@ -5346,6 +5346,7 @@ private final class CategoryKeyboardTiming {
 
 private struct PlaidCategoryPicker: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(\.dismissSearch) private var dismissNavigationSearch
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Binding var selection: String
     let groups: [PlaidCategoryGroup]
@@ -5394,14 +5395,20 @@ private struct PlaidCategoryPicker: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .nwTaskFieldBackground()
+        .background(NwAppColors.background.ignoresSafeArea())
         .navigationTitle("Category")
         .navigationBarTitleDisplayMode(.inline)
+        // This picker owns an inline field. Native search retained by another
+        // destination must not compete with it in the shared navigation stack.
+        .toolbar(removing: .search)
         .safeAreaInset(edge: .top, spacing: 0) {
             categorySearchField
         }
         .scrollDismissesKeyboard(.interactively)
-        .onAppear { refreshDisplayedGroups() }
+        .onAppear {
+            dismissNavigationSearch()
+            refreshDisplayedGroups()
+        }
         .onChange(of: searchText) { refreshDisplayedGroups() }
         .onChange(of: groups) { refreshDisplayedGroups() }
         .onChange(of: preferredOptions) { refreshDisplayedGroups() }
