@@ -1,5 +1,43 @@
 # WORKING
 
+## Transaction editor background consistency (2026-10-19)
+
+- User tentatively verified the Contact-to-Category search lifecycle fix.
+- Both Review and transaction history use the same transaction editor. The
+  reported photo difference was in Contact search: its task-field helper used
+  solid color inside glass sheets and the photo in pushed contexts.
+- Contact now explicitly uses the solid theme background, matching the editor
+  and Category picker. Generic-device Debug build passed; phone check pending.
+- Follow-up inspection found Allocate reimbursement used the context-dependent
+  screen background without setting its own sheet treatment. With user approval,
+  it now explicitly uses the solid theme background from either entry point.
+  New Category and the currency keypad retain their explicit glass sheets.
+- Phone check: open Contact and Allocate reimbursement from both Review and
+  transaction history; both should have solid backgrounds with a photo enabled.
+  Reimbursement verification is deferred until an incoming transaction arrives,
+  at the user's request.
+- Validation: generic-device Debug build passed after the allocation change;
+  no simulator used.
+- Suggested convention: transaction-editor destinations should declare their
+  own background treatment rather than inherit it from the entry point.
+
+## Contact search lifecycle follow-up (2026-10-19)
+
+- User reproduced native search alongside the Category picker's inline field
+  after the October 17 fix. Screenshot shows text in native search while the
+  inline field remains empty. User thinks Contact was opened first; that route
+  is a hypothesis, not a confirmed device reproduction.
+- Contact now owns explicit native-search presentation state, ends presentation
+  and focus before selecting/creating a contact and on disappearance, and
+  checks task cancellation before delayed autofocus. The Category picker's
+  existing inline search and toolbar suppression remain.
+- Physical-device acceptance: Review → transaction → Contact, search/select
+  or back out, then Category. Only the inline field should appear and typing
+  should filter categories. Repeat after creating a contact and with a split.
+- The deeper keyboard-latency investigation remains paused. Do not describe
+  this lifecycle change as a confirmed fix until device verification.
+- Validation: generic-device Debug build passed; no simulator used.
+
 ## Category picker search and background (2026-10-17)
 
 - Category picker explicitly dismisses navigation search on appearance and

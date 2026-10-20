@@ -4974,6 +4974,7 @@ private struct CanonicalPayeePicker: View {
     @Binding var displayName: String
     let payees: [DurableCanonicalPayee]
     @State private var searchText = ""
+    @State private var searchIsPresented = false
     @FocusState private var searchFocused: Bool
 
     init(
@@ -4993,6 +4994,7 @@ private struct CanonicalPayeePicker: View {
                 Button {
                     selection = payee.canonicalId
                     displayName = payee.name
+                    endSearch()
                     dismiss()
                 } label: {
                     HStack {
@@ -5019,6 +5021,7 @@ private struct CanonicalPayeePicker: View {
                         }
                         selection = id
                         displayName = cleaned
+                        endSearch()
                         dismiss()
                     } label: {
                         Label(
@@ -5030,19 +5033,32 @@ private struct CanonicalPayeePicker: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .nwTaskFieldBackground()
+        .background(NwAppColors.background.ignoresSafeArea())
         .navigationTitle("Contact")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
             text: $searchText,
+            isPresented: $searchIsPresented,
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "Search contacts"
         )
         .searchFocused($searchFocused)
         .task {
             await Task.yield()
+            guard !Task.isCancelled else { return }
+            searchIsPresented = true
             searchFocused = true
         }
+        .onDisappear {
+            endSearch()
+        }
+    }
+
+    private func endSearch() {
+        // End the native search interaction at its owner before another
+        // destination uses this navigation stack (Category has inline search).
+        searchFocused = false
+        searchIsPresented = false
     }
 
     private var filteredPayees: [DurableCanonicalPayee] {
@@ -6816,7 +6832,8 @@ private struct ReimbursementAllocationPicker: View {
                     }
                 }
             }
-            .nwScreenBackground()
+            .scrollContentBackground(.hidden)
+            .background(NwAppColors.background.ignoresSafeArea())
             .navigationTitle("Allocate reimbursement")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Search outstanding expenses")
