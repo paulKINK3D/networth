@@ -1,5 +1,29 @@
 # WORKING
 
+## Cumulative Spending comparison (2026-10-24)
+
+- Completed and reviewed with the user on the physical device. Spending Trends
+  compares current-month cumulative spending against a daily arithmetic average
+  of up to 12 preceding complete calendar months. Actual stops today; the
+  historical curve continues through month end without forecasting actual spend.
+- Uses the adjusted Spending entry pipeline and monthly accounting builder,
+  preserving refunds, splits, exclusions, and group-level clamping. Zero-activity
+  months count. The first observed approved-transaction month is excluded as
+  potentially partial. Short historical months carry their ending balance
+  through days 29–31; longer months are not compressed into shorter months.
+- Final layout: total upper left, group picker upper right. Choices are All
+  Spending, Fixed, Necessities, Surplus. Solid “This month” and dashed “Avg”
+  legends; no above/below-average text. Smaller whole-number currency axes.
+- Historical card title is the selected month/year, with 44-point previous/next
+  controls. Taps use plot-relative coordinates and select the containing month
+  rather than snapping to the nearest month start. Compact selected total and
+  average share one row, with “Avg” beside the average amount.
+- Retained keeps its large total centered against the full two-row Funded/Spent
+  stacks. User approved the final alignment. No persistence/schema changes.
+- Validation: 34 focused spending/formatting tests and final generic-device
+  Debug build passed. No simulator launched. User reviewed appearance and
+  improved month selection on device; no separate dark-mode review recorded.
+
 ## Transaction editor background consistency (2026-10-19)
 
 - User tentatively verified the Contact-to-Category search lifecycle fix.

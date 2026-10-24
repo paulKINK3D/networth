@@ -131,7 +131,7 @@ private struct SpendingTrendChart: View {
         .chartLegend(.hidden)
         .chartXAxis {
             AxisMarks(
-                values: .stride(by: .month, count: axisStride)
+                values: .stride(by: .month, count: compact ? axisStride : max(axisStride, data.count / 4))
             ) { value in
                 AxisGridLine()
                     .foregroundStyle(NwAppColors.strokeSubtle)
@@ -144,14 +144,14 @@ private struct SpendingTrendChart: View {
                                     : .dateTime.month(.abbreviated)
                             )
                         )
-                        .font(NwTypography.caption)
+                        .font(compact ? NwTypography.caption : NwTypography.body)
                     }
                 }
             }
         }
         .chartYAxis {
             if !compact {
-                AxisMarks(position: .leading) { value in
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
                     AxisGridLine()
                         .foregroundStyle(NwAppColors.strokeSubtle)
                     AxisValueLabel {
@@ -160,24 +160,32 @@ private struct SpendingTrendChart: View {
                                 CurrencyFormatter.compact(
                                     Money(
                                         milliunits: Int64(dollars * 1000)
-                                    )
+                                    ),
+                                    fractionDigits: 0
                                 )
                             )
-                            .font(NwTypography.caption)
+                            .font(NwTypography.footnote)
                         }
                     }
                 }
             }
         }
         .chartYScale(domain: .automatic(includesZero: true))
-        .chartGesture { proxy in
-            SpatialTapGesture()
-                .onEnded { value in
-                    guard let month: Date = proxy.value(
-                        atX: value.location.x
-                    ) else { return }
-                    onSelect?(month)
-                }
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture { location in
+                        guard let anchor = proxy.plotFrame else { return }
+                        let plot = geometry[anchor]
+                        guard plot.contains(location),
+                              let month: Date = proxy.value(
+                                atX: location.x - plot.minX
+                              ) else { return }
+                        onSelect?(month)
+                    }
+            }
         }
     }
 
@@ -1601,6 +1609,9 @@ private struct SpendingTrendsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: NwSpacing.lg) {
                 controlsCard
+                if mode == .spending {
+                    cumulativeCard
+                }
                 chartCard
             }
             .padding(.horizontal, NwSpacing.screenPadding)
@@ -1624,55 +1635,181 @@ private struct SpendingTrendsView: View {
     }
 
     private var controlsCard: some View {
-        NwCard(style: .primary) {
-            VStack(spacing: NwSpacing.md) {
-                Picker("Trend", selection: $mode) {
-                    ForEach(SpendingTrendMode.allCases) { option in
-                        Text(option.title).tag(option)
+        Picker("Trend", selection: $mode) {
+            ForEach(SpendingTrendMode.allCases) { option in
+                Text(option.title).tag(option)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private var spendingGroupPicker: some View {
+        Menu {
+            Picker("Spending group", selection: $selectedSeriesID) {
+                Text("All Spending").tag(SpendingTrendSeries.all)
+                ForEach(groupOptions) { option in
+                    Text(option.name).tag(option.id)
+                }
+            }
+        } label: {
+            HStack(spacing: NwSpacing.sm) {
+                Text(selectedSeriesName)
+                    .font(NwTypography.headline)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(NwTypography.bodyEmphasis)
+            }
+            .foregroundStyle(NwAppColors.primary)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Spending group, \(selectedSeriesName)")
+    }
+
+    private var cumulativeGroupID: String? {
+        selectedSeriesID == SpendingTrendSeries.all ? nil : selectedSeriesID
+    }
+
+    private var cumulativeCard: some View {
+        let comparison = model.cumulativeComparison
+        let actual = comparison.actual.last?.amount(groupID: cumulativeGroupID) ?? .zero
+        return NwCard(style: .primary) {
+            VStack(alignment: .leading, spacing: NwSpacing.md) {
+                HStack(alignment: .center, spacing: NwSpacing.md) {
+                    NwAmountText(actual, variant: .large, showCents: false)
+                    Spacer(minLength: 0)
+                    spendingGroupPicker
+                }
+                .padding(.bottom, NwSpacing.sm)
+                Chart {
+                    ForEach(comparison.average, id: \.day) { point in
+                        LineMark(
+                            x: .value("Day", point.day),
+                            y: .value("Spending", point.amount(groupID: cumulativeGroupID).doubleValue),
+                            series: .value("Series", "Average")
+                        )
+                        .foregroundStyle(NwAppColors.textSecondary)
+                        .lineStyle(StrokeStyle(lineWidth: 2, dash: [5, 4]))
+                        .interpolationMethod(.stepEnd)
+                    }
+                    ForEach(comparison.actual, id: \.day) { point in
+                        LineMark(
+                            x: .value("Day", point.day),
+                            y: .value("Spending", point.amount(groupID: cumulativeGroupID).doubleValue),
+                            series: .value("Series", "This month")
+                        )
+                        .foregroundStyle(NwAppColors.primary)
+                        .lineStyle(StrokeStyle(lineWidth: 3))
+                        .interpolationMethod(.stepEnd)
                     }
                 }
-                .pickerStyle(.segmented)
-
-                if mode == .spending {
-                    HStack {
-                        Text("Series")
-                            .font(NwTypography.body)
-                            .foregroundStyle(NwAppColors.textSecondary)
-                        Spacer()
-                        Picker("Series", selection: $selectedSeriesID) {
-                            Text("All Spending")
-                                .tag(SpendingTrendSeries.all)
-                            ForEach(groupOptions) { option in
-                                Text(option.name).tag(option.id)
+                .chartXScale(domain: 0...(calendar.range(of: .day, in: .month, for: Date.now)?.count ?? 31))
+                .chartXAxis {
+                    AxisMarks(values: [1, 10, 20, calendar.range(of: .day, in: .month, for: Date.now)?.count ?? 31]) { value in
+                        AxisValueLabel {
+                            if let day = value.as(Int.self) {
+                                Text("\(day)")
+                                    .font(NwTypography.body)
+                                    .foregroundStyle(NwAppColors.textSecondary)
                             }
                         }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
                     }
                 }
-
-                Picker("History range", selection: $range) {
-                    ForEach(SpendingTrendRange.allCases) { option in
-                        Text(option.label).tag(option)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                        AxisGridLine()
+                            .foregroundStyle(NwAppColors.strokeSubtle)
+                        AxisValueLabel {
+                            if let dollars = value.as(Double.self) {
+                                Text(CurrencyFormatter.compact(Money(milliunits: Int64((dollars * 1_000).rounded())), fractionDigits: 0))
+                                    .font(NwTypography.footnote)
+                                    .foregroundStyle(NwAppColors.textSecondary)
+                            }
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
+                .chartYScale(domain: .automatic(includesZero: true))
+                .frame(height: 250)
+                .accessibilityLabel("Cumulative \(selectedSeriesName), this month versus average")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: NwSpacing.lg) {
+                        cumulativeLegend(comparison)
+                    }
+                    VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                        cumulativeLegend(comparison)
+                    }
+                }
+                .padding(.top, NwSpacing.sm)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func cumulativeLegend(_ comparison: SpendingCumulativeComparison) -> some View {
+        ForEach(0..<(comparison.historicalMonthCount > 0 ? 2 : 1), id: \.self) { index in
+            HStack(spacing: NwSpacing.sm) {
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: 3))
+                    path.addLine(to: CGPoint(x: 28, y: 3))
+                }
+                .stroke(
+                    index == 0 ? NwAppColors.primary : NwAppColors.textSecondary,
+                    style: StrokeStyle(lineWidth: 3, dash: index == 0 ? [] : [5, 4])
+                )
+                .frame(width: 28, height: 6)
+                .accessibilityHidden(true)
+                Text(index == 0 ? "This month" : "Avg")
+                    .font(NwTypography.body)
+                    .foregroundStyle(NwAppColors.textSecondary)
+                    .fixedSize()
+            }
+        }
+        if comparison.historicalMonthCount == 0 {
+            Text("No complete months")
+                .font(NwTypography.body)
+                .foregroundStyle(NwAppColors.textSecondary)
         }
     }
 
     private var chartCard: some View {
         NwCard(style: .primary) {
             VStack(alignment: .leading, spacing: NwSpacing.md) {
+                HStack {
+                    Text(historyMonthTitle)
+                        .font(NwTypography.headline)
+                    Spacer(minLength: NwSpacing.sm)
+                    Button {
+                        moveHistoryMonth(by: -1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Previous month")
+                    .disabled(historyMonthIndex == 0)
+                    Button {
+                        moveHistoryMonth(by: 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Next month")
+                    .disabled(historyMonthIndex >= historyData.count - 1)
+                }
+                .font(NwTypography.bodyEmphasis)
+                .buttonStyle(.plain)
+                .tint(NwAppColors.primary)
+                Picker("History range", selection: $range) {
+                    ForEach(SpendingTrendRange.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
                 if mode == .retained {
                     retainedChartContent
                 } else {
                     spendingChartContent
                 }
-
-                Text("The current month is month to date.")
-                    .font(NwTypography.caption)
-                    .foregroundStyle(NwAppColors.textSecondary)
             }
         }
     }
@@ -1680,21 +1817,16 @@ private struct SpendingTrendsView: View {
     @ViewBuilder
     private var retainedChartContent: some View {
         if let datum = displayedRetainedDatum {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(trendMonthLabel(datum.month))
-                        .font(NwTypography.caption)
-                        .foregroundStyle(NwAppColors.textSecondary)
-                    NwAmountText(
-                        datum.retained,
-                        variant: .large,
-                        showCents: false,
-                        color: retainedAmountColor(datum.retained)
-                    )
-                }
+            HStack(alignment: .center) {
+                NwAmountText(
+                    datum.retained,
+                    variant: .large,
+                    showCents: false,
+                    color: retainedAmountColor(datum.retained)
+                )
                 Spacer()
                 HStack(
-                    alignment: .firstTextBaseline,
+                    alignment: .lastTextBaseline,
                     spacing: NwSpacing.lg
                 ) {
                     retainedMetric(title: "Funded", amount: datum.funded)
@@ -1720,7 +1852,7 @@ private struct SpendingTrendsView: View {
     private func retainedMetric(title: String, amount: Money) -> some View {
         VStack(alignment: .trailing, spacing: 2) {
             Text(title)
-                .font(NwTypography.caption)
+                .font(NwTypography.body)
                 .foregroundStyle(NwAppColors.textSecondary)
             NwAmountText(
                 amount,
@@ -1734,30 +1866,28 @@ private struct SpendingTrendsView: View {
     @ViewBuilder
     private var spendingChartContent: some View {
         if let datum = displayedDatum {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(monthLabel(for: datum))
-                        .font(NwTypography.caption)
-                        .foregroundStyle(NwAppColors.textSecondary)
+            HStack(alignment: .bottom, spacing: NwSpacing.md) {
+                VStack(alignment: .leading, spacing: NwSpacing.xs) {
                     NwAmountText(
                         datum.amount,
-                        variant: .large,
+                        variant: .metricSmall,
                         showCents: false
                     )
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
                 if let average = historicalAverage {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("12-mo average")
-                            .font(NwTypography.caption)
-                            .foregroundStyle(NwAppColors.textSecondary)
+                    HStack(alignment: .firstTextBaseline, spacing: NwSpacing.xs) {
                         NwAmountText(
                             average,
-                            variant: .large,
+                            variant: .metricSmall,
                             showCents: false,
                             color: NwAppColors.textSecondary
                         )
+                        Text("Avg")
+                            .font(NwTypography.body)
+                            .foregroundStyle(NwAppColors.textSecondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
         }
@@ -1902,33 +2032,45 @@ private struct SpendingTrendsView: View {
                 )
             }
         }
-        return byID.values.sorted { lhs, rhs in
-            let lhsOrder = model.orderIndex(for: lhs.id)
-            let rhsOrder = model.orderIndex(for: rhs.id)
-            if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name)
-                == .orderedAscending
+        let names = ["Fixed", "Necessities", "Surplus"]
+        return names.flatMap { name in
+            byID.values.filter {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            }.sorted { $0.id < $1.id }
         }
     }
 
+    private var historyData: [SpendingTrendDatum] {
+        mode == .retained ? retainedChartData : data
+    }
+
+    private var historyMonthIndex: Int {
+        let months = historyData
+        return months.firstIndex { $0.month == selectedMonth }
+            ?? max(0, months.count - 1)
+    }
+
+    private func moveHistoryMonth(by offset: Int) {
+        let months = historyData
+        let index = historyMonthIndex + offset
+        guard months.indices.contains(index) else { return }
+        selectedMonth = months[index].month
+    }
+
     private func selectMonth(_ date: Date) {
-        let months = mode == .retained ? retainedChartData : data
-        guard let nearest = months.min(by: {
-            abs($0.month.timeIntervalSince(date))
-                < abs($1.month.timeIntervalSince(date))
+        guard let month = historyData.first(where: {
+            calendar.isDate($0.month, equalTo: date, toGranularity: .month)
         }) else { return }
-        selectedMonth = nearest.month
+        selectedMonth = month.month
     }
 
-    private func monthLabel(for datum: SpendingTrendDatum) -> String {
-        trendMonthLabel(datum.month)
+    private var historyMonthTitle: String {
+        let month = mode == .retained
+            ? displayedRetainedDatum?.month
+            : displayedDatum?.month
+        return (month ?? .now).formatted(.dateTime.month(.wide).year())
     }
 
-    private func trendMonthLabel(_ month: Date) -> String {
-        let label = month.formatted(.dateTime.month(.wide).year())
-        return calendar.isDate(month, equalTo: .now, toGranularity: .month)
-            ? "\(label) · MTD" : label
-    }
 }
 
 // MARK: - Group management
@@ -3027,6 +3169,7 @@ private struct CategoryGroupPickerSheet: View {
 
 struct SpendingHistoryModel: Sendable {
     let months: [SpendingHistoryMonth]
+    let cumulativeComparison: SpendingCumulativeComparison
     let budgetRules: [SpendingGroupBudgetRule]
     let remainderRules: [SpendingRemainderRule]
     let savingsChoices: [SavingsBudgetChoice]
@@ -3513,6 +3656,12 @@ actor SpendingHistoryBuildActor {
         }
         return SpendingHistoryModel(
             months: months,
+            cumulativeComparison: SpendingHistoryAverages.cumulativeComparison(
+                entries: entries,
+                historyStart: rows.map(\.postedDate).min(),
+                now: now,
+                calendar: calendar
+            ),
             budgetRules: budgetRows.map(\.coreRule),
             remainderRules: remainderRows.map(\.coreRule),
             savingsChoices: Array(latestChoices),

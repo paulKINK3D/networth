@@ -216,3 +216,96 @@ public enum SpendingHistoryAverages {
             }
     }
 }
+
+
+/// Daily snapshots use the same accounting rules as monthly Spending totals.
+public struct SpendingCumulativeDay: Sendable {
+    public let day: Int
+    public let total: Money
+    public let groups: [String: Money]
+
+    public func amount(groupID: String?) -> Money {
+        groupID.map { groups[$0] ?? .zero } ?? total
+    }
+}
+
+public struct SpendingCumulativeComparison: Sendable {
+    public let actual: [SpendingCumulativeDay]
+    public let average: [SpendingCumulativeDay]
+    public let historicalMonthCount: Int
+}
+
+extension SpendingHistoryAverages {
+    /// Includes zero-activity months after the first observed calendar month.
+    /// The first observed month is excluded because coverage may be partial.
+    /// Shorter historical months carry their final total through days 29–31;
+    /// longer months are compared through the same numbered day, without scaling.
+    public static func cumulativeComparison(
+        entries: [SpendingHistoryEntry],
+        historyStart: Date?,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> SpendingCumulativeComparison {
+        guard let current = calendar.dateInterval(of: .month, for: now)?.start,
+              let days = calendar.range(of: .day, in: .month, for: now) else {
+            return .init(actual: [], average: [], historicalMonthCount: 0)
+        }
+        let entriesByMonth = Dictionary(grouping: entries.filter { $0.date <= now }) {
+            calendar.dateInterval(of: .month, for: $0.date)!.start
+        }
+        func series(_ month: Date, through lastDay: Int) -> [SpendingCumulativeDay] {
+            let monthEntries = entriesByMonth[month] ?? []
+            let monthDayCount = calendar.range(of: .day, in: .month, for: month)!.count
+            return (0...lastDay).map { day in
+                guard day > 0 else {
+                    return SpendingCumulativeDay(day: 0, total: .zero, groups: [:])
+                }
+                let end = calendar.date(
+                    byAdding: .day, value: min(day, monthDayCount), to: month
+                )!
+                // Reuse the monthly builder to preserve sign rules, group-level
+                // refund clamping and special-treatment exclusions exactly.
+                let summary = SpendingHistoryBuilder.build(
+                    entries: monthEntries.filter { $0.date < end },
+                    monthsBack: 1,
+                    now: min(now, end.addingTimeInterval(-0.001)),
+                    calendar: calendar
+                )[0]
+                return SpendingCumulativeDay(
+                    day: day,
+                    total: summary.ordinaryTotal,
+                    groups: Dictionary(uniqueKeysWithValues: summary.groups.map {
+                        ($0.id, Money(milliunits: max(0, $0.spentMilliunits)))
+                    })
+                )
+            }
+        }
+        let actual = series(current, through: calendar.component(.day, from: now))
+        let firstCompleteMonth = historyStart.flatMap {
+            calendar.dateInterval(of: .month, for: $0)?.end
+        }
+        let historical = (1...12).compactMap { offset -> [SpendingCumulativeDay]? in
+            guard let month = calendar.date(byAdding: .month, value: -offset, to: current),
+                  let firstCompleteMonth, month >= firstCompleteMonth else { return nil }
+            return series(month, through: days.count)
+        }
+        guard !historical.isEmpty else {
+            return .init(actual: actual, average: [], historicalMonthCount: 0)
+        }
+        let count = Int64(historical.count)
+        let average = (0...days.count).map { day in
+            let points = historical.map { $0[day] }
+            let groupIDs = Set(points.flatMap { $0.groups.keys })
+            return SpendingCumulativeDay(
+                day: day,
+                total: Money(milliunits: points.reduce(0) { $0 + $1.total.milliunits } / count),
+                groups: Dictionary(uniqueKeysWithValues: groupIDs.map { id in
+                    (id, Money(milliunits: points.reduce(0) {
+                        $0 + ($1.groups[id]?.milliunits ?? 0)
+                    } / count))
+                })
+            )
+        }
+        return .init(actual: actual, average: average, historicalMonthCount: historical.count)
+    }
+}

@@ -10,7 +10,7 @@ public enum CurrencyFormatter {
     }
 
     /// Compact display, e.g. "$12.3K", "$1.2M". Used for big metric capsules.
-    public static func compact(_ amount: Money, code: String = "USD") -> String {
+    public static func compact(_ amount: Money, code: String = "USD", fractionDigits: Int? = nil) -> String {
         let value = amount.doubleValue
         let abs = Swift.abs(value)
         let sign = value < 0 ? "-" : ""
@@ -19,11 +19,11 @@ public enum CurrencyFormatter {
         case 0..<1_000:
             return "\(sign)\(symbol)\(Int(abs.rounded()))"
         case 1_000..<1_000_000:
-            return "\(sign)\(symbol)\(String(format: "%.1f", abs / 1_000))K"
+            return "\(sign)\(symbol)\(String(format: "%.*f", fractionDigits ?? 1, abs / 1_000))K"
         case 1_000_000..<1_000_000_000:
-            return "\(sign)\(symbol)\(String(format: "%.2f", abs / 1_000_000))M"
+            return "\(sign)\(symbol)\(String(format: "%.*f", fractionDigits ?? 2, abs / 1_000_000))M"
         default:
-            return "\(sign)\(symbol)\(String(format: "%.2f", abs / 1_000_000_000))B"
+            return "\(sign)\(symbol)\(String(format: "%.*f", fractionDigits ?? 2, abs / 1_000_000_000))B"
         }
     }
 

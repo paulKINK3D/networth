@@ -169,3 +169,81 @@ struct SpendingHistoryAveragesTests {
         #expect(rollups[0].transactionIds == ["t1"])
     }
 }
+
+@Suite("Cumulative spending comparison")
+struct SpendingCumulativeComparisonTests {
+    private var calendar: Calendar {
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = TimeZone(secondsFromGMT: 0)!
+        return value
+    }
+
+    private func date(_ month: Int, _ day: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: month, day: day))!
+    }
+
+    private func entry(
+        _ month: Int, _ day: Int, _ amount: Int64,
+        group: String = "regular", treatment: ForecastTreatment = .ordinarySpending
+    ) -> SpendingHistoryEntry {
+        SpendingHistoryEntry(
+            transactionId: "\(month)-\(day)-\(amount)", date: date(month, day),
+            amountMilliunits: amount, treatment: treatment,
+            groupIdentity: group, groupName: group,
+            categoryKey: "category", categoryName: "Category"
+        )
+    }
+
+    @Test func averageIncludesZeroMonthsAndActualStopsToday() {
+        let result = SpendingHistoryAverages.cumulativeComparison(
+            entries: [entry(2, 5, -100_000), entry(4, 3, -20_000), entry(4, 20, -90_000)],
+            historyStart: date(1, 15), now: date(4, 10), calendar: calendar
+        )
+        #expect(result.historicalMonthCount == 2)
+        #expect(result.average[4].total == .zero)
+        #expect(result.average[5].total.milliunits == 50_000)
+        #expect(result.actual.last?.day == 10)
+        #expect(result.actual.last?.total.milliunits == 20_000)
+        #expect(result.actual[0].total == .zero)
+    }
+
+    @Test func refundsSplitsAndExcludedTreatmentsMatchMonthlyTotals() {
+        let entries = [
+            entry(2, 2, -100_000), entry(2, 2, -50_000, group: "other"),
+            entry(2, 3, 120_000, treatment: .refund),
+            entry(2, 4, -500_000, treatment: .goalSpend),
+            entry(2, 5, -500_000, treatment: .savings),
+            entry(2, 6, 500_000, treatment: .reimbursement),
+            entry(2, 7, 500_000), // Invalid spending sign.
+            entry(2, 8, -500_000, treatment: .refund) // Invalid refund sign.
+        ]
+        let result = SpendingHistoryAverages.cumulativeComparison(
+            entries: entries, historyStart: date(1, 1), now: date(3, 10), calendar: calendar
+        )
+        let month = SpendingHistoryBuilder.build(
+            entries: entries, monthsBack: 1,
+            now: date(3, 1).addingTimeInterval(-1), calendar: calendar
+        )[0]
+        #expect(result.average[2].total.milliunits == 150_000)
+        #expect(result.average[3].total.milliunits == 50_000)
+        #expect(result.average.last?.total == month.ordinaryTotal)
+        #expect(result.average.last?.amount(groupID: "regular") == .zero)
+        #expect(result.average.last?.amount(groupID: "other").milliunits == 50_000)
+    }
+
+    @Test func shortMonthCarriesForwardAndMissingHistoryHasNoAverage() {
+        let result = SpendingHistoryAverages.cumulativeComparison(
+            entries: [entry(2, 28, -80_000)], historyStart: date(1, 10),
+            now: date(3, 31), calendar: calendar
+        )
+        #expect(result.average[27].total == .zero)
+        #expect(result.average[28].total.milliunits == 80_000)
+        #expect(result.average[31].total.milliunits == 80_000)
+        let empty = SpendingHistoryAverages.cumulativeComparison(
+            entries: [], historyStart: nil, now: date(3, 10), calendar: calendar
+        )
+        #expect(empty.average.isEmpty)
+        #expect(empty.historicalMonthCount == 0)
+        #expect(empty.actual.count == 11)
+    }
+}

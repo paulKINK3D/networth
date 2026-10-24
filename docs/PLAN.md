@@ -223,6 +223,19 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
 
 ## Key Decisions Log
 
+- **2026-10-24** — Spending Trends adds a daily cumulative comparison of the
+  current month with the arithmetic mean of up to 12 preceding complete months.
+  Actual ends today; the historical average continues to month end without
+  extrapolating actual spending or assigning favorable/unfavorable judgments.
+  Zero-spending months count; the first observed approved-transaction month is
+  excluded as potentially partial. Short months carry their final total forward
+  through days 29–31; longer months are not compressed. Reuse the adjusted
+  Spending pipeline and monthly accounting rules. Selection is limited to All
+  Spending, Fixed, Necessities, and Surplus. Monthly spending and Retained
+  history remain available with month taps and explicit previous/next controls.
+  Presentation uses concise “Avg” labels, whole-number compact currency axes,
+  and no above/below-average headline. No persistence changes.
+
 - **2026-10-11** — Incoming Reimbursement transactions and incoming Reimbursement
   split parts can allocate to multiple outstanding reimbursable expenses. Each
   selected expense is covered in full (the full reimbursable portion of a split
