@@ -645,3 +645,26 @@ struct CashPositionProjectorTests {
         )
     }
 }
+
+extension CashPositionProjectorTests {
+    @Test func cushionCurveConnectsOnlyLocalMinima() {
+        func points(_ amounts: [Int]) -> [CashPositionPoint] {
+            amounts.enumerated().map {
+                CashPositionPoint(date: date(2026, 11, $0.offset + 1), balance: Money.dollars(integer: $0.element))
+            }
+        }
+        let zigzag = points([10, 5, 12, 6, 15, 7, 11])
+        #expect(CashPositionCurve.localMinima(zigzag) == [zigzag[1], zigzag[3], zigzag[5]])
+        let plateau = points([10, 5, 5, 12, 6, 6, 15])
+        #expect(CashPositionCurve.localMinima(plateau) == [plateau[1], plateau[4]])
+        let rising = points([5, 7, 9])
+        #expect(CashPositionCurve.localMinima(rising) == [rising[0]])
+        let falling = points([9, 7, 5])
+        #expect(CashPositionCurve.localMinima(falling) == [falling[2]])
+        let flat = points([5, 5, 5])
+        #expect(CashPositionCurve.localMinima(flat) == [flat[0]])
+        #expect(CashPositionCurve.localMinima([]).isEmpty)
+        #expect(CashPositionCurve.localMinima(points([5])) == points([5]))
+        #expect(CashPositionCurve.localMinima(zigzag).map(\.balance).min() == zigzag.map(\.balance).min())
+    }
+}

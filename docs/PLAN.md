@@ -602,3 +602,23 @@ The foundational capabilities have shipped. Projections serves the cash-confiden
 - **2026-06-06** — IA change: replaced the planned Settings tab with an Investments tab (placeholder for Plaid-fed holdings); Settings now opens from a sheet behind the Net Worth toolbar.
 - **2026-06-06** — Face ID default flipped from off to on when the device supports biometrics; a versioned migration on `DurableUserSettings.settingsSchemaVersion` flips legacy persisted rows forward so iCloud-restored or cross-device settings never silently leave the user unlocked.
 - **2026-06-07** — Historical net-worth backfill wired into the first successful sync. Reconstruction lives in `NetworthCore`, is invoked from `SyncCoordinator.runHistoryBackfillIfNeeded`, writes `.backfill`-stamped `DurableNetWorthSnapshot` rows, and is gated by `DurableUserSettings.historyBackfillVersion` (CloudKit-synced, re-runnable via `forceFullResync()`). Source-aware dedupe preserves `.live` rows (which include manual assets) over `.backfill` rows on collision.
+
+### 2026-11-01 — Cash Outlook cushion curve
+
+- Projections leads with Projected cushion. The graph connects local minima of
+  the forward forecast with monotone curved interpolation; daily peaks and the
+  History/Outlook switch are removed. Flat troughs use their first day, and
+  endpoints appear only when they are lows. The full daily forecast still owns
+  all amounts, low dates, warnings, and expense scenarios.
+- The user rejected forecast history. There are no history queries, writes,
+  comparisons, or history-specific UI/state. `DurableCashOutlookSnapshot` remains
+  an inert compatibility entity in the durable schema because this build may
+  already have created records locally or in private CloudKit. Its persisted
+  fields are unchanged; no destructive cleanup or legacy reads run.
+- Protected shows the cash buffer and Spending Reserves. Try an expense stages
+  an extra cash expense today without creating a transaction. Use labels,
+  amounts, and charts rather than explanatory prose.
+- Unresolved recurring card outflows remain forecast on their due day and after
+  it. Posted activity replaces them through existing occurrence matching;
+  explicit skips remove them. Each occurrence enters only the first applicable
+  statement.

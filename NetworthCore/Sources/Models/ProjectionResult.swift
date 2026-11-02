@@ -370,3 +370,25 @@ public enum CashProjectionStatus: String, Sendable, Hashable, Codable {
     case tight
     case shortfall
 }
+
+/// Presentation-only troughs. Cash calculations always use the complete series.
+public enum CashPositionCurve {
+    /// Collapse flat troughs to their first day. Boundary points participate
+    /// only when they are themselves lows; high endpoints never add a spike.
+    public static func localMinima(_ points: [CashPositionPoint]) -> [CashPositionPoint] {
+        guard !points.isEmpty else { return [] }
+        var result: [CashPositionPoint] = []
+        var start = 0
+        while start < points.count {
+            var end = start
+            while end + 1 < points.count && points[end + 1].balance == points[start].balance {
+                end += 1
+            }
+            let belowPrevious = start == 0 || points[start].balance < points[start - 1].balance
+            let belowNext = end == points.count - 1 || points[end].balance < points[end + 1].balance
+            if belowPrevious && belowNext { result.append(points[start]) }
+            start = end + 1
+        }
+        return result
+    }
+}

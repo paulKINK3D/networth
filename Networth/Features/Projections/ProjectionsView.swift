@@ -54,7 +54,7 @@ struct ProjectionHeroMetric: Sendable, Equatable {
         if canLeadWithSpendingRoom, let availableAmount {
             return ProjectionHeroMetric(
                 kind: .available,
-                label: "Available",
+                label: "Projected cushion",
                 amount: availableAmount
             )
         }
@@ -109,6 +109,7 @@ struct ProjectionsView: View {
             .eraseToAnyPublisher()
 
     @Environment(AppContainerController.self) private var container
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \CachedFinancialAccount.name) private var financialAccounts: [CachedFinancialAccount]
     @Query private var cardSettings: [DurableCardSettings]
     @Query private var cardPaymentConfirmations:
@@ -126,6 +127,7 @@ struct ProjectionsView: View {
     // (Cash-pool membership rules live in ProjectionCashSelection below so
     // the derived Goals-reserve exclusion is unit-testable.)
 
+    @State private var showingExpenseScenario = false
     @State private var showingAssumptions = false
     @State private var showingSafeToSpendDetails = false
     @State private var selectedPayment: CardPaymentDetailSelection?
@@ -192,6 +194,8 @@ struct ProjectionsView: View {
                 refreshCache()
             }
             .onDisappear { isVisible = false }
+            .onChange(of: scenePhase) { if scenePhase == .active { refreshCache(force: true) } }
+            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in refreshCache(force: true) }
             .onChange(of: reviewDismissals.count) { refreshCache(force: true) }
             .onReceive(Self.saveEvents) { _ in
                 if isVisible {
@@ -209,6 +213,7 @@ struct ProjectionsView: View {
     /// small durable tables (CloudKit-synced) contribute here.
     private var inputFingerprint: String {
         [
+            "\(Calendar.current.startOfDay(for: .now))",
             "\(financialAccounts.count)",
             "\(cardSettings.count)", "\(exclusions.count)",
             "\(cardPaymentConfirmations.count)",
@@ -243,7 +248,7 @@ struct ProjectionsView: View {
             } catch {
                 guard !Task.isCancelled else { return }
                 cacheFingerprint = ""
-                refreshError = "Your statement review couldn’t be loaded. Please try again."
+                refreshError = "Your outlook couldn’t be updated. Please try again."
             }
         }
     }
@@ -290,6 +295,11 @@ struct ProjectionsView: View {
                 ProjectionAssumptionsSheet(data: data) {
                     openPaycheckAfterAssumptions = true
                     showingAssumptions = false
+                }
+            }
+            .sheet(isPresented: $showingExpenseScenario) {
+                if let estimate = data.result.safeToSpend {
+                    CushionExpenseSheet(estimate: estimate)
                 }
             }
             .sheet(isPresented: $showingSafeToSpendDetails) {
@@ -408,147 +418,120 @@ struct ProjectionsView: View {
     }
 
     private func cashChart(_ data: ProjectionData) -> some View {
-        let selectedPoint = selectedProjectionPoint(data)
         let hero = projectionHeroMetric(data)
-        let accent = projectionHeroAccent(hero.kind)
-        return NwDashboardHero {
-            VStack(alignment: .leading, spacing: NwSpacing.lg) {
-                HStack {
-                    Text("CASH OUTLOOK")
-                        .font(NwTypography.caption)
-                        .foregroundStyle(NwAppColors.dashboardHeroSecondary)
-                    Spacer()
-                    Button {
-                        showingAssumptions = true
-                    } label: {
-                        Image(systemName: "info.circle")
+        let protected = data.result.safeToSpend?.protectedCashMinimum ?? minimumCashBuffer
+        let points = CashPositionCurve.localMinima(data.result.expectedPoints).map {
+            CashPositionPoint(date: $0.date, balance: $0.balance - protected)
+        }
+        let selected = scrubbedProjectionDate.flatMap { date in
+            points.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
+        }
+        return VStack(alignment: .leading, spacing: NwSpacing.lg) {
+            NwCard(style: .primary) {
+                VStack(alignment: .leading, spacing: NwSpacing.md) {
+                    HStack {
+                        Text(hero.label)
                             .font(NwTypography.headline)
-                            .foregroundStyle(NwAppColors.dashboardHeroSecondary)
-                            .frame(width: 44, height: 44)
-                            .contentShape(Rectangle())
+                        Spacer()
+                        Button { showingAssumptions = true } label: {
+                            Image(systemName: "slider.horizontal.3")
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Projection settings")
+                    }
+                    Button {
+                        showingSafeToSpendDetails = data.result.safeToSpend != nil
+                    } label: {
+                        if let amount = hero.amount {
+                            NwAmountText(amount, variant: .hero, showCents: false,
+                                         color: NwAppColors.textPrimary)
+                        } else {
+                            Text("—").font(NwTypography.display)
+                        }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Projection assumptions")
-                }
-                .frame(height: 28)
+                    .accessibilityLabel("Cushion details")
 
-                projectionHeroSummary(data, hero: hero, accent: accent)
-
-                if !data.result.expectedPoints.isEmpty {
-                    Chart {
-                        ForEach(data.result.expectedPoints) { point in
-                            AreaMark(
-                                x: .value("Date", point.date),
-                                y: .value(
-                                    "Projected cash",
-                                    point.balance.doubleValue
-                                )
-                            )
-                            .foregroundStyle(.linearGradient(
-                                colors: [
-                                    accent.opacity(0.34),
-                                    accent.opacity(0.03)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ))
-
-                            LineMark(
-                                x: .value("Date", point.date),
-                                y: .value(
-                                    "Projected cash",
-                                    point.balance.doubleValue
-                                ),
-                                series: .value("Series", "Projected cash")
-                            )
-                            .foregroundStyle(accent)
-                            .lineStyle(StrokeStyle(lineWidth: 3))
-                        }
-                        RuleMark(
-                            y: .value(
-                                "Buffer",
-                                minimumCashBuffer.doubleValue
-                            )
-                        )
-                        .foregroundStyle(NwAppColors.gold.opacity(0.75))
-                        .lineStyle(
-                            StrokeStyle(lineWidth: 1, dash: [4, 4])
-                        )
-
-                        if let lowPoint = data.result.expectedLowPoint {
-                            PointMark(
-                                x: .value("Low date", lowPoint.date),
-                                y: .value(
-                                    "Projected low",
-                                    lowPoint.balance.doubleValue
-                                )
-                            )
-                            .foregroundStyle(accent)
-                            .symbolSize(55)
-                        }
-
-                        if let scrubbedProjectionDate {
-                            RuleMark(
-                                x: .value(
-                                    "Selected date",
-                                    scrubbedProjectionDate
-                                )
-                            )
-                            .foregroundStyle(
-                                NwAppColors.dashboardHeroText.opacity(0.55)
-                            )
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    HStack {
+                        Text("Next \(userSettings.first?.projectionHorizonDays ?? 90) days")
+                        Spacer()
+                        if let selected {
+                            NwAmountText(selected.balance, variant: .body, showCents: false)
+                        } else if let low = data.result.expectedLowPoint {
+                            Text("Low · \(low.date.formatted(.dateTime.month(.abbreviated).day()))")
                         }
                     }
-                    .chartLegend(.hidden)
-                    .chartYAxis(.hidden)
-                    .chartXAxis {
-                        AxisMarks(values: .automatic(desiredCount: 3)) { value in
-                            AxisValueLabel {
-                                if let date = value.as(Date.self) {
-                                    Text(
-                                        date,
-                                        format: .dateTime
-                                            .month(.abbreviated)
-                                            .day()
-                                    )
-                                    .font(NwTypography.caption)
-                                    .foregroundStyle(
-                                        NwAppColors.dashboardHeroSecondary
-                                    )
+                    .font(NwTypography.caption)
+                    .foregroundStyle(NwAppColors.textSecondary)
+                    if points.isEmpty {
+                        Text("No outlook available")
+                            .font(NwTypography.body)
+                            .foregroundStyle(NwAppColors.textSecondary)
+                            .frame(maxWidth: .infinity, minHeight: 130)
+                    } else {
+                        Chart {
+                            ForEach(points) { point in
+                                LineMark(x: .value("Date", point.date), y: .value("Cushion", point.balance.doubleValue))
+                                    .foregroundStyle(NwAppColors.primary)
+                                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                                    .interpolationMethod(.monotone)
+                                if points.count == 1 || point.date == selected?.date {
+                                    PointMark(x: .value("Date", point.date), y: .value("Cushion", point.balance.doubleValue))
+                                        .foregroundStyle(NwAppColors.primary)
+                                }
+                            }
+                            RuleMark(y: .value("Protected minimum", 0))
+                                .foregroundStyle(NwAppColors.textSecondary.opacity(0.4))
+                        }
+                        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
+                        .chartYAxis {
+                            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                                AxisValueLabel {
+                                    if let amount = value.as(Double.self) {
+                                        Text(CurrencyFormatter.compact(Money.dollars(Decimal(amount))))
+                                    }
                                 }
                             }
                         }
-                    }
-                    .chartXSelection(value: $scrubbedProjectionDate)
-                    .frame(height: 158)
-                }
-
-                if let selectedPoint {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(
-                            scrubbedProjectionDate == nil
-                                ? "Low · \(selectedPoint.date.formatted(.dateTime.month(.abbreviated).day().weekday(.abbreviated)))"
-                                : selectedPoint.date.formatted(
-                                    .dateTime.month(.abbreviated).day()
-                                        .weekday(.abbreviated)
-                                )
-                        )
-                        .font(NwTypography.footnoteEm)
-                        .foregroundStyle(NwAppColors.dashboardHeroSecondary)
-                        Spacer(minLength: NwSpacing.sm)
-                        NwAmountText(
-                            selectedPoint.balance,
-                            variant: .body,
-                            showCents: false,
-                            color: NwAppColors.dashboardHeroText
-                        )
+                        .chartXScale(domain: Calendar.current.startOfDay(for: data.asOf)...data.result.horizonEnd)
+                        .chartXSelection(value: $scrubbedProjectionDate)
+                        .frame(height: 150)
+                        .accessibilityLabel("Projected cushion low points")
+                        if let date = selected?.date ?? (points.count == 1 ? points.first?.date : nil) {
+                            Text(date, format: .dateTime.month(.abbreviated).day().year())
+                                .font(NwTypography.caption)
+                                .foregroundStyle(NwAppColors.textSecondary)
+                        }
                     }
                 }
             }
+            if let estimate = data.result.safeToSpend {
+                Text("Protected").font(NwTypography.headline)
+                NwCard(style: .primary) {
+                    VStack(spacing: NwSpacing.md) {
+                        HStack {
+                            Text("Cash buffer")
+                            Spacer()
+                            NwAmountText(estimate.minimumCashBuffer, variant: .body, showCents: false)
+                        }
+                        Divider()
+                        HStack {
+                            Text("Reserves")
+                            Spacer()
+                            NwAmountText(estimate.spendingReserve, variant: .body, showCents: false)
+                        }
+                    }
+                }
+                if data.canShowSpendingRoomDetails {
+                    Button { showingExpenseScenario = true } label: {
+                        Text("Try an expense").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
+            }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Cash outlook")
     }
 
     private func projectionHeroMetric(
@@ -565,78 +548,6 @@ struct ProjectionsView: View {
         )
     }
 
-    private func projectionHeroAccent(
-        _ kind: ProjectionHeroMetricKind
-    ) -> Color {
-        switch kind {
-        case .available, .projectedLow:
-            return NwAppColors.gold
-        case .setup, .transferNeeded, .bufferGap:
-            return NwAppColors.dashboardHeroCaution
-        case .projectedBalance:
-            return NwAppColors.dashboardHeroLiability
-        }
-    }
-
-    private func projectionHeroSummary(
-        _ data: ProjectionData,
-        hero: ProjectionHeroMetric,
-        accent: Color
-    ) -> some View {
-        Button {
-            if hero.kind == .available {
-                showingSafeToSpendDetails = true
-            } else {
-                showingAssumptions = true
-            }
-        } label: {
-            HStack(alignment: .center, spacing: NwSpacing.md) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(hero.label.uppercased())
-                        .font(NwTypography.caption)
-                        .foregroundStyle(accent)
-                    if let amount = hero.amount {
-                        NwAmountText(
-                            amount,
-                            variant: .hero,
-                            showCents: false,
-                            color: NwAppColors.dashboardHeroText
-                        )
-                    } else {
-                        NwIcon.projections.image
-                            .font(NwTypography.display)
-                            .foregroundStyle(accent)
-                            .padding(.vertical, NwSpacing.xs)
-                    }
-                    Text(data.headlineTitle)
-                        .font(NwTypography.footnoteEm)
-                        .foregroundStyle(NwAppColors.dashboardHeroSecondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: NwSpacing.sm)
-                NwIcon.chevron.image
-                    .font(NwTypography.headline)
-                    .foregroundStyle(accent)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint(
-            hero.kind == .available
-                ? "Shows how available cash is calculated"
-                : "Shows why the projection has this status"
-        )
-    }
-
-    private func selectedProjectionPoint(_ data: ProjectionData) -> CashPositionPoint? {
-        guard let scrubbedProjectionDate else { return data.result.expectedLowPoint }
-        let calendar = Calendar(identifier: .gregorian)
-        let target = calendar.startOfDay(for: scrubbedProjectionDate)
-        return data.result.expectedPoints.min { lhs, rhs in
-            abs(calendar.startOfDay(for: lhs.date).timeIntervalSince(target))
-                < abs(calendar.startOfDay(for: rhs.date).timeIntervalSince(target))
-        }
-    }
 
     private func timeline(_ data: ProjectionData) -> some View {
         let visibleEvents = showingAllUpcomingActivity
@@ -1021,6 +932,7 @@ struct ProjectionsView: View {
     // MARK: - Data
 
     fileprivate struct ProjectionData: Sendable {
+        let asOf: Date
         let result: CashPositionProjector.Result
         let paymentEstimates: [UpcomingCardPayment]
         let reviewPayments: [UpcomingCardPayment]
@@ -1340,7 +1252,7 @@ private struct SafeToSpendDetailSheet: View {
                 .padding(.vertical, NwSpacing.lg)
             }
             .nwFrostedFieldBackground()
-            .navigationTitle("Spending Room")
+            .navigationTitle("Cushion details")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(
                 for: SpendingRoomDrivers.GroupSpending.self
@@ -3681,6 +3593,7 @@ private struct PaycheckScheduleSheet: View {
 @ModelActor
 private actor ProjectionsDataActor {
     func build() throws -> ProjectionsView.ProjectionData {
+        let asOf = Date.now
         let context = modelContext
         let settings = try? context
             .fetch(FetchDescriptor<DurableUserSettings>()).first
@@ -3689,7 +3602,7 @@ private actor ProjectionsDataActor {
             milliunits: settings?.dipThresholdMilliunits ?? 500_000
         )
         let cutoff = Calendar(identifier: .gregorian)
-            .date(byAdding: .day, value: -370, to: .now) ?? .distantPast
+            .date(byAdding: .day, value: -370, to: asOf) ?? .distantPast
 
         let financialRows = (try? context.fetch(
             FetchDescriptor<CachedFinancialAccount>(
@@ -3763,7 +3676,7 @@ private actor ProjectionsDataActor {
                     \.coreContribution
                 ),
                 expenses: spendingReserveExpenses.map(\.coreExpense),
-                through: BudgetMonth(containing: .now)
+                through: BudgetMonth(containing: asOf)
             )
 
         let openCash = availableAccounts.filter { !$0.deleted && !$0.closed && $0.kind.isCashLike }
@@ -3867,7 +3780,7 @@ private actor ProjectionsDataActor {
             let detection = IncomeAnalyzer().detectPaycheck(
                 confirmedTransactions: history,
                 selectedAccountIds: selectedIds,
-                asOf: .now
+                asOf: asOf
             )
             paycheckDetection = detection
             if case .detected(let paycheck) = detection {
@@ -3892,13 +3805,13 @@ private actor ProjectionsDataActor {
                     paycheckManualOverridePayee = manual.payeeName
                 } else {
                     scheduledSummaries.append(contentsOf: paycheck.scheduledSummaries(
-                        asOf: .now,
+                        asOf: asOf,
                         horizonDays: horizonDays,
                         scheduleOverride: paycheckScheduleOverride
                     ))
                     if let schedule = paycheckScheduleOverride {
                         let calendar = Calendar.current
-                        let today = calendar.startOfDay(for: .now)
+                        let today = calendar.startOfDay(for: asOf)
                         let scheduledToday = schedule.occurrence(
                             onOrAfter: today,
                             calendar: calendar
@@ -3950,7 +3863,7 @@ private actor ProjectionsDataActor {
                 historicalTransactions: cardActivityHistory,
                 statementAssignments: statementAssignments,
                 spendAccountIds: spendIds,
-                asOf: .now,
+                asOf: asOf,
                 horizonDays: horizonDays
             )
         }.sorted { $0.dueDate < $1.dueDate }
@@ -4013,7 +3926,7 @@ private actor ProjectionsDataActor {
             transactions: cardActivityHistory,
             counterpartAccountIds: counterpartAccountIds,
             settlements: retainedSettlements + manualSettlements,
-            asOf: .now
+            asOf: asOf
         )
         let settledPaymentIds = Set(paymentMatches.keys)
         for payment in matchingPayments where payment.basis == .closedStatementEstimate {
@@ -4036,7 +3949,7 @@ private actor ProjectionsDataActor {
         let activePayments = projectedPayments.filter {
             !settledPaymentIds.contains($0.id)
         }
-        let startOfToday = Calendar.current.startOfDay(for: .now)
+        let startOfToday = Calendar.current.startOfDay(for: asOf)
         let overdueCandidatesByPaymentID = Dictionary(
             uniqueKeysWithValues: activePayments
                 .filter {
@@ -4049,7 +3962,7 @@ private actor ProjectionsDataActor {
                         settlementMatcher.candidateTransactions(
                             for: payment,
                             transactions: cardActivityHistory,
-                            asOf: .now
+                            asOf: asOf
                         )
                     )
                 }
@@ -4091,12 +4004,13 @@ private actor ProjectionsDataActor {
             outflowOnlyExcludedCategoryIds: hiddenInternalCategoryIds,
             spendAccountIds: spendIds,
             lookbackDays: 365,
-            asOf: .now,
+            asOf: asOf,
             horizonDays: horizonDays,
             minimumCashBuffer: minimumCashBuffer,
             spendingReserve: spendingReserveAdjustment.balance
         )
         return ProjectionsView.ProjectionData(
+            asOf: asOf,
             result: result,
             paymentEstimates: paymentEstimates,
             reviewPayments: reviewPayments,
@@ -4139,5 +4053,60 @@ enum ProjectionCashSelection {
             !goalReserveIds.contains($0.id)
                 && (overrideMap[$0.id] ?? $0.onBudget)
         }
+    }
+}
+
+private struct CushionExpenseSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let estimate: SafeToSpendEstimate
+    @State private var amountText = "0.00"
+
+    private var amount: Money {
+        CurrencyInputFormatter.money(from: amountText) ?? .zero
+    }
+    private var remaining: Money {
+        estimate.projectedLowBalance - estimate.protectedCashMinimum - amount
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: NwSpacing.lg) {
+                NwCard(style: .primary) {
+                    HStack {
+                        Text("Extra expense · Today")
+                        Spacer()
+                        TextField("0.00", text: $amountText)
+                            .multilineTextAlignment(.trailing)
+                            .nwCurrencyInput(text: $amountText)
+                            .frame(width: 130, height: 44)
+                    }
+                }
+                NwCard(style: .primary) {
+                    VStack(alignment: .leading, spacing: NwSpacing.md) {
+                        Text("Remaining cushion").font(NwTypography.headline)
+                        NwAmountText(remaining, variant: .hero, showCents: false,
+                                     color: remaining.isNegative ? NwAppColors.liability : NwAppColors.textPrimary)
+                        HStack {
+                            Text("Low date")
+                            Spacer()
+                            Text(estimate.lowPointDate, format: .dateTime.month(.abbreviated).day())
+                        }
+                        .foregroundStyle(NwAppColors.textSecondary)
+                    }
+                }
+                Spacer()
+            }
+            .padding(NwSpacing.screenPadding)
+            .nwFrostedFieldBackground()
+            .navigationTitle("Try an expense")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { dismiss() } label: { NwIcon.close.image.foregroundStyle(NwAppColors.liability) }
+                        .accessibilityLabel("Close")
+                }
+            }
+        }
+        .nwGlassSheet()
     }
 }

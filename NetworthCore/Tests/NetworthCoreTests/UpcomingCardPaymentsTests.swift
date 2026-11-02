@@ -813,3 +813,60 @@ struct UpcomingCardPaymentsTests {
     }
 
 }
+
+extension UpcomingCardPaymentsTests {
+    @Test func unresolvedCardExpectationSurvivesScheduledDayAndOverdueDays() {
+        let setting = CardStatementSettings(accountId: "card-1", statementCycleDay: 7,
+                                             paymentDueDay: 4, paymentAccountId: "cash")
+        let charge = RecurringExpectation(id: "variable-bill", accountId: "card-1",
+                                         payeeName: "Variable bill", treatment: .ordinarySpending,
+                                         cadence: .monthly, nextOccurrence: date(2026, 10, 30),
+                                         amount: Money.dollars(-3150))
+        // Nothing posts and the balance is unchanged. Passing the charge's
+        // expected date must not release $3,150 of supposedly available cash.
+        for today in [date(2026, 10, 29), date(2026, 10, 30), date(2026, 10, 31), date(2026, 11, 2)] {
+            let payments = CCPaymentForecaster(calendar: utc).upcomingPayments(
+                card: card(balance: Money.dollars(-1000)), settings: setting,
+                scheduled: [charge.toScheduledSummary()], asOf: today, horizonDays: 60
+            )
+            let december = payments.filter { $0.dueDate == date(2026, 12, 4) }
+            #expect(december.map(\.amount).sum() == Money.dollars(3150))
+        }
+    }
+
+    @Test func postedVariableCardChargeReplacesExpectationExactlyOnce() {
+        let today = date(2026, 10, 31)
+        let charge = RecurringExpectation(id: "bill", accountId: "card-1", payeeName: "Variable bill",
+                                         treatment: .ordinarySpending, cadence: .monthly,
+                                         nextOccurrence: date(2026, 10, 30), amount: Money.dollars(-3150))
+        let actual = TransactionSummary(id: "posted", accountId: "card-1", date: today,
+                                        amount: Money.dollars(-4050), cleared: true, approved: false,
+                                        payeeName: "Variable bill", categoryName: nil, forecastTreatment: .ordinarySpending,
+                                        memo: nil, deleted: false)
+        let schedules = RecurringExpectations.projectionSchedules(
+            expectations: [charge], postedTransactions: [actual], calendar: utc
+        )
+        let payments = CCPaymentForecaster(calendar: utc).upcomingPayments(
+            card: card(balance: Money.dollars(-5050)),
+            settings: CardStatementSettings(accountId: "card-1", statementCycleDay: 7,
+                                           paymentDueDay: 4, paymentAccountId: "cash"),
+            scheduled: schedules, historicalTransactions: [actual], asOf: today, horizonDays: 60
+        )
+        #expect(payments.filter { $0.dueDate == date(2026, 12, 4) }.map(\.amount).sum() == Money.dollars(4050))
+    }
+
+    @Test func skippedCardExpectationIsNotCarriedForward() {
+        let charge = RecurringExpectation(id: "bill", accountId: "card-1", payeeName: "Variable bill",
+                                         treatment: .ordinarySpending, cadence: .monthly,
+                                         nextOccurrence: date(2026, 10, 30), amount: Money.dollars(-3150),
+                                         skippedDates: [date(2026, 10, 30)])
+        let payments = CCPaymentForecaster(calendar: utc).upcomingPayments(
+            card: card(balance: Money.dollars(-1000)),
+            settings: CardStatementSettings(accountId: "card-1", statementCycleDay: 7,
+                                           paymentDueDay: 4, paymentAccountId: "cash"),
+            scheduled: RecurringExpectations.projectionSchedules(expectations: [charge], postedTransactions: [], calendar: utc),
+            asOf: date(2026, 10, 31), horizonDays: 60
+        )
+        #expect(payments.filter { $0.dueDate == date(2026, 12, 4) }.isEmpty)
+    }
+}

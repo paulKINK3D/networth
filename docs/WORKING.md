@@ -1,5 +1,32 @@
 # WORKING
 
+## Cash Outlook cushion (2026-11-01)
+
+- User rejected the history-first design. Removed history UI, collection,
+  comparisons, queries, and selection state. The previously introduced durable
+  entity stays inert for local-store/CloudKit compatibility; no data deletion.
+- Forecast graph now connects only local low points with monotone interpolation.
+  No daily zigzag, no mode switch. Flat troughs collapse to the first day; high
+  endpoints are omitted. All financial calculations still use the full series.
+- Retained Projected cushion, Protected, Try an expense with the staged currency
+  keypad, and the recurring-card-charge disappearance fix.
+- Validation: 67 focused domain tests and final generic-device Debug/Release
+  builds passed. Physical-device visual and keypad acceptance is not confirmed.
+  No simulator used.
+- Xcode's subsequent failures were a locked shared build database followed by
+  an internal build-service inconsistency. A later generic-device build passed.
+  Future agent builds must use a separate `-derivedDataPath` so they cannot
+  collide with the user's Xcode builds. Avoid concurrent builds into that path.
+- Use files and command-line tools. Do not invoke desktop UI inspection unless
+  explicitly requested: the attempted Xcode inspection prompted macOS
+  Accessibility permission and timed out; saved build logs supplied the error.
+- Paused at the user's request. Resume with device feedback, not another redesign.
+  No in-app explanatory prose. Forecast history is rejected.
+- Commit scope: the final cushion UI, curve helper/tests, recurring-charge fix,
+  inert compatibility entity, and these notes. Preserve the pre-existing
+  indentation edit, unrelated staged architecture audit, and local mockup output.
+  No push requested.
+
 ## Cumulative Spending comparison (2026-10-24)
 
 - Completed and reviewed with the user on the physical device. Spending Trends

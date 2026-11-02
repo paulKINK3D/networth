@@ -428,7 +428,16 @@ extension CCPaymentForecaster {
             pending.removeAll { $0.date <= close }
 
             for item in cardSchedules {
-                for occurrence in item.occurrences(from: dayAfter(periodStart), through: close, calendar: calendar) {
+                // Keep unresolved outgoing expectations until posted activity
+                // advances their schedule (or the user skips them). On the
+                // first simulated statement, include today and overdue dates;
+                // subsequent statements must not charge those dates again.
+                let occurrenceStart = periodStart == start
+                    && item.source == .recurringExpectation
+                    && item.amount.isNegative
+                    ? min(start, calendar.startOfDay(for: item.nextDate))
+                    : dayAfter(periodStart)
+                for occurrence in item.occurrences(from: occurrenceStart, through: close, calendar: calendar) {
                     _ = occurrence
                     if item.amount.isNegative {
                         charges += item.amount.absolute

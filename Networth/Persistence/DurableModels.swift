@@ -2472,3 +2472,17 @@ public final class DurableCardPaymentReviewDismissal {
         self.clearedAt = clearedAt
     }
 }
+
+/// Retired outlook-history entity. Retained only for compatibility with stores
+/// and private CloudKit records created by the short-lived history feature.
+/// No production reads or writes; fields intentionally remain unchanged.
+@Model
+public final class DurableCashOutlookSnapshot {
+    public var id: UUID = UUID()
+    public var day: Date = Date.now
+    public var recordedAt: Date = Date.now
+    public var scope: String = ""
+    public var payload: Data?
+
+    public init() {}
+}
