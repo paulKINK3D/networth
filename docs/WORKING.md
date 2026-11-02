@@ -1,5 +1,34 @@
 # WORKING
 
+## Generic payment contact matching (2026-11-02)
+
+- A payment to an unlinked credit card appeared as EdFinancial / Student Loans.
+  The reported bank description was `Online Transfer/Payment Debit`. The saved
+  device alias was not inspected, so the exact source of that match remains
+  unverified; the generic-description matching gap was verified in code.
+- Contact identity now rejects descriptions composed entirely of generic bank
+  operation words, including combinations such as online transfer/payment debit.
+  Specific names such as EdFinancial and Discover Card Payment remain eligible.
+  The shared evidence filter prevents both learning and looking up these generic
+  text aliases; previously saved aliases remain stored but are no longer used
+  through that evidence path. Provider entity identifiers remain eligible.
+- Directory fallback uses provider source names instead of a cached display
+  label, so a previous incorrect match cannot validate itself on reevaluation.
+  Explicitly confirmed transaction decisions remain unchanged. No schema change
+  or destructive cleanup was introduced.
+- Validation: `swift test --package-path NetworthCore --filter
+  FinancialTransactionsTests` passed all 35 tests, including nine generic
+  description cases and five specific-name cases. Generic-device Debug build
+  passed; no simulator used. Build log: `/tmp/networth-generic-payment-build.log`.
+- Pending device check: install and refresh, then reopen the unconfirmed payment
+  and verify that generic wording alone no longer supplies EdFinancial or Student
+  Loans. Device data and other provider identity evidence have not been inspected.
+- Commit scope: matching helper, coordinator fallback, focused tests, and these
+  notes. Preserve the unrelated Projections edit, staged architecture audit, and
+  local output. No push requested.
+- Suggested convention: contact matching must use source identity evidence;
+  inferred display labels must never become evidence for their own match.
+
 ## Cash Outlook cushion (2026-11-01)
 
 - User rejected the history-first design. Removed history UI, collection,

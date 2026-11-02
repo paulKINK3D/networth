@@ -2369,7 +2369,9 @@ public final class PlaidTransactionSyncCoordinator {
                 for candidate in [
                     summary.providerMerchantName,
                     summary.counterpartyName,
-                    row.displayName
+                    // A previous alias may have supplied the cached display
+                    // name. Reusing it would preserve a rejected identity.
+                    summary.fallbackDisplayName
                 ].compactMap({ $0 }) {
                     let normalized =
                         FinancialTransactionSummary.normalizedDescription(

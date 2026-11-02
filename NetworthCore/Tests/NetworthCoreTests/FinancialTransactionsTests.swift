@@ -855,6 +855,35 @@ struct FinancialTransactionsTests {
         #expect(legacy.goalId == nil)
     }
 
+    @Test(arguments: [
+        "Online Transfer/Payment Debit",
+        "Online Transfer / Payment: Debit",
+        "ONLINE TRANSFER PAYMENT CREDIT",
+        "ACH Debit", "Credit Card Payment", "Online Bill Payment",
+        "Online Transfer Payment Debit 123456789", "", "payment"
+    ])
+    func genericPaymentDescriptionsDoNotIdentifyContacts(description: String) throws {
+        let summary = try #require(PlaidTransactionDTO(
+            id: "generic-payment", accountId: "checking", date: "2026-11-02",
+            amount: 100, name: description
+        ).financialSummary(canonicalAccountId: "checking"))
+
+        #expect(!FinancialTransactionSummary.isSpecificIdentityText(description))
+        #expect(summary.payeeIdentityEvidence.isEmpty)
+        #expect(!FinancialTransactionSummary.namesReferToSamePayee(description, description))
+    }
+
+    @Test(arguments: ["EdFinancial", "Gusto Payroll", "Target", "Discover Card Payment", "Online Payment Acme"])
+    func namedPaymentDescriptionsStillIdentifyContacts(description: String) throws {
+        let summary = try #require(PlaidTransactionDTO(
+            id: "named-payment", accountId: "checking", date: "2026-11-02",
+            amount: 100, name: description
+        ).financialSummary(canonicalAccountId: "checking"))
+
+        #expect(FinancialTransactionSummary.isSpecificIdentityText(description))
+        #expect(!summary.payeeIdentityEvidence.isEmpty)
+    }
+
     @Test func canonicalContactLookupAcceptsOnlyTokenBoundaryVariants() {
         #expect(
             FinancialTransactionSummary.namesReferToSamePayee(

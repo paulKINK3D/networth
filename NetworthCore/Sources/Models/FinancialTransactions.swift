@@ -440,12 +440,16 @@ public struct FinancialTransactionSummary: Identifiable, Hashable, Codable, Send
     }
 
     public static func isSpecificIdentityText(_ value: String) -> Bool {
-        let generic: Set<String> = [
-            "", "unknown", "transaction", "payment", "transfer",
+        let generic: Set<Substring> = [
+            "unknown", "transaction", "payment", "transfer",
             "purchase", "debit", "credit", "deposit", "withdrawal",
-            "check", "ach"
+            "check", "ach", "online", "electronic", "bill", "card",
+            "automatic", "autopay"
         ]
-        return !generic.contains(value)
+        // A combination of bank-operation words is still not a payee:
+        // "Online Transfer/Payment Debit" can describe unrelated recipients.
+        let tokens = normalizedDescription(value).split(separator: " ")
+        return tokens.contains { !generic.contains($0) }
     }
 }
 
