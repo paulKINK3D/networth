@@ -3465,6 +3465,9 @@ struct PlaidTransactionReviewEditor: View {
         .onChange(of: canonicalPayees.count) {
             if editorIsVisible { prepareDirectoryIndexes() }
         }
+        .onChange(of: transaction.payeeCanonicalId) {
+            adoptMatchedCardContact()
+        }
         .onChange(of: canonicalCategories.count) {
             if editorIsVisible { prepareDirectoryIndexes() }
         }
@@ -3752,7 +3755,18 @@ struct PlaidTransactionReviewEditor: View {
         return fallback.isEmpty ? nil : fallback
     }
 
+    private func adoptMatchedCardContact() {
+        guard payeeCanonicalId == nil, !isSplit,
+              treatment == .cardPayment,
+              transaction.forecastTreatment == .cardPayment,
+              transaction.counterpartTransactionId != nil,
+              let matchedPayeeID = transaction.payeeCanonicalId else { return }
+        payeeCanonicalId = matchedPayeeID
+        displayName = transaction.displayName
+    }
+
     private func resolveDisplayedSelections() {
+        adoptMatchedCardContact()
         if payeeCanonicalId == nil, treatment != .cardPayment {
             let suggestion = displayName.trimmed
             let matches = canonicalPayees.filter {

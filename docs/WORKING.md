@@ -1,5 +1,39 @@
 # WORKING
 
+## Transaction filters and matched-payment contacts (2026-11-05)
+
+- Added a custom Date range control to the shared transaction history used by
+  Spending and account drill-downs. From/To dates are staged until Apply; Clear
+  restores all dates. Both selected calendar dates are included, using an
+  exclusive next-day upper bound. Date predicates run before pagination and
+  combine with existing search, category, and type filters.
+- Outstanding Reimbursements now includes only unpaid outgoing reimbursement
+  amounts, including eligible split lines. Incoming reimbursements no longer
+  appear as outstanding; ordinary reimbursement history still includes them.
+  Allocation and paid-back records are unchanged.
+- Fixed existing card-payment contact prefill: an unconfirmed, unsplit card
+  payment with no contact can receive its matched-account identity even when
+  unfinished decision/provenance flags block ordinary prefill. Explicit contact
+  choices, reviewed decisions, splits, and different treatments remain protected.
+  The repair fills cached identity without rewriting the unfinished decision;
+  normal confirmation remains required. The editor also adopts a matched contact
+  supplied during sync when its local contact is still blank.
+- The exact saved-state cause of the reported missing contact was not inspected.
+  User confirmed the card-payment fix worked on the physical phone (2026-11-05).
+  Date-range interactions and reimbursement-filter behavior have no explicit
+  physical-device acceptance recorded yet.
+- Validation: all 5 TransferCounterpartMatchingTests passed; generic-device Debug
+  build-for-testing and Release build passed. App regression coverage compiles
+  for date pagination/search/boundaries, outgoing-only reimbursements, and missing
+  contact repair with explicit-choice preservation. App tests were not executed;
+  no simulator was used. Logs: `/tmp/networth-card-contact-core.log`,
+  `/tmp/networth-card-contact-debug.log`, `/tmp/networth-card-contact-release.log`.
+- Commit scope: shared modal, transaction list/fetcher, review editor, coordinator,
+  app tests, and these notes. Preserve the unrelated Projections edit, staged
+  architecture audit, and local output. No push requested.
+- Suggested convention: matched-payment UI must observe identity updates after
+  opening, while preserving any contact already selected in the editor.
+
 ## Generic payment contact matching (2026-11-02)
 
 - A payment to an unlinked credit card appeared as EdFinancial / Student Loans.

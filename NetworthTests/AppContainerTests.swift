@@ -176,6 +176,81 @@ struct AppContainerTests {
         #expect(durable.schema?.entities.contains { $0.name == "CachedCardPaymentReview" } == false)
     }
 
+    @Test func matchedCardPaymentRepairsMissingDraftContactWithoutOverwritingChoices() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        for (id, name, type) in [
+            ("cash", "Checking", FinancialAccountType.checking),
+            ("card", "Card", FinancialAccountType.creditCard)
+        ] {
+            context.insert(CachedFinancialAccount(
+                canonicalAccountId: id, externalId: id, itemId: "item",
+                source: .plaid, institutionName: "Bank", name: name,
+                officialName: nil, mask: nil, type: type, subtype: nil,
+                currentBalanceMilliunits: 0, availableBalanceMilliunits: nil,
+                creditLimitMilliunits: nil, isoCurrencyCode: "USD"
+            ))
+        }
+        var rows: [CachedFinancialTransaction] = []
+        for (id, account, amount) in [("debit", "cash", 800.0), ("credit", "card", -800.0)] {
+            let summary = try #require(PlaidTransactionDTO(
+                id: id, accountId: account, date: "2026-11-04",
+                amount: Decimal(amount), name: "AUTOMATIC PAYMENT",
+                categoryPrimary: "LOAN_PAYMENTS",
+                categoryDetailed: "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"
+            ).financialSummary(canonicalAccountId: account))
+            let row = CachedFinancialTransaction(
+                summary: summary,
+                classification: TransactionClassification(
+                    displayName: summary.rawDescription, categoryName: nil,
+                    treatment: .cardPayment, confidence: .high,
+                    provenance: .user, requiresReview: true
+                )
+            )
+            context.insert(row)
+            rows.append(row)
+        }
+        let credit = rows[1]
+        let decision = DurableCanonicalTransactionDecision(
+            transactionExternalId: credit.externalId, amountSign: 1,
+            forecastTreatment: .cardPayment, reviewed: false, provenance: .user
+        )
+        context.insert(decision)
+        try context.save()
+        let coordinator = PlaidTransactionSyncCoordinator(
+            client: RecordedPlaidClient(),
+            inferenceProvider: RecordedTransactionInferenceProvider(), mainContext: context
+        )
+        coordinator.reapplyCanonicalStateAfterReferenceImport()
+        #expect(credit.counterpartTransactionId == rows[0].id)
+        #expect(credit.payeeCanonicalId != nil)
+        #expect(credit.displayName == "Payment · Checking")
+        #expect(credit.requiresReview)
+        #expect(!credit.requiresNameReview)
+        #expect(decision.payeeCanonicalId == nil)
+        // Reapplying the unfinished decision must not erase the repair.
+        coordinator.reapplyCanonicalStateAfterReferenceImport()
+        #expect(credit.payeeCanonicalId != nil)
+
+        decision.payeeCanonicalId = "chosen-contact"
+        decision.payeeNameSnapshot = "My chosen contact"
+        coordinator.reapplyCanonicalStateAfterReferenceImport()
+        #expect(credit.payeeCanonicalId == "chosen-contact")
+        #expect(credit.displayName == "My chosen contact")
+
+        decision.payeeCanonicalId = nil
+        decision.forecastTreatment = .excluded
+        coordinator.reapplyCanonicalStateAfterReferenceImport()
+        #expect(credit.payeeCanonicalId == nil)
+        #expect(credit.forecastTreatment == .excluded)
+
+        decision.forecastTreatment = .cardPayment
+        decision.reviewed = true
+        coordinator.reapplyCanonicalStateAfterReferenceImport()
+        #expect(credit.payeeCanonicalId == nil)
+        #expect(!credit.requiresReview)
+    }
+
     @Test func settlementPickReplacesPreviouslyConfirmedWrongCard() throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let context = modelContainer.mainContext
@@ -1760,6 +1835,117 @@ struct AppContainerTests {
         #expect(Set(first.map(\.id)).isDisjoint(with: Set(second.map(\.id))))
         #expect(first.first?.externalId == "page-119")
         #expect(second.first?.externalId == "page-69")
+
+        // Filter before paging, with an exclusive next-day upper bound.
+        let range = DateInterval(
+            start: Date(timeIntervalSinceReferenceDate: 20 * 86_400),
+            end: Date(timeIntervalSinceReferenceDate: 81 * 86_400)
+        )
+        for accountID in [nil, "paged-account"] as [String?] {
+            for query in ["", "Transaction"] {
+                let rangeFirst = try FinancialTransactionPageFetcher.fetch(
+                    accountID: accountID, query: query, offset: 0, limit: 50,
+                    dateRange: range, context: context
+                )
+                let rangeSecond = try FinancialTransactionPageFetcher.fetch(
+                    accountID: accountID, query: query, offset: 50, limit: 50,
+                    dateRange: range, context: context
+                )
+                #expect(rangeFirst.count == 50)
+                #expect(rangeSecond.count == 11)
+                #expect(rangeFirst.first?.externalId == "page-80")
+                #expect(rangeSecond.last?.externalId == "page-20")
+                #expect(Set(rangeFirst.map(\.id)).isDisjoint(with: Set(rangeSecond.map(\.id))))
+            }
+        }
+        let sameDay = try FinancialTransactionPageFetcher.fetch(
+            accountID: nil, offset: 0,
+            dateRange: DateInterval(
+                start: Date(timeIntervalSinceReferenceDate: 20 * 86_400),
+                end: Date(timeIntervalSinceReferenceDate: 21 * 86_400)
+            ), context: context
+        )
+        #expect(sameDay.map(\.externalId) == ["page-20"])
+
+        let byType = try FinancialTransactionPageFetcher.fetch(
+            accountID: nil, query: "Transaction", offset: 0,
+            typeFilter: FinancialTransactionTypeFilter(
+                treatment: .ordinarySpending, name: "Spending"
+            ), dateRange: range, context: context
+        )
+        #expect(byType.count == 61)
+        let noMatches = try FinancialTransactionPageFetcher.fetch(
+            accountID: "paged-account", query: "Other", offset: 0,
+            dateRange: range, context: context
+        )
+        #expect(noMatches.isEmpty)
+    }
+
+    @Test func outstandingReimbursementsIncludeOnlyUnpaidOutgoingAmounts() throws {
+        func transaction(_ id: String, amount: Money,
+                         splits: [SubTransactionSummary] = []) throws -> CachedFinancialTransaction {
+            let summary = FinancialTransactionSummary(
+                id: id, externalId: id, source: .plaid, accountId: "checking",
+                postedDate: .now, authorizedDate: nil, amount: amount,
+                pending: false, pendingTransactionId: nil,
+                rawDescription: id, originalDescription: nil,
+                providerMerchantName: nil, merchantEntityId: nil,
+                counterpartyName: nil, counterpartyType: nil,
+                counterpartyEntityId: nil, counterpartyConfidence: nil,
+                paymentChannel: nil, providerCategoryPrimary: nil,
+                providerCategoryDetailed: nil, providerCategoryConfidence: nil,
+                transactionCode: nil
+            )
+            return CachedFinancialTransaction(
+                summary: summary,
+                classification: TransactionClassification(
+                    displayName: id, categoryName: nil, treatment: .reimbursement,
+                    confidence: .high, provenance: .user, requiresReview: false
+                ),
+                subtransactionsData: splits.isEmpty ? nil : try JSONEncoder().encode(splits),
+                requiresNameReview: false
+            )
+        }
+        func leg(_ id: String, amount: Money,
+                 treatment: ForecastTreatment = .reimbursement,
+                 deleted: Bool = false) -> SubTransactionSummary {
+            SubTransactionSummary(
+                id: id, amount: amount, categoryId: nil, categoryName: nil,
+                forecastTreatment: treatment, payeeName: nil, memo: nil, deleted: deleted
+            )
+        }
+        let outstanding = FinancialTransactionTypeFilter(
+            treatment: .reimbursement, outstandingOnly: true, name: "Outstanding"
+        )
+        let all = FinancialTransactionTypeFilter(treatment: .reimbursement, name: "All")
+        let incoming = try transaction("incoming", amount: .dollars(100))
+        let outgoing = try transaction("outgoing", amount: .dollars(-100))
+        let zero = try transaction("zero", amount: .zero)
+        let payroll = try transaction("payroll", amount: .dollars(1_100), splits: [
+            leg("income", amount: .dollars(1_000), treatment: .income),
+            leg("received", amount: .dollars(100))
+        ])
+        let mixed = try transaction("mixed", amount: .dollars(-150), splits: [
+            leg("expense", amount: .dollars(-100)),
+            leg("received", amount: .dollars(50)),
+            leg("ordinary", amount: .dollars(-100), treatment: .ordinarySpending),
+            leg("deleted", amount: .dollars(-25), deleted: true)
+        ])
+
+        #expect(outstanding.matchingAmountMilliunits(in: incoming) == nil)
+        #expect(outstanding.matchingAmountMilliunits(in: payroll) == nil)
+        #expect(outstanding.matchingAmountMilliunits(in: zero) == nil)
+        #expect(outstanding.matchingAmountMilliunits(in: outgoing) == Money.dollars(-100).milliunits)
+        #expect(outstanding.matchingAmountMilliunits(in: mixed) == Money.dollars(-100).milliunits)
+        for row in [outgoing, mixed] {
+            #expect(outstanding.matchingAmountMilliunits(
+                in: row, paidBackTransactionIds: [row.id]
+            ) == nil)
+        }
+        // Regular reimbursement history still includes received money.
+        #expect(all.matchingAmountMilliunits(in: incoming) == Money.dollars(100).milliunits)
+        #expect(all.matchingAmountMilliunits(in: payroll) == Money.dollars(100).milliunits)
+        #expect(all.matchingAmountMilliunits(in: mixed) == Money.dollars(-50).milliunits)
     }
 
     @Test func categoryHistoryIncludesReviewedWholeAndSplitTransactions() throws {

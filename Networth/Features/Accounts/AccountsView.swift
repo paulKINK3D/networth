@@ -1627,7 +1627,7 @@ struct FinancialTransactionCategoryFilter: Equatable {
 }
 
 /// A transaction-type filter for history lists. `outstandingOnly` pairs only
-/// with `.reimbursement` and hides transactions already marked paid back.
+/// with `.reimbursement` and includes only unpaid outgoing reimbursement amounts.
 struct FinancialTransactionTypeFilter: Equatable {
     let treatment: ForecastTreatment
     let outstandingOnly: Bool
@@ -1655,11 +1655,13 @@ struct FinancialTransactionTypeFilter: Equatable {
         if transaction.isSplit {
             let matchingLegs = transaction.subtransactions.filter {
                 !$0.deleted && $0.forecastTreatment == treatment
+                    && (!outstandingOnly || $0.amount.milliunits < 0)
             }
             guard !matchingLegs.isEmpty else { return nil }
             return matchingLegs.map(\.amount.milliunits).reduce(0, +)
         }
         guard transaction.forecastTreatment == treatment else { return nil }
+        guard !outstandingOnly || transaction.amountMilliunits < 0 else { return nil }
         return transaction.amountMilliunits
     }
 }
@@ -1681,6 +1683,8 @@ struct FinancialAccountTransactionHistoryView: View {
     @State private var categoryFilter: FinancialTransactionCategoryFilter?
     @State private var typeFilter: FinancialTransactionTypeFilter?
     @State private var showingCategoryFilter = false
+    @State private var dateRange: DateInterval?
+    @State private var showingDateRange = false
     @State private var isSelecting = false
     @State private var selectedIds = Set<String>()
     @Query private var paidBackMarks: [DurableReimbursementPaidBack]
@@ -1701,14 +1705,29 @@ struct FinancialAccountTransactionHistoryView: View {
 
     var body: some View {
         List(selection: $selectedIds) {
+            Button {
+                showingDateRange = true
+            } label: {
+                HStack {
+                    Text("Date range")
+                    Spacer()
+                    Text(dateRangeLabel)
+                        .foregroundStyle(NwAppColors.textSecondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .disabled(isSelecting)
+
             if transactions.isEmpty, !isLoading, loadError == nil {
                 NwEmptyState(
-                    title: submittedQuery.isEmpty
+                    title: dateRange != nil ? "No matching transactions" : submittedQuery.isEmpty
                         ? (activeFilterName == nil
                             ? "No transactions"
                             : "No matching transactions")
                         : "No matches",
-                    message: submittedQuery.isEmpty
+                    message: dateRange != nil
+                        ? "No posted transactions match this date range and your filters."
+                        : submittedQuery.isEmpty
                         ? (activeFilterName.map {
                             "No posted transactions use \($0)."
                         } ?? "Posted transactions will appear here.")
@@ -1899,6 +1918,20 @@ struct FinancialAccountTransactionHistoryView: View {
                 }
             )
         }
+        .sheet(isPresented: $showingDateRange) {
+            NwDateRangeSheet(selection: dateRange) { selection in
+                dateRange = selection
+                restartLoad()
+            }
+        }
+    }
+
+    private var dateRangeLabel: String {
+        guard let dateRange else { return "All dates" }
+        let lastDay = Calendar.current.date(byAdding: .day, value: -1,
+                                            to: dateRange.end) ?? dateRange.start
+        return dateRange.start.formatted(date: .abbreviated, time: .omitted)
+            + " – " + lastDay.formatted(date: .abbreviated, time: .omitted)
     }
 
     /// The narrowest active filter names the screen and its empty state.
@@ -2036,6 +2069,7 @@ struct FinancialAccountTransactionHistoryView: View {
                 categoryFilter: categoryFilter,
                 typeFilter: typeFilter,
                 paidBackTransactionIds: paidBackIds,
+                dateRange: dateRange,
                 context: modelContext
             )
             if categoryFilter == nil, typeFilter == nil {
@@ -2259,6 +2293,7 @@ enum FinancialTransactionPageFetcher {
         categoryFilter: FinancialTransactionCategoryFilter? = nil,
         typeFilter: FinancialTransactionTypeFilter? = nil,
         paidBackTransactionIds: Set<String> = [],
+        dateRange: DateInterval? = nil,
         context: ModelContext
     ) throws -> [CachedFinancialTransaction] {
         let sort = [
@@ -2266,6 +2301,9 @@ enum FinancialTransactionPageFetcher {
             SortDescriptor(\CachedFinancialTransaction.id)
         ]
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasDateRange = dateRange != nil
+        let start = dateRange?.start ?? .distantPast
+        let end = dateRange?.end ?? .distantFuture
         let predicate: Predicate<CachedFinancialTransaction>
         switch (accountID, trimmed.isEmpty) {
         case (let id?, true):
@@ -2273,12 +2311,14 @@ enum FinancialTransactionPageFetcher {
                 $0.canonicalAccountId == id
                     && $0.deleted == false
                     && $0.pending == false
+                    && (!hasDateRange || ($0.postedDate >= start && $0.postedDate < end))
             }
         case (let id?, false):
             predicate = #Predicate {
                 $0.canonicalAccountId == id
                     && $0.deleted == false
                     && $0.pending == false
+                    && (!hasDateRange || ($0.postedDate >= start && $0.postedDate < end))
                     && ($0.displayName.localizedStandardContains(trimmed)
                         || $0.rawDescription.localizedStandardContains(trimmed)
                         || $0.providerMerchantName?
@@ -2287,11 +2327,13 @@ enum FinancialTransactionPageFetcher {
         case (nil, true):
             predicate = #Predicate {
                 $0.deleted == false && $0.pending == false
+                    && (!hasDateRange || ($0.postedDate >= start && $0.postedDate < end))
             }
         case (nil, false):
             predicate = #Predicate {
                 $0.deleted == false
                     && $0.pending == false
+                    && (!hasDateRange || ($0.postedDate >= start && $0.postedDate < end))
                     && ($0.displayName.localizedStandardContains(trimmed)
                         || $0.rawDescription.localizedStandardContains(trimmed)
                         || $0.providerMerchantName?
@@ -2302,7 +2344,7 @@ enum FinancialTransactionPageFetcher {
             predicate: predicate,
             sortBy: sort
         )
-        // Any active filter switches to a single in-memory pass: split legs
+        // Category/type filters switch to a single in-memory pass: split legs
         // and paid-back marks cannot be expressed in a #Predicate.
         if categoryFilter == nil, typeFilter == nil {
             descriptor.fetchLimit = limit

@@ -1,5 +1,54 @@
 import SwiftUI
 
+/// Stages inclusive calendar dates and commits a half-open interval on Apply.
+struct NwDateRangeSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var from: Date
+    @State private var to: Date
+    let onApply: (DateInterval?) -> Void
+
+    init(selection: DateInterval?, onApply: @escaping (DateInterval?) -> Void) {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        _from = State(initialValue: selection?.start
+            ?? calendar.dateInterval(of: .month, for: today)?.start ?? today)
+        _to = State(initialValue: selection.map {
+            calendar.date(byAdding: .day, value: -1, to: $0.end) ?? $0.start
+        } ?? today)
+        self.onApply = onApply
+    }
+
+    var body: some View {
+        NwModalLayout(title: "Date range", onClose: { dismiss() }) {
+            NwCard {
+                VStack(spacing: NwSpacing.md) {
+                    DatePicker("From", selection: $from, in: ...to,
+                               displayedComponents: .date)
+                    Divider()
+                    DatePicker("To", selection: $to, in: from...,
+                               displayedComponents: .date)
+                }
+                .datePickerStyle(.compact)
+            }
+            Button("Apply") {
+                let calendar = Calendar.current
+                let start = calendar.startOfDay(for: from)
+                guard let end = calendar.date(byAdding: .day, value: 1,
+                                              to: calendar.startOfDay(for: to)) else { return }
+                onApply(DateInterval(start: start, end: end))
+                dismiss()
+            }
+            .buttonStyle(NwPrimaryButtonStyle())
+            Button("Clear") {
+                onApply(nil)
+                dismiss()
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
 /// Standard modal-sheet scaffold: header bar with close/confirm icons + scrollable content.
 public struct NwModalLayout<Content: View>: View {
     public let title: String

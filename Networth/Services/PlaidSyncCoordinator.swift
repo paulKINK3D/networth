@@ -2679,13 +2679,27 @@ public final class PlaidTransactionSyncCoordinator {
         isOutflow: Bool,
         context: CounterpartMatchContext
     ) {
-        guard row.requiresReview,
-              row.classificationProvenanceRaw
-                  != ClassificationProvenance.user.rawValue,
-              row.classificationProvenanceRaw
-                  != ClassificationProvenance.confirmedRule.rawValue,
-              context.decisionByID[row.externalId] == nil
-        else { return }
+        guard row.requiresReview else { return }
+        let decision = context.decisionByID[row.externalId]
+        // An unfinished card-payment decision can retain user provenance
+        // without a contact. Repair only that missing identity; never replace
+        // a chosen contact, split, reviewed decision, or different treatment.
+        let repairsMissingCardContact = kind == .cardPayment
+            && row.forecastTreatment == .cardPayment
+            && row.payeeCanonicalId == nil
+            && !row.isSplit
+            && (decision == nil || (
+                decision?.reviewed == false
+                && decision?.payeeCanonicalId == nil
+                && decision?.forecastTreatmentRaw == TransactionType.cardPayment.rawValue
+                && decision?.subtransactionsData == nil
+            ))
+        let allowsPrefill = row.classificationProvenanceRaw
+                != ClassificationProvenance.user.rawValue
+            && row.classificationProvenanceRaw
+                != ClassificationProvenance.confirmedRule.rawValue
+            && decision == nil
+        guard allowsPrefill || repairsMissingCardContact else { return }
         guard let twinAccountName =
             context.accountNames[twin.canonicalAccountId]
         else { return }
@@ -2705,8 +2719,9 @@ public final class PlaidTransactionSyncCoordinator {
         ) else { return }
         row.payeeCanonicalId = payee.canonicalId
         row.requiresNameReview = false
-        row.forecastTreatmentRaw = identity.treatment.rawValue
         row.displayName = payee.name
+        if !allowsPrefill { return }
+        row.forecastTreatmentRaw = identity.treatment.rawValue
         row.categoryCanonicalId = nil
         row.categoryName = nil
         row.goalId = nil
