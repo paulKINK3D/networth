@@ -461,6 +461,7 @@ public final class CachedPlaidHolding {
 /// remains stable while provider-specific IDs are stored separately.
 @Model
 public final class CachedFinancialAccount {
+    public var connectionHeld: Bool = false
     @Attribute(.unique) public var canonicalAccountId: String
     public var externalId: String
     public var itemId: String?
@@ -574,6 +575,11 @@ public final class CachedFinancialAccount {
 
 @Model
 public final class CachedFinancialTransaction {
+    /// Held rows use deleted=true to stay outside all existing financial readers.
+    /// Provider removals clear connectionHeld, so review cannot resurrect them.
+    public var connectionHeld: Bool = false
+    public var providerPostedDay: String? = nil
+    public var providerRemoved: Bool = false
     #Index<CachedFinancialTransaction>(
         [\.canonicalAccountId, \.deleted, \.pending, \.postedDate],
         [\.postedDate]

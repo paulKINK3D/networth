@@ -1368,6 +1368,11 @@ public final class DurableProjectionCashAccountOverride {
 /// source-neutral account ID used by settings and projections.
 @Model
 public final class DurableCanonicalAccountBinding {
+    /// Empty is a legacy binding awaiting duplicate detection. Decisions are
+    /// durable so a cache rebuild cannot silently include a held account.
+    public var connectionReviewStateRaw: String = ""
+    public var replacementPlaidAccountId: String? = nil
+    public var currencyCode: String? = nil
     public var id: UUID = UUID()
     public var canonicalAccountId: String = ""
     public var plaidAccountId: String = ""
@@ -1412,6 +1417,33 @@ public final class DurableCanonicalAccountBinding {
     public var accountType: FinancialAccountType {
         get { FinancialAccountType(rawValue: accountTypeRaw) ?? .other }
         set { accountTypeRaw = newValue.rawValue }
+    }
+}
+
+/// Identity and retained history explicitly preserved by a connection replacement.
+/// This is an irreplaceable user-approved archive, not the live provider cache.
+@Model
+public final class DurableConnectionTransactionIdentity {
+    public var id: UUID = UUID()
+    public var providerExternalId: String = ""
+    public var canonicalTransactionId: String = ""
+    public var canonicalExternalId: String = ""
+    public var canonicalAccountId: String = ""
+    public var retainedSummaryData: Data = Data()
+    public var retainedReviewData: Data? = nil
+    public var archiveVersion: Int = 1
+    public var providerPostedDay: String? = nil
+    public var removed: Bool = false
+    public var updatedAt: Date = Date.now
+
+    public init(providerExternalId: String, summary: FinancialTransactionSummary,
+                providerPostedDay: String?) throws {
+        self.providerExternalId = providerExternalId
+        canonicalTransactionId = summary.id
+        canonicalExternalId = summary.externalId
+        canonicalAccountId = summary.accountId
+        retainedSummaryData = try JSONEncoder().encode(summary)
+        self.providerPostedDay = providerPostedDay
     }
 }
 

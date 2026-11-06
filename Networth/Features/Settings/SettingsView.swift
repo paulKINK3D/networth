@@ -1488,8 +1488,12 @@ private struct PlaidBackendTokenSheet: View {
 
 private struct PlaidBankingConnectionSheet: View {
     @SwiftUI.Environment(\.dismiss) private var dismiss
+    @SwiftUI.Environment(\.modelContext) private var modelContext
     @SwiftUI.Environment(AppContainerController.self) private var container
     @Query(sort: \CachedPlaidItem.institutionName) private var items: [CachedPlaidItem]
+    @Query(sort: \CachedFinancialAccount.name) private var accounts: [CachedFinancialAccount]
+    @Query private var nicknames: [DurableAccountNickname]
+    @Query private var connectionBindings: [DurableCanonicalAccountBinding]
 
     @State private var backendToken = ""
     @State private var isWorking = false
@@ -1525,16 +1529,55 @@ private struct PlaidBankingConnectionSheet: View {
                 }
 
                 if !connectedItems.isEmpty {
+                    if accounts.contains(where: \.connectionHeld) {
+                        Section("Review accounts") {
+                            ForEach(accounts.filter(\.connectionHeld)) { account in
+                                NavigationLink {
+                                    BankingAccountReviewView(account: account)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: NwSpacing.xs) {
+                                        Text(accountLabel(account))
+                                        Text("Excluded from totals")
+                                            .font(NwTypography.footnote)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Section {
                         ForEach(connectedItems) { item in
-                            HStack {
-                                Text(item.institutionName)
-                                Spacer()
-                                NwStatusBadge(
-                                    item.status == "healthy" ? "Connected" : "Attention",
-                                    style: item.status == "healthy" ? .positive : .caution,
-                                    icon: item.status == "healthy" ? .success : .warning
-                                )
+                            DisclosureGroup {
+                                let linkedAccounts = accounts(for: item)
+                                if linkedAccounts.isEmpty {
+                                    Text("No synced accounts")
+                                        .foregroundStyle(.secondary)
+                                }
+                                ForEach(linkedAccounts) { account in
+                                    Text(accountLabel(account))
+                                        .foregroundStyle(NwAppColors.textPrimary)
+                                }
+                                Button("Update accounts") {
+                                    beginUpgrade(item)
+                                }
+                                .disabled(isWorking || isReplaced(item))
+                            } label: {
+                                VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                                    HStack {
+                                        Text(item.institutionName)
+                                            .foregroundStyle(NwAppColors.textPrimary)
+                                        Spacer()
+                                        NwStatusBadge(
+                                            isReplaced(item) ? "Replaced" : item.status == "healthy" ? "Connected" : "Attention",
+                                            style: item.status == "healthy" ? .positive : .caution,
+                                            icon: item.status == "healthy" ? .success : .warning
+                                        )
+                                    }
+                                    Text(accounts(for: item).map(accountLabel).joined(separator: " · "))
+                                        .font(NwTypography.footnote)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
                             }
                             .swipeActions(allowsFullSwipe: false) {
                                 Button(role: .destructive) {
@@ -1544,6 +1587,7 @@ private struct PlaidBankingConnectionSheet: View {
                                     Label("Remove", systemImage: NwIcon.delete.rawValue)
                                 }
                                 .tint(NwAppColors.liability)
+                                .disabled(isWorking)
                             }
                         }
                     } header: {
@@ -1614,6 +1658,24 @@ private struct PlaidBankingConnectionSheet: View {
                 }
             }
             .interactiveDismissDisabled(isWorking)
+            .task {
+                if case .syncing = container.plaidTransactionSyncCoordinator.phase { return }
+                do {
+                    let service = BankingConnectionReplacementService(context: modelContext)
+                    try service.reconcileReplacements()
+                    try service.restoreRetainedHistory()
+                    try service.detectAndHoldAccounts()
+                    container.plaidTransactionSyncCoordinator.reapplyCanonicalStateAfterReferenceImport()
+                    if !modelContext.safeSave(source: "connections.detectDuplicates") {
+                        modelContext.rollback()
+                    } else {
+                        container.recordDailySnapshot()
+                    }
+                } catch {
+                    modelContext.rollback()
+                    errorMessage = error.localizedDescription
+                }
+            }
             .alert("Remove Connection?", isPresented: $showingRemoveConfirm, presenting: itemToRemove) { item in
                 Button("Cancel", role: .cancel) {}
                 Button("Remove", role: .destructive) {
@@ -1640,6 +1702,22 @@ private struct PlaidBankingConnectionSheet: View {
         }
     }
 
+    private func accounts(for item: CachedPlaidItem) -> [CachedFinancialAccount] {
+        accounts.filter { (!$0.deleted || $0.connectionHeld) && $0.itemId == item.id }
+    }
+
+    private func isReplaced(_ item: CachedPlaidItem) -> Bool {
+        let bindings = connectionBindings.filter { $0.itemId == item.id }
+        return !item.products.contains("investments") && !bindings.isEmpty
+            && bindings.allSatisfy { $0.connectionReviewStateRaw == "superseded" }
+    }
+
+    private func accountLabel(_ account: CachedFinancialAccount) -> String {
+        let name = AccountDisplayNameResolver(nicknames: nicknames).name(for: account)
+        guard let mask = account.mask, !mask.isEmpty else { return name }
+        return "\(name) •••• \(mask)"
+    }
+
     private func beginNewConnection() {
         errorMessage = nil
         isWorking = true
@@ -1659,7 +1737,6 @@ private struct PlaidBankingConnectionSheet: View {
                                     publicToken: publicToken
                                 )
                                 isWorking = false
-                                dismiss()
                             } catch {
                                 isWorking = false
                                 errorMessage = message(for: error)
@@ -1698,7 +1775,6 @@ private struct PlaidBankingConnectionSheet: View {
                             do {
                                 try await container.completePlaidTransactionUpgrade(itemId: item.id)
                                 isWorking = false
-                                dismiss()
                             } catch {
                                 isWorking = false
                                 errorMessage = message(for: error)
@@ -1723,6 +1799,184 @@ private struct PlaidBankingConnectionSheet: View {
     private func message(for error: Error) -> String {
         (error as? LocalizedError)?.errorDescription
             ?? "The banking service could not complete the request."
+    }
+}
+
+private struct BankingAccountReviewView: View {
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppContainerController.self) private var container
+    let account: CachedFinancialAccount
+    @State private var candidates: [CachedFinancialAccount] = []
+    @State private var errorMessage: String?
+    @State private var confirmingSeparate = false
+
+    var body: some View {
+        List {
+            Section {
+                LabeledContent(account.name, value: account.mask.map { "•••• \($0)" } ?? "")
+                Text("Excluded from totals").foregroundStyle(.secondary)
+            }
+            Section("Replace an existing account's connection") {
+                ForEach(candidates) { existing in
+                    NavigationLink {
+                        BankingReplacementPreviewView(incoming: account, existing: existing)
+                    } label: {
+                        Text(existing.name + (existing.mask.map { " •••• \($0)" } ?? ""))
+                    }
+                }
+            }
+            Section {
+                Button("Keep as separate account") { confirmingSeparate = true }
+                    .disabled(syncing)
+            }
+            if let errorMessage { Text(errorMessage).foregroundStyle(NwAppColors.liability) }
+        }
+        .navigationTitle("Review account")
+        .navigationBarTitleDisplayMode(.inline)
+        .nwScreenBackground()
+        .task {
+            do { candidates = try BankingConnectionReplacementService(context: context).candidates(for: account) }
+            catch { errorMessage = error.localizedDescription }
+        }
+        .sheet(isPresented: $confirmingSeparate) {
+            NwModalLayout(title: "Separate account", onClose: { confirmingSeparate = false }) {
+                Text(account.name).font(NwTypography.headline)
+                Button("Include in totals") {
+                    guard !syncing else { return }
+                    do {
+                        try BankingConnectionReplacementService(context: context).keepSeparate(account)
+                        confirmingSeparate = false
+                        container.plaidTransactionSyncCoordinator.reapplyCanonicalStateAfterReferenceImport()
+                        _ = context.safeSave(source: "connections.refreshSeparate")
+                        container.recordDailySnapshot()
+                        dismiss()
+                    } catch { errorMessage = error.localizedDescription; confirmingSeparate = false }
+                }
+                .buttonStyle(NwPrimaryButtonStyle())
+                .disabled(syncing)
+            }
+            .presentationDetents([.medium])
+        }
+    }
+
+    private var syncing: Bool {
+        if case .syncing = container.plaidTransactionSyncCoordinator.phase { return true }
+        return false
+    }
+}
+
+private struct BankingReplacementPreviewView: View {
+    @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppContainerController.self) private var container
+    let incoming: CachedFinancialAccount
+    let existing: CachedFinancialAccount
+    @State private var preview: BankingConnectionReplacementService.Preview?
+    @State private var choices: [String: String] = [:]
+    @State private var errorMessage: String?
+    @State private var confirming = false
+    @State private var completed = false
+
+    var body: some View {
+        List {
+            if completed {
+                Text("Connection replaced").foregroundStyle(NwAppColors.favorableText)
+            } else if let preview {
+                Section(existing.name) {
+                    LabeledContent("Existing history", value: "\(preview.oldRows.count)")
+                    LabeledContent("Matched transactions", value: "\(preview.plan.matches.count)")
+                    LabeledContent("Older history retained", value: "\(preview.plan.retainedHistoryIDs.count)")
+                    LabeledContent("Matches to review", value: "\(preview.needsReview.count)")
+                }
+                if !preview.needsReview.isEmpty {
+                    Section("Match transactions") {
+                        ForEach(preview.needsReview) { row in
+                            VStack(alignment: .leading, spacing: NwSpacing.sm) {
+                                Text(transactionLabel(row))
+                                Picker("Existing transaction", selection: Binding(
+                                    get: { choices[row.id] ?? "" },
+                                    set: { choices[row.id] = $0 }
+                                )) {
+                                    Text("Select match").tag("")
+                                    Text("New activity").tag("new")
+                                    ForEach(reviewCandidates(for: row, in: preview)) { old in
+                                        Text(transactionLabel(old)).tag(old.id)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Section {
+                    Button("Replace connection") { confirming = true }
+                        .disabled(!canApply(preview) || syncing)
+                }
+            }
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(NwAppColors.liability)
+                Button("Reload review") { load() }
+            }
+        }
+        .navigationTitle("Replace connection")
+        .navigationBarTitleDisplayMode(.inline)
+        .nwScreenBackground()
+        .task { load() }
+        .sheet(isPresented: $confirming) {
+            NwModalLayout(title: "Replace connection", onClose: { confirming = false }) {
+                Text(existing.name).font(NwTypography.headline)
+                LabeledContent("History and saved work", value: "Preserved")
+                Button("Apply") { apply() }
+                    .buttonStyle(NwPrimaryButtonStyle())
+                    .disabled(syncing)
+            }
+            .presentationDetents([.medium])
+        }
+    }
+
+    private var syncing: Bool {
+        if case .syncing = container.plaidTransactionSyncCoordinator.phase { return true }
+        return false
+    }
+
+    private func load() {
+        guard !syncing else { errorMessage = "Wait for sync to finish, then reload the review."; return }
+        do {
+            preview = try BankingConnectionReplacementService(context: context).preview(incoming: incoming, existing: existing)
+            choices = [:]
+            errorMessage = nil
+        } catch { preview = nil; errorMessage = error.localizedDescription }
+    }
+
+    private func canApply(_ preview: BankingConnectionReplacementService.Preview) -> Bool {
+        let selections = preview.needsReview.compactMap { choices[$0.id] }.filter { !$0.isEmpty }
+        let matched = selections.filter { $0 != "new" }
+        return selections.count == preview.needsReview.count && Set(matched).count == matched.count
+    }
+
+    private func reviewCandidates(for row: CachedFinancialTransaction,
+                                  in preview: BankingConnectionReplacementService.Preview) -> [CachedFinancialTransaction] {
+        let matched = Set(preview.plan.matches.map(\.existingID))
+        return preview.oldRows.filter { $0.amountMilliunits == row.amountMilliunits && !matched.contains($0.id) }
+            .sorted { $0.postedDate > $1.postedDate }
+    }
+
+    private func transactionLabel(_ row: CachedFinancialTransaction) -> String {
+        let day = BankingConnectionReplacementService(context: context).day(row)
+        let category = row.categoryName.map { " · \($0)" } ?? (row.isSplit ? " · Split" : "")
+        return "\(day) · \(row.displayName) · \(CurrencyFormatter.currency(Money(milliunits: row.amountMilliunits)))\(category)"
+    }
+
+    private func apply() {
+        guard let preview, !syncing else { return }
+        do {
+            try BankingConnectionReplacementService(context: context).apply(preview, selections: choices)
+            container.plaidTransactionSyncCoordinator.reapplyCanonicalStateAfterReferenceImport()
+            _ = context.safeSave(source: "connections.refreshReplacement")
+            container.recordDailySnapshot()
+            confirming = false
+            completed = true
+        } catch { errorMessage = error.localizedDescription; confirming = false }
     }
 }
 

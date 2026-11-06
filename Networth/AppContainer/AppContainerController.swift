@@ -568,6 +568,7 @@ public final class AppContainerController {
 
     public func removePlaidItem(id: String) async throws {
         let context = modelContainer.mainContext
+        try BankingConnectionReplacementService(context: context).validateRemoval(itemID: id)
         let settings = try? context.fetch(FetchDescriptor<DurableUserSettings>()).first
         let items = (try? context.fetch(FetchDescriptor<CachedPlaidItem>())) ?? []
         let targetIsTransactions = items.first(where: { $0.id == id })?
@@ -1124,7 +1125,9 @@ public final class AppContainerController {
             .filter { transactionIDs.contains($0.plaidTransactionId) }
             .forEach(context.delete)
         ((try? context.fetch(FetchDescriptor<DurableCanonicalAccountBinding>())) ?? [])
-            .filter { $0.itemId == id }
+            // Retain replacement identity tombstones: a future reconnection
+            // must still be able to follow an older connection's replacement.
+            .filter { $0.itemId == id && $0.connectionReviewStateRaw != "superseded" }
             .forEach(context.delete)
         ((try? context.fetch(FetchDescriptor<DurablePlaidAccountTreatment>())) ?? [])
             .filter { plaidAccountIDs.contains($0.plaidAccountId) }

@@ -251,6 +251,172 @@ struct AppContainerTests {
         #expect(!credit.requiresReview)
     }
 
+    @Test func connectionReplacementHoldsDuplicatesAndPreservesHistoryIdentity() throws {
+        let container = try ModelContainerFactory.makeContainer(inMemory: true)
+        let context = container.mainContext
+        func account(_ id: String, item: String) -> CachedFinancialAccount {
+            let row = CachedFinancialAccount(canonicalAccountId: id, externalId: id,
+                itemId: item, source: .plaid, institutionName: "Bank", name: "Card",
+                officialName: nil, mask: "1234", type: .creditCard, subtype: "credit card",
+                currentBalanceMilliunits: 100_000, availableBalanceMilliunits: nil,
+                creditLimitMilliunits: nil, isoCurrencyCode: "USD")
+            context.insert(row)
+            return row
+        }
+        let oldAccount = account("old-account", item: "old-item")
+        let newAccount = account("new-account", item: "new-item")
+        let oldBinding = DurableCanonicalAccountBinding(canonicalAccountId: oldAccount.canonicalAccountId,
+            plaidAccountId: oldAccount.externalId, itemId: "old-item", institutionName: "Bank",
+            accountName: "Card", mask: "1234", accountType: .creditCard,
+            createdAt: Date(timeIntervalSince1970: 1))
+        let newBinding = DurableCanonicalAccountBinding(canonicalAccountId: newAccount.canonicalAccountId,
+            plaidAccountId: newAccount.externalId, itemId: "new-item", institutionName: "Bank",
+            accountName: "Card", mask: "1234", accountType: .creditCard,
+            createdAt: Date(timeIntervalSince1970: 2))
+        context.insert(oldBinding)
+        context.insert(newBinding)
+        for item in ["old-item", "new-item"] {
+            let cursor = PlaidTransactionCursor(itemId: item)
+            cursor.updateStatus = "HISTORICAL_UPDATE_COMPLETE"
+            context.insert(cursor)
+        }
+        func transaction(_ id: String, account: CachedFinancialAccount, day: String,
+                         reviewed: Bool) throws -> CachedFinancialTransaction {
+            let summary = try #require(PlaidTransactionDTO(id: id, accountId: account.externalId,
+                date: day, amount: 25, name: "Market").financialSummary(canonicalAccountId: account.canonicalAccountId))
+            let row = CachedFinancialTransaction(summary: summary,
+                classification: TransactionClassification(displayName: "Market", treatment: .ordinarySpending,
+                    confidence: .high, provenance: .user, requiresReview: !reviewed))
+            row.providerPostedDay = day
+            context.insert(row)
+            return row
+        }
+        let old = try transaction("old-tx", account: oldAccount, day: "2026-11-01", reviewed: true)
+        let historical = try transaction("history", account: oldAccount, day: "2022-01-01", reviewed: true)
+        let new = try transaction("new-tx", account: newAccount, day: "2026-11-01", reviewed: false)
+        let added = try transaction("added", account: newAccount, day: "2026-11-03", reviewed: false)
+        let note = DurableTransactionNote(transactionId: old.id, text: "Keep this note")
+        context.insert(note)
+        let settings = DurableCardSettings(accountId: oldAccount.canonicalAccountId)
+        context.insert(settings)
+        try context.save()
+        let service = BankingConnectionReplacementService(context: context)
+        try service.detectAndHoldAccounts()
+        #expect(!oldAccount.deleted)
+        #expect(newAccount.deleted && newAccount.connectionHeld)
+        #expect(new.deleted && new.connectionHeld)
+        #expect(added.deleted && added.connectionHeld)
+        #expect(!old.deleted && !historical.deleted)
+        #expect(throws: BankingConnectionReplacementService.Failure.self) {
+            try service.validateRemoval(itemID: "old-item")
+        }
+        new.requiresReview = false
+        #expect(throws: BankingConnectionReplacementService.Failure.self) {
+            try service.preview(incoming: newAccount, existing: oldAccount)
+        }
+        new.requiresReview = true
+        let preview = try service.preview(incoming: newAccount, existing: oldAccount)
+        #expect(preview.plan.matches.count == 1)
+        #expect(preview.plan.retainedHistoryIDs == [historical.id])
+        let originalDate = old.updatedAt
+        old.updatedAt = originalDate.addingTimeInterval(10)
+        #expect(throws: BankingConnectionReplacementService.Failure.self) {
+            try service.apply(preview, selections: [:])
+        }
+        old.updatedAt = originalDate
+        try service.apply(preview, selections: [:])
+        #expect(newBinding.canonicalAccountId == oldAccount.canonicalAccountId)
+        #expect(oldBinding.connectionReviewStateRaw == "superseded")
+        #expect(oldAccount.externalId == "new-account")
+        #expect(oldAccount.itemId == "new-item")
+        #expect(!old.deleted && !historical.deleted)
+        #expect(new.deleted && !new.connectionHeld)
+        #expect(!added.deleted && added.canonicalAccountId == oldAccount.canonicalAccountId)
+        #expect(settings.accountId == oldAccount.canonicalAccountId)
+        #expect(note.transactionId == old.id)
+        let identities = try context.fetch(FetchDescriptor<DurableConnectionTransactionIdentity>())
+        #expect(identities.count == 2)
+        #expect(identities.contains { $0.providerExternalId == new.externalId && $0.canonicalTransactionId == old.id })
+        try service.validateRemoval(itemID: "old-item")
+        try service.detectAndHoldAccounts()
+        try service.reconcileReplacements()
+        #expect(!oldAccount.deleted && newAccount.deleted)
+        #expect(!old.deleted && new.deleted)
+        // CloudKit may deliver the account mapping before its aliases.
+        // A provider-ID row imported during that interval must be suppressed
+        // even though it already has the surviving account identity.
+        new.canonicalAccountId = oldAccount.canonicalAccountId
+        new.deleted = false
+        try service.reconcileReplacements()
+        #expect(new.deleted)
+        oldAccount.currentBalanceMilliunits = 200_000
+        try service.reconcileReplacements()
+        #expect(oldAccount.currentBalanceMilliunits == 200_000)
+        // Simulate a disposable-cache loss: retained older history is recoverable.
+        let historyID = historical.id
+        context.delete(historical)
+        try context.save()
+        try service.restoreRetainedHistory()
+        #expect(try context.fetch(FetchDescriptor<CachedFinancialTransaction>()).contains {
+            $0.id == historyID && !$0.deleted && !$0.requiresReview
+        })
+
+        let third = account("third-account", item: "third-item")
+        let thirdBinding = DurableCanonicalAccountBinding(canonicalAccountId: third.canonicalAccountId,
+            plaidAccountId: third.externalId, itemId: "third-item", institutionName: "Bank",
+            accountName: "Card", mask: "1234", accountType: .creditCard,
+            createdAt: Date(timeIntervalSince1970: 3))
+        context.insert(thirdBinding)
+        let thirdRow = try transaction("third-tx", account: third, day: "2026-11-04", reviewed: false)
+        let removedRow = try transaction("removed-tx", account: third, day: "2026-11-02", reviewed: false)
+        removedRow.deleted = true
+        try service.detectAndHoldAccounts()
+        #expect(third.connectionHeld && thirdRow.connectionHeld)
+        #expect(!removedRow.connectionHeld)
+        try service.keepSeparate(third)
+        try service.detectAndHoldAccounts()
+        #expect(!third.deleted && !thirdRow.deleted)
+        #expect(removedRow.deleted)
+        #expect(thirdBinding.connectionReviewStateRaw == "separate")
+
+        let fourth = account("fourth-account", item: "fourth-item")
+        let fourthBinding = DurableCanonicalAccountBinding(canonicalAccountId: fourth.canonicalAccountId,
+            plaidAccountId: fourth.externalId, itemId: "fourth-item", institutionName: "Bank",
+            accountName: "Card", mask: "1234", accountType: .creditCard,
+            createdAt: Date(timeIntervalSince1970: 4))
+        context.insert(fourthBinding)
+        let fourthCursor = PlaidTransactionCursor(itemId: "fourth-item", updateStatus: "HISTORICAL_UPDATE_COMPLETE")
+        context.insert(fourthCursor)
+        let duplicate1 = try transaction("duplicate-1", account: oldAccount, day: "2026-11-10", reviewed: true)
+        let duplicate2 = try transaction("duplicate-2", account: oldAccount, day: "2026-11-10", reviewed: true)
+        let incoming1 = try transaction("incoming-1", account: fourth, day: "2026-11-10", reviewed: false)
+        let incoming2 = try transaction("incoming-2", account: fourth, day: "2026-11-10", reviewed: false)
+        try service.detectAndHoldAccounts()
+        #expect(try service.candidates(for: fourth).allSatisfy { !$0.deleted })
+        let secondPreview = try service.preview(incoming: fourth, existing: oldAccount)
+        #expect(secondPreview.needsReview.count == 2)
+        #expect(throws: BankingConnectionReplacementService.Failure.self) {
+            try service.apply(secondPreview, selections: [:])
+        }
+        #expect(throws: BankingConnectionReplacementService.Failure.self) {
+            try service.apply(secondPreview, selections: [incoming1.id: duplicate1.id, incoming2.id: duplicate1.id])
+        }
+        try service.apply(secondPreview, selections: [incoming1.id: duplicate1.id, incoming2.id: duplicate2.id])
+        #expect(!duplicate1.deleted && !duplicate2.deleted)
+        #expect(incoming1.deleted && incoming2.deleted)
+        #expect(oldAccount.externalId == fourth.externalId)
+        try service.validateRemoval(itemID: "old-item")
+        try service.validateRemoval(itemID: "new-item")
+        incoming1.providerRemoved = true
+        try service.reconcileReplacements()
+        #expect(duplicate1.deleted)
+        let removedIdentity = duplicate1.id
+        context.delete(duplicate1)
+        try context.save()
+        try service.restoreRetainedHistory()
+        #expect(try !context.fetch(FetchDescriptor<CachedFinancialTransaction>()).contains { $0.id == removedIdentity })
+    }
+
     @Test func settlementPickReplacesPreviouslyConfirmedWrongCard() throws {
         let modelContainer = try ModelContainerFactory.makeContainer(inMemory: true)
         let context = modelContainer.mainContext

@@ -1,5 +1,46 @@
 # WORKING
 
+## Banking connection replacement (2026-11-05)
+
+- Implemented reusable duplicate-account review and connection replacement.
+  Suspected duplicates stay excluded from totals until explicitly kept separate
+  or matched to an existing account. Banking Connections shows account lists
+  and exposes the existing Update accounts flow.
+- Replacement preserves original canonical account and transaction identities,
+  saved reviews, splits, and linked user records. Unique transaction matches
+  are suggested; ambiguous matches require explicit review. Incoming saved work
+  that cannot safely be merged blocks replacement.
+- User approved private iCloud storage for retained transaction history and
+  replacement identities. This is a scoped exception to local-only provider
+  caches; routine balances and fetched transactions remain local. Added a
+  versioned durable archive, removal tombstones, and recovery/reconciliation
+  paths for interrupted saves and delayed restored identities.
+- Retired connections can be removed only after replacement is locally complete;
+  remaining unique accounts and investment accounts block removal. Chase authorization selects the complete
+  account set; do not instruct the user to deselect existing cards to add one.
+- Validation: all four ConnectionReplacementTests passed; generic-device Debug
+  build-for-testing and Release build passed. App integration tests compiled
+  but were not executed. No simulator was used. Logs:
+  `/tmp/networth-connection-replacement-core.log`,
+  `/tmp/networth-replacement-build.log`,
+  `/tmp/networth-replacement-release.log`.
+- Physical-device acceptance completed: new build opened normally, overlapping
+  accounts were reviewed and replaced, ambiguous transactions were matched
+  manually, and the user confirmed all intended accounts on the surviving
+  connection. User removed the connection marked Replaced, synced successfully,
+  and reported that retained transaction history and saved work looked good.
+- Before rollout, copied both the shared App Group and ordinary app container
+  locally, including database journals. All four copied Networth databases
+  passed SQLite quick_check. Backup files and their checksum manifest are
+  excluded from git. No direct phone database edits were performed.
+- Still unverified: private-iCloud upload/restore and interrupted-save recovery
+  on a physical device. Successful launch is not a complete migration/restore test.
+- Details: `docs/2026-11-05-connection-replacement-implementation.md` supersedes
+  the earlier design note's open decisions. Device results are recorded in
+  `docs/2026-11-05-connection-replacement-device-acceptance.md`.
+- User requested documentation and a scoped commit. Preserve unrelated
+  Projections indentation, staged architecture audit, and local output; no push.
+
 ## Transaction filters and matched-payment contacts (2026-11-05)
 
 - Added a custom Date range control to the shared transaction history used by

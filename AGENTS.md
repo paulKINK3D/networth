@@ -101,6 +101,10 @@ cd PlaidWorker && npm test && npm run check
   - **Local SwiftData store** caches Plaid data. Disposable; can be re-fetched.
   - **CloudKit private DB store** holds irreplaceable user data: manual assets, daily net worth snapshots, user settings, projection configuration.
   - Do not mix the two stores. Retired-provider compatibility rows must never enter CloudKit.
+  - Approved exception (2026-11-05): explicit banking-connection replacement keeps
+    durable identity mappings and retained transaction/review archives in private
+    CloudKit so older history survives cache/device loss. Live provider caches and
+    current balances remain local-only; do not broaden this archive to routine sync.
 - **Back up the resolved store location, not an assumed app-container path.** On the physical device, both active SwiftData stores currently resolve under `group.com.bluelava.me.financial`; similarly named files in the ordinary app container may be dormant legacy copies. Before any destructive migration, verify the live configuration URLs and copy the shared App Group as well as the app container.
 - **BL IBR bridge is local-only and read-only.** Networth may decode the opt-in versioned App Group document but must not write to it, upload its fields, or generate a second projected loan payment. Plaid checking activity remains the cash-flow source for payments.
 - **Plaid is server-mediated and read-only.** The app may receive Link tokens plus normalized investment and banking data from the private backend, but Plaid `client_id`, `secret`, and Item `access_token` values must never enter the app, Keychain, logs, fixtures, or repository. Investments remain on their dedicated reconciliation path; Transactions is the sole banking and card transaction source.

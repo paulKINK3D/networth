@@ -3,6 +3,425 @@ import SwiftData
 import os
 import NetworthCore
 
+/// Reusable review and identity preservation for bank reconnections. Remote
+/// disconnection is deliberately separate from this local, retryable operation.
+@MainActor
+struct BankingConnectionReplacementService {
+    let context: ModelContext
+
+    private struct ArchivedReview: Codable {
+        let classification: TransactionClassification
+        let payeeID: String?
+        let categoryID: String?
+        let goalID: UUID?
+        let splits: Data?
+        let requiresNameReview: Bool
+        let origin: String
+
+        init(_ row: CachedFinancialTransaction) {
+            classification = TransactionClassification(displayName: row.displayName,
+                categoryName: row.categoryName, treatment: row.forecastTreatment,
+                confidence: ClassificationConfidence(rawValue: row.classificationConfidenceRaw) ?? .low,
+                provenance: ClassificationProvenance(rawValue: row.classificationProvenanceRaw) ?? .user,
+                requiresReview: row.requiresReview)
+            payeeID = row.payeeCanonicalId
+            categoryID = row.categoryCanonicalId
+            goalID = row.goalId
+            splits = row.subtransactionsData
+            requiresNameReview = row.requiresNameReview
+            origin = row.reviewOriginRaw
+        }
+    }
+
+    enum Failure: LocalizedError {
+        case unavailable, incomplete, conflicts, unresolved, saveFailed, finishSync, removalBlocked, remainingAccounts
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: "These accounts changed. Reopen the review."
+            case .incomplete: "Finish syncing both connections before replacing an account."
+            case .conflicts: "The new copy has saved reviews or settings. Keep it separate until that work is reconciled."
+            case .unresolved: "Resolve each transaction match before applying."
+            case .saveFailed: "The replacement could not be saved. Your original history is still available."
+            case .finishSync: "The replacement mapping is saved. Sync again to finish restoring its local history."
+            case .removalBlocked: "Review overlapping accounts before removing this connection."
+            case .remainingAccounts: "This connection still supplies other accounts. Preserve those accounts before removing it."
+            }
+        }
+    }
+
+    struct Preview {
+        let incoming: CachedFinancialAccount
+        let existing: CachedFinancialAccount
+        let oldRows: [CachedFinancialTransaction]
+        let newRows: [CachedFinancialTransaction]
+        let plan: ConnectionReplacementMatching.Plan
+        let needsReview: [CachedFinancialTransaction]
+        let revision: String
+    }
+
+    private func bindings() throws -> [DurableCanonicalAccountBinding] {
+        let rows = try context.fetch(FetchDescriptor<DurableCanonicalAccountBinding>())
+        for group in Dictionary(grouping: rows, by: \.plaidAccountId).values {
+            guard Set(group.map(\.canonicalAccountId)).count == 1 else { throw Failure.unavailable }
+        }
+        return Dictionary(rows.map { ($0.plaidAccountId, $0) }, uniquingKeysWith: {
+            $0.updatedAt > $1.updatedAt ? $0 : $1
+        }).values
+            .sorted { $0.createdAt == $1.createdAt ? $0.plaidAccountId < $1.plaidAccountId : $0.createdAt < $1.createdAt }
+    }
+
+    private func candidate(_ binding: DurableCanonicalAccountBinding) -> ConnectionReplacementMatching.Account {
+        .init(id: binding.plaidAccountId, connectionID: binding.itemId,
+              institution: binding.institutionName, mask: binding.mask,
+              type: binding.accountType, currency: binding.currencyCode)
+    }
+
+    func detectAndHoldAccounts() throws {
+        let all = try bindings()
+        let accounts = try context.fetch(FetchDescriptor<CachedFinancialAccount>())
+        for binding in all where binding.connectionReviewStateRaw.isEmpty {
+            if binding.currencyCode == nil {
+                binding.currencyCode = accounts.first { $0.externalId == binding.plaidAccountId }?.isoCurrencyCode
+            }
+        }
+        for (index, binding) in all.enumerated() where binding.connectionReviewStateRaw.isEmpty {
+            let previous = all.prefix(index).filter {
+                $0.connectionReviewStateRaw != "pending" && $0.connectionReviewStateRaw != "superseded"
+                    && $0.canonicalAccountId != binding.canonicalAccountId
+            }
+            let matches = ConnectionReplacementMatching.candidates(for: candidate(binding), among: previous.map(candidate))
+            binding.connectionReviewStateRaw = matches.isEmpty ? "active" : "pending"
+            binding.updatedAt = .now
+        }
+        try enforceHolds()
+    }
+
+    func enforceHolds() throws {
+        let all = try bindings()
+        let heldIDs = Set(all.filter { $0.connectionReviewStateRaw == "pending" }.map(\.canonicalAccountId))
+        let approvedIDs = Set(all.filter { ["active", "separate"].contains($0.connectionReviewStateRaw) }.map(\.canonicalAccountId))
+        for row in try context.fetch(FetchDescriptor<CachedFinancialAccount>()) {
+            if heldIDs.contains(row.canonicalAccountId), !row.deleted || row.connectionHeld {
+                row.connectionHeld = true; row.deleted = true
+            } else if approvedIDs.contains(row.canonicalAccountId), row.connectionHeld {
+                row.connectionHeld = false; row.deleted = false
+            }
+        }
+        for row in try context.fetch(FetchDescriptor<CachedFinancialTransaction>()) {
+            if heldIDs.contains(row.canonicalAccountId), !row.deleted {
+                row.connectionHeld = true; row.deleted = true
+            } else if approvedIDs.contains(row.canonicalAccountId), row.connectionHeld {
+                row.connectionHeld = false; row.deleted = false
+            }
+        }
+    }
+
+    /// Repairs the local half of a completed durable mapping after interruption
+    /// or cache restoration. Provider aliases never become a second live row.
+    func reconcileReplacements() throws {
+        let all = try bindings()
+        let active = Dictionary(all.filter { $0.connectionReviewStateRaw != "superseded" }
+            .map { ($0.plaidAccountId, $0.canonicalAccountId) }, uniquingKeysWith: { first, _ in first })
+        let accounts = try context.fetch(FetchDescriptor<CachedFinancialAccount>())
+        var remap: [String: String] = [:]
+        for account in accounts {
+            guard let canonical = active[account.externalId], canonical != account.canonicalAccountId else { continue }
+            remap[account.canonicalAccountId] = canonical
+            if let survivor = accounts.first(where: { $0.canonicalAccountId == canonical }),
+               survivor.externalId != account.externalId {
+                copyProviderAccount(account, to: survivor)
+            }
+            account.deleted = true
+            account.connectionHeld = false
+        }
+        let identities = try context.fetch(FetchDescriptor<DurableConnectionTransactionIdentity>())
+        let groups = Dictionary(grouping: identities.filter { !$0.providerExternalId.isEmpty }, by: \.providerExternalId)
+        for group in groups.values {
+            guard Set(group.map(\.canonicalTransactionId)).count == 1 else { throw Failure.unavailable }
+        }
+        let aliasByProviderID = groups.mapValues { $0[0].canonicalTransactionId }
+        let rows = try context.fetch(FetchDescriptor<CachedFinancialTransaction>())
+        for row in rows where row.providerRemoved {
+            for identity in groups[row.externalId] ?? [] where !identity.removed {
+                identity.removed = true
+                identity.updatedAt = .now
+            }
+        }
+        let removedIDs = Set(identities.filter(\.removed).map(\.canonicalTransactionId))
+        for row in rows {
+            if removedIDs.contains(row.id) {
+                row.deleted = true
+                row.connectionHeld = false
+                row.providerRemoved = true
+                continue
+            }
+            // On another device the account mapping can arrive before the
+            // transaction aliases. Suppress the earlier provider-ID import
+            // even when it already belongs to the surviving canonical account.
+            if let canonicalID = aliasByProviderID[row.externalId], canonicalID != row.id {
+                row.deleted = true
+                row.connectionHeld = false
+                continue
+            }
+            guard let canonical = remap[row.canonicalAccountId] else { continue }
+            row.canonicalAccountId = canonical
+            if row.connectionHeld { row.connectionHeld = false; row.deleted = false }
+        }
+    }
+
+    func candidates(for incoming: CachedFinancialAccount) throws -> [CachedFinancialAccount] {
+        let all = try bindings()
+        guard let binding = all.first(where: { $0.plaidAccountId == incoming.externalId }),
+              binding.connectionReviewStateRaw == "pending",
+              binding.canonicalAccountId == incoming.canonicalAccountId else { return [] }
+        let eligible = all.filter { $0.connectionReviewStateRaw != "pending" && $0.connectionReviewStateRaw != "superseded" }
+        let ids = Set(ConnectionReplacementMatching.candidates(for: candidate(binding), among: eligible.map(candidate)).map(\.id))
+        return try context.fetch(FetchDescriptor<CachedFinancialAccount>()).filter { ids.contains($0.externalId) && !$0.deleted && !$0.connectionHeld }
+    }
+
+    func keepSeparate(_ account: CachedFinancialAccount) throws {
+        guard let binding = try bindings().first(where: { $0.plaidAccountId == account.externalId }),
+              binding.connectionReviewStateRaw == "pending" else { throw Failure.unavailable }
+        let rows = try context.fetch(FetchDescriptor<CachedFinancialTransaction>())
+        binding.connectionReviewStateRaw = "separate"
+        binding.updatedAt = .now
+        account.connectionHeld = false
+        account.deleted = false
+        for row in rows
+            where row.canonicalAccountId == account.canonicalAccountId && row.connectionHeld {
+            row.connectionHeld = false
+            row.deleted = false
+        }
+        guard context.safeSave(source: "connections.keepSeparate") else { context.rollback(); throw Failure.saveFailed }
+    }
+
+    func preview(incoming: CachedFinancialAccount, existing: CachedFinancialAccount) throws -> Preview {
+        guard incoming.connectionHeld,
+              try candidates(for: incoming).contains(where: { $0.canonicalAccountId == existing.canonicalAccountId })
+        else { throw Failure.unavailable }
+        let cursors = try context.fetch(FetchDescriptor<PlaidTransactionCursor>())
+        guard [incoming.itemId, existing.itemId].allSatisfy({ itemID in
+            cursors.contains { $0.itemId == itemID && $0.historicalImportComplete }
+        }) else { throw Failure.incomplete }
+        let rows = try context.fetch(FetchDescriptor<CachedFinancialTransaction>())
+        let oldPending = rows.filter { $0.canonicalAccountId == existing.canonicalAccountId && !$0.deleted && $0.pending }
+        let old = rows.filter { $0.canonicalAccountId == existing.canonicalAccountId && !$0.deleted && !$0.pending }
+        let new = rows.filter { $0.canonicalAccountId == incoming.canonicalAccountId && $0.connectionHeld && !$0.pending }
+        let newIDs = Set(new.map(\.externalId))
+        let decisions = try context.fetch(FetchDescriptor<DurableCanonicalTransactionDecision>())
+        guard !new.contains(where: { !$0.requiresReview }),
+              !decisions.contains(where: { newIDs.contains($0.transactionExternalId) }),
+              try !hasAccountPreferences(incoming.canonicalAccountId),
+              try !hasTransactionWork(Set(new.map(\.id)), externalIDs: newIDs),
+              try !hasTransactionWork(Set(oldPending.map(\.id)), externalIDs: Set(oldPending.map(\.externalId)))
+        else { throw Failure.conflicts }
+        let plan = ConnectionReplacementMatching.plan(existing: old.map(matchInput), incoming: new.map(matchInput))
+        let ambiguous = Set(plan.ambiguities.flatMap(\.incomingIDs))
+        // An unmatched row within the old history window might be a changed
+        // descriptor/date. Require an explicit new-activity decision as well.
+        let lastDay = old.map { day($0) }.max() ?? ""
+        let unmatched = Set(plan.newTransactionIDs)
+        let needsReview = new.filter { ambiguous.contains($0.id) || (unmatched.contains($0.id) && day($0) <= lastDay) }
+            .sorted { $0.id < $1.id }
+        let revision = (old + new).sorted { $0.id < $1.id }.map {
+            "\($0.id)|\($0.updatedAt.timeIntervalSince1970)|\($0.amountMilliunits)|\($0.requiresReview)"
+        }.joined(separator: ";")
+        return Preview(incoming: incoming, existing: existing, oldRows: old, newRows: new,
+                       plan: plan, needsReview: needsReview, revision: revision)
+    }
+
+    func day(_ row: CachedFinancialTransaction) -> String {
+        if let day = row.providerPostedDay { return day }
+        // Legacy dates were local-midnight instants; use the review device's
+        // calendar. Any resulting unmatched overlapping activity needs review.
+        let parts = Calendar.current.dateComponents([.year, .month, .day], from: row.postedDate)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    private func matchInput(_ row: CachedFinancialTransaction) -> ConnectionReplacementMatching.Transaction {
+        .init(id: row.id, day: day(row), amount: row.amountMilliunits, description: row.rawDescription)
+    }
+
+    private func hasAccountPreferences(_ id: String) throws -> Bool {
+        if try context.fetch(FetchDescriptor<DurableCardSettings>()).contains(where: { $0.canonicalAccountId == id || $0.accountId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableSpendingAccountPin>()).contains(where: { $0.canonicalAccountId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableGoalReserveAccount>()).contains(where: { $0.canonicalAccountId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableProjectionCashAccountOverride>()).contains(where: { $0.canonicalAccountId == id || $0.accountId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableRecurringExpectation>()).contains(where: { $0.accountCanonicalId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableCardPaymentConfirmation>()).contains(where: { $0.cardAccountId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableCardPaymentSettlement>()).contains(where: { $0.cardAccountId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableCardSettings>()).contains(where: { $0.canonicalPaymentAccountId == id || $0.paymentAccountId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableIncludedClosedAccount>()).contains(where: { $0.canonicalAccountId == id || $0.accountId == id }) { return true }
+        if try context.fetch(FetchDescriptor<DurableCanonicalPayee>()).contains(where: { $0.transferAccountId == id }) { return true }
+        return false
+    }
+
+    private func hasTransactionWork(_ ids: Set<String>, externalIDs: Set<String>) throws -> Bool {
+        if try context.fetch(FetchDescriptor<DurableTransactionNote>()).contains(where: { ids.contains($0.transactionId) }) { return true }
+        if try context.fetch(FetchDescriptor<DurableReimbursementPaidBack>()).contains(where: { ids.contains($0.transactionId) || ids.contains($0.reimbursementSourceTransactionId) }) { return true }
+        if try context.fetch(FetchDescriptor<DurableReimbursementAllocation>()).contains(where: { ids.contains($0.sourceTransactionId) || ids.contains($0.expenseTransactionId) }) { return true }
+        if try context.fetch(FetchDescriptor<DurableReimbursementAllocationDraft>()).contains(where: { ids.contains($0.sourceTransactionId) }) { return true }
+        if try context.fetch(FetchDescriptor<DurableSpendingSinkingFundExpense>()).contains(where: { ids.contains($0.transactionId) }) { return true }
+        if try context.fetch(FetchDescriptor<DurableSavingsTransferAssignment>()).contains(where: { ids.contains($0.transactionId) }) { return true }
+        if try context.fetch(FetchDescriptor<DurableCardStatementAssignment>()).contains(where: { ids.contains($0.transactionId) }) { return true }
+        if try context.fetch(FetchDescriptor<DurableCardPaymentSettlement>()).contains(where: { ids.contains($0.transactionId) }) { return true }
+        if try context.fetch(FetchDescriptor<DurableGoalLedgerEntry>()).contains(where: { externalIDs.contains($0.linkedTransactionExternalId ?? "") }) { return true }
+        if try context.fetch(FetchDescriptor<DurableGoalTransferRequest>()).contains(where: { ids.contains($0.transactionId) || externalIDs.contains($0.transactionExternalId) }) { return true }
+        return false
+    }
+
+    /// Explicit selections map incoming transaction ID -> existing ID, or "new".
+    /// All writes happen after validation; a failed save rolls back the unit.
+    func apply(_ preview: Preview, selections: [String: String]) throws {
+        let fresh = try self.preview(incoming: preview.incoming, existing: preview.existing)
+        guard fresh.revision == preview.revision else { throw Failure.unavailable }
+        var pairs = Dictionary(uniqueKeysWithValues: fresh.plan.matches.map { ($0.incomingID, $0.existingID) })
+        var used = Set(pairs.values)
+        for row in fresh.needsReview {
+            guard let choice = selections[row.id] else { throw Failure.unresolved }
+            if choice == "new" { continue }
+            guard let old = fresh.oldRows.first(where: { $0.id == choice }),
+                  old.amountMilliunits == row.amountMilliunits,
+                  used.insert(choice).inserted else { throw Failure.unresolved }
+            pairs[row.id] = choice
+        }
+        let allBindings = try bindings()
+        guard let incomingBinding = allBindings.first(where: { $0.plaidAccountId == fresh.incoming.externalId }),
+              let oldBinding = allBindings.first(where: { $0.plaidAccountId == fresh.existing.externalId })
+        else { throw Failure.unavailable }
+        let incomingByID = Dictionary(uniqueKeysWithValues: fresh.newRows.map { ($0.id, $0) })
+        let providerByOldID = Dictionary(uniqueKeysWithValues: pairs.map { ($0.value, incomingByID[$0.key]!.externalId) })
+        // Encode every retained row before any mutations. Identity archive is
+        // durable; provider cache rows and live balances remain local-only.
+        let archives = try fresh.oldRows.map { row in
+            let archive = try DurableConnectionTransactionIdentity(providerExternalId: providerByOldID[row.id] ?? "",
+                summary: row.toSummary(), providerPostedDay: row.providerPostedDay)
+            archive.retainedReviewData = try JSONEncoder().encode(ArchivedReview(row))
+            return archive
+        }
+        let allRows = try context.fetch(FetchDescriptor<CachedFinancialTransaction>())
+        let nicknames = try context.fetch(FetchDescriptor<DurableAccountNickname>())
+        let incomingNickname = nicknames.first { $0.plaidAccountId == fresh.incoming.externalId }
+        let previousNickname = nicknames.first { $0.plaidAccountId == fresh.existing.externalId }
+        if let incomingNickname, let previousNickname, incomingNickname.nickname != previousNickname.nickname {
+            throw Failure.conflicts
+        }
+        for archive in archives { context.insert(archive) }
+        if let previousNickname, incomingNickname == nil {
+            context.insert(DurableAccountNickname(plaidAccountId: fresh.incoming.externalId,
+                                                  nickname: previousNickname.nickname))
+        }
+        oldBinding.connectionReviewStateRaw = "superseded"
+        oldBinding.replacementPlaidAccountId = fresh.incoming.externalId
+        oldBinding.updatedAt = .now
+        incomingBinding.canonicalAccountId = fresh.existing.canonicalAccountId
+        incomingBinding.connectionReviewStateRaw = "active"
+        incomingBinding.reviewed = true
+        incomingBinding.updatedAt = .now
+        // Commit irreplaceable history and the identity decision before touching
+        // disposable rows. If the cache save fails, sync can finish this mapping.
+        guard context.safeSave(source: "connections.replacementIdentity") else {
+            context.rollback(); throw Failure.saveFailed
+        }
+        for row in allRows where row.canonicalAccountId == fresh.existing.canonicalAccountId && row.pending {
+            row.deleted = true
+            row.connectionHeld = false
+        }
+        for row in allRows where row.canonicalAccountId == fresh.incoming.canonicalAccountId {
+            if pairs[row.id] != nil {
+                row.connectionHeld = false
+                row.deleted = true
+            } else {
+                row.canonicalAccountId = fresh.existing.canonicalAccountId
+                if row.connectionHeld { row.deleted = false; row.connectionHeld = false }
+            }
+        }
+        let old = fresh.existing, new = fresh.incoming
+        copyProviderAccount(new, to: old)
+        new.connectionHeld = false
+        new.deleted = true
+        guard context.safeSave(source: "connections.replace") else { context.rollback(); throw Failure.finishSync }
+    }
+
+    private func copyProviderAccount(_ new: CachedFinancialAccount, to old: CachedFinancialAccount) {
+        old.externalId = new.externalId
+        old.itemId = new.itemId
+        old.institutionName = new.institutionName
+        old.name = new.name
+        old.officialName = new.officialName
+        old.mask = new.mask
+        old.currentBalanceMilliunits = new.currentBalanceMilliunits
+        old.availableBalanceMilliunits = new.availableBalanceMilliunits
+        old.creditLimitMilliunits = new.creditLimitMilliunits
+        old.isoCurrencyCode = new.isoCurrencyCode
+        old.deleted = false
+        old.connectionHeld = false
+        old.updatedAt = .now
+    }
+
+    func restoreRetainedHistory() throws {
+        let archives = try context.fetch(FetchDescriptor<DurableConnectionTransactionIdentity>())
+            .sorted { $0.updatedAt < $1.updatedAt }
+        let latest = Dictionary(archives.map { ($0.canonicalTransactionId, $0) }, uniquingKeysWith: { _, new in new })
+        let removedIDs = Set(archives.filter(\.removed).map(\.canonicalTransactionId))
+        let rows = try context.fetch(FetchDescriptor<CachedFinancialTransaction>())
+        let ids = Set(rows.map(\.id))
+        let liveAccountIDs = Set(try context.fetch(FetchDescriptor<CachedFinancialAccount>())
+            .filter { !$0.deleted }.map(\.canonicalAccountId))
+        for archive in latest.values where !removedIDs.contains(archive.canonicalTransactionId) && !ids.contains(archive.canonicalTransactionId)
+            && liveAccountIDs.contains(archive.canonicalAccountId) {
+            guard archive.archiveVersion == 1 else { throw Failure.unavailable }
+            let summary = try JSONDecoder().decode(FinancialTransactionSummary.self, from: archive.retainedSummaryData)
+            let review = try archive.retainedReviewData.map { try JSONDecoder().decode(ArchivedReview.self, from: $0) }
+            let row = CachedFinancialTransaction(summary: summary,
+                classification: review?.classification ?? TransactionClassification(displayName: summary.fallbackDisplayName,
+                    treatment: .unknown, confidence: .low, provenance: .user, requiresReview: true),
+                subtransactionsData: review?.splits, requiresNameReview: review?.requiresNameReview,
+                reviewOriginRaw: review?.origin ?? "historical")
+            row.payeeCanonicalId = review?.payeeID
+            row.categoryCanonicalId = review?.categoryID
+            row.goalId = review?.goalID
+            row.providerPostedDay = archive.providerPostedDay
+            context.insert(row)
+        }
+    }
+
+    func validateRemoval(itemID: String) throws {
+        let all = try bindings()
+        let sourceBindings = all.filter { $0.itemId == itemID }
+        if sourceBindings.contains(where: { $0.connectionReviewStateRaw == "superseded" }),
+           sourceBindings.contains(where: { $0.connectionReviewStateRaw != "superseded" }) {
+            throw Failure.remainingAccounts
+        }
+        let localAccounts = try context.fetch(FetchDescriptor<CachedFinancialAccount>())
+        for binding in all where binding.itemId == itemID && binding.connectionReviewStateRaw == "superseded" {
+            var replacement = binding.replacementPlaidAccountId
+            var visited: Set<String> = [binding.plaidAccountId]
+            while let id = replacement,
+                  let next = all.first(where: { $0.plaidAccountId == id && $0.connectionReviewStateRaw == "superseded" }) {
+                guard visited.insert(id).inserted else { throw Failure.unavailable }
+                replacement = next.replacementPlaidAccountId
+            }
+            guard let replacement,
+                  localAccounts.contains(where: {
+                      $0.canonicalAccountId == binding.canonicalAccountId && $0.externalId == replacement
+                          && !$0.deleted && !$0.connectionHeld && $0.itemId != itemID
+                  }) else { throw Failure.finishSync }
+        }
+        if all.contains(where: { $0.itemId == itemID && $0.connectionReviewStateRaw == "superseded" }),
+           try context.fetch(FetchDescriptor<CachedPlaidAccount>()).contains(where: { $0.itemId == itemID }) {
+            throw Failure.removalBlocked
+        }
+        for binding in all where binding.itemId == itemID && binding.connectionReviewStateRaw != "superseded" {
+            if binding.connectionReviewStateRaw == "separate" { continue }
+            let others = all.filter { $0.itemId != itemID && $0.connectionReviewStateRaw != "superseded" && $0.connectionReviewStateRaw != "separate" }
+            if !ConnectionReplacementMatching.candidates(for: candidate(binding), among: others.map(candidate)).isEmpty {
+                throw Failure.removalBlocked
+            }
+        }
+    }
+}
+
 #if false // Retired provider sync kept temporarily as noncompiled migration history.
 /// Pulls data from YNAB and writes it into the local SwiftData cache.
 /// Honors delta sync via `last_knowledge_of_server` to stay well under the 200 req/hr limit.
@@ -1744,13 +2163,18 @@ public final class PlaidTransactionSyncCoordinator {
             let transactionItems = itemsResponse.items.filter {
                 ($0.products ?? []).contains("transactions")
             }
-            let existingRows = (try? mainContext.fetch(
+            let existingRows = try mainContext.fetch(
                 FetchDescriptor<CachedFinancialTransaction>()
-            )) ?? []
+            )
             var existingByID = Dictionary(
                 uniqueKeysWithValues: existingRows.map { ($0.id, $0) }
             )
+            let connectionBindings = try mainContext.fetch(FetchDescriptor<DurableCanonicalAccountBinding>())
             for item in transactionItems {
+                let itemBindings = connectionBindings.filter { $0.itemId == item.id }
+                if !itemBindings.isEmpty, itemBindings.allSatisfy({ $0.connectionReviewStateRaw == "superseded" }) {
+                    continue
+                }
                 phase = .syncing(item.institutionName)
                 guard await sync(
                     item: item,
@@ -1759,6 +2183,9 @@ public final class PlaidTransactionSyncCoordinator {
                     return false
                 }
             }
+            let replacementService = BankingConnectionReplacementService(context: mainContext)
+            try replacementService.reconcileReplacements()
+            try replacementService.restoreRetainedHistory()
             markOrphanedTransactionsDeleted()
             applyCurrentCanonicalState()
             guard mainContext.safeSave(
@@ -4757,17 +5184,73 @@ public final class PlaidTransactionSyncCoordinator {
                 phase = .error("Banking sync failed for \(item.institutionName).")
                 return false
             }
-            let canonicalByPlaidID = ensureBindingsAndAccounts(
-                response.accounts,
-                itemId: item.id
-            )
+            let canonicalByPlaidID: [String: String]
+            do {
+                canonicalByPlaidID = try ensureBindingsAndAccounts(response.accounts, itemId: item.id)
+            } catch {
+                mainContext.rollback()
+                phase = .error("Saved account identities could not be restored. Retry sync.")
+                return false
+            }
+            let replacementService = BankingConnectionReplacementService(context: mainContext)
+            do {
+                try replacementService.detectAndHoldAccounts()
+            } catch {
+                mainContext.rollback()
+                phase = .error("Account review could not be prepared. Retry sync.")
+                return false
+            }
+            let identityRows: [DurableConnectionTransactionIdentity]
+            do {
+                identityRows = try mainContext.fetch(FetchDescriptor<DurableConnectionTransactionIdentity>())
+            } catch {
+                mainContext.rollback()
+                phase = .error("Saved transaction identities could not be loaded. Retry sync.")
+                return false
+            }
+            let identities = Dictionary(identityRows.filter { !$0.providerExternalId.isEmpty }
+                .sorted { $0.updatedAt < $1.updatedAt }
+                .map { ($0.providerExternalId, $0) }, uniquingKeysWith: { _, latest in latest })
+            for group in Dictionary(grouping: identityRows.filter { !$0.providerExternalId.isEmpty },
+                                    by: \.providerExternalId).values {
+                guard Set(group.map(\.canonicalTransactionId)).count == 1 else {
+                    mainContext.rollback()
+                    phase = .error("Saved transaction identities conflict. Connection review is required.")
+                    return false
+                }
+            }
+            let heldAccountIDs: Set<String>
+            let supersededAccountIDs: Set<String>
+            do {
+                let bindings = try mainContext.fetch(FetchDescriptor<DurableCanonicalAccountBinding>())
+                heldAccountIDs = Set(bindings
+                    .filter { $0.connectionReviewStateRaw == "pending" }.map(\.canonicalAccountId))
+                supersededAccountIDs = Set(bindings.filter {
+                    $0.itemId == item.id && $0.connectionReviewStateRaw == "superseded"
+                }.map(\.canonicalAccountId))
+            } catch {
+                mainContext.rollback()
+                phase = .error("Account review could not be loaded. Retry sync.")
+                return false
+            }
             for (index, transaction) in (response.added + response.modified).enumerated() {
                 guard let canonicalID = canonicalByPlaidID[transaction.accountId],
-                      let summary = transaction.financialSummary(
+                      let providerSummary = transaction.financialSummary(
                         canonicalAccountId: canonicalID
                       ) else {
                     continue
                 }
+                let identity = identities[transaction.id]
+                if let identity, identity.canonicalAccountId != canonicalID {
+                    mainContext.rollback()
+                    phase = .error("Connection replacement is still restoring. Retry sync.")
+                    return false
+                }
+                if identity?.removed == true { continue }
+                let summary = identity.map {
+                    providerSummary.replacingIdentity(id: $0.canonicalTransactionId,
+                        externalID: $0.canonicalExternalId, accountID: canonicalID)
+                } ?? providerSummary
                 let suggestion = await classification(
                     for: summary,
                     allowModelInference: !isHistoricalImport,
@@ -4785,6 +5268,22 @@ public final class PlaidTransactionSyncCoordinator {
                     reviewOriginRaw: isHistoricalImport ? "historical" : "new",
                     existingByID: &existingByID
                 )
+                existingByID[summary.id]?.providerPostedDay = transaction.date
+                if heldAccountIDs.contains(canonicalID), let row = existingByID[summary.id], !row.deleted {
+                    row.connectionHeld = true
+                    row.deleted = true
+                }
+                if let identity {
+                    // The archive follows provider corrections but keeps the user's identity.
+                    do { identity.retainedSummaryData = try JSONEncoder().encode(summary) }
+                    catch {
+                        mainContext.rollback()
+                        phase = .error("Transaction history could not be preserved. Retry sync.")
+                        return false
+                    }
+                    identity.providerPostedDay = transaction.date
+                    identity.updatedAt = .now
+                }
                 recordCoverage(
                     plaidAccountId: transaction.accountId,
                     itemId: item.id,
@@ -4802,7 +5301,22 @@ public final class PlaidTransactionSyncCoordinator {
                 }
             }
             for removedID in response.removed {
-                markDeleted(id: "plaid:\(removedID)", existingByID: existingByID)
+                let canonicalAccountID = identities[removedID]?.canonicalAccountId
+                    ?? existingByID["plaid:\(removedID)"]?.canonicalAccountId
+                if let canonicalAccountID, supersededAccountIDs.contains(canonicalAccountID) { continue }
+                if let identity = identities[removedID] {
+                    identity.removed = true
+                    identity.updatedAt = .now
+                    markDeleted(id: identity.canonicalTransactionId, existingByID: existingByID)
+                } else {
+                    markDeleted(id: "plaid:\(removedID)", existingByID: existingByID)
+                }
+            }
+            do { try replacementService.enforceHolds() }
+            catch {
+                mainContext.rollback()
+                phase = .error("Account review could not be saved. Retry sync.")
+                return false
             }
             cursor = response.nextCursor
             cursorRow.cursor = cursor
@@ -4847,16 +5361,20 @@ public final class PlaidTransactionSyncCoordinator {
     private func ensureBindingsAndAccounts(
         _ accounts: [PlaidAccountDTO],
         itemId: String
-    ) -> [String: String] {
-        let bindings = (try? mainContext.fetch(
+    ) throws -> [String: String] {
+        let bindings = try mainContext.fetch(
             FetchDescriptor<DurableCanonicalAccountBinding>()
-        )) ?? []
-        var bindingByPlaidID = Dictionary(
-            uniqueKeysWithValues: bindings.map { ($0.plaidAccountId, $0) }
         )
-        let cached = (try? mainContext.fetch(
+        for group in Dictionary(grouping: bindings, by: \.plaidAccountId).values {
+            guard Set(group.map(\.canonicalAccountId)).count == 1 else {
+                throw BankingConnectionReplacementService.Failure.unavailable
+            }
+        }
+        var bindingByPlaidID = Dictionary(bindings.map { ($0.plaidAccountId, $0) },
+            uniquingKeysWith: { $0.updatedAt > $1.updatedAt ? $0 : $1 })
+        let cached = try mainContext.fetch(
             FetchDescriptor<CachedFinancialAccount>()
-        )) ?? []
+        )
         var cachedByCanonicalID = Dictionary(
             uniqueKeysWithValues: cached.map { ($0.canonicalAccountId, $0) }
         )
@@ -4873,6 +5391,7 @@ public final class PlaidTransactionSyncCoordinator {
             returnedPlaidAccountIDs.insert(account.id)
             let binding: DurableCanonicalAccountBinding
             if let existing = bindingByPlaidID[account.id] {
+                if existing.connectionReviewStateRaw == "superseded" { continue }
                 binding = existing
                 binding.itemId = account.itemId
                 binding.institutionName = account.institutionName
@@ -4893,6 +5412,7 @@ public final class PlaidTransactionSyncCoordinator {
                 mainContext.insert(binding)
                 bindingByPlaidID[account.id] = binding
             }
+            binding.currencyCode = account.isoCurrencyCode
             let summary = account.financialSummary(
                 canonicalAccountId: binding.canonicalAccountId
             )
@@ -4921,11 +5441,13 @@ public final class PlaidTransactionSyncCoordinator {
         }
         for row in cached where row.itemId == itemId {
             row.deleted = !returnedPlaidAccountIDs.contains(row.externalId)
+            if row.deleted { row.connectionHeld = false }
             if row.deleted { row.updatedAt = .now }
         }
         return Dictionary(
             uniqueKeysWithValues: bindingByPlaidID.compactMap {
                 guard returnedPlaidAccountIDs.contains($0.key) else { return nil }
+                guard $0.value.connectionReviewStateRaw != "superseded" else { return nil }
                 return ($0.key, $0.value.canonicalAccountId)
             }
         )
@@ -5020,6 +5542,8 @@ public final class PlaidTransactionSyncCoordinator {
         existingByID: [String: CachedFinancialTransaction]
     ) {
         if let row = existingByID[id] {
+            row.connectionHeld = false
+            row.providerRemoved = true
             row.deleted = true
             row.updatedAt = .now
         }

@@ -68,8 +68,29 @@ The near-term priority is to make Projections the clearest and most trustworthy 
   - Canonical account mappings, editable Networth-owned contacts/categories,
     Plaid aliases, user-authored Plaid account nicknames, and
     transaction-specific decisions
+  - User-approved banking connection replacement identities and retained history
+    archives, including saved review/split state (approved 2026-11-05). This
+    explicit exception preserves history the replacement bank feed may no longer
+    supply; ordinary live bank caches and balances remain local-only.
 - Daily net worth snapshot job runs once per day.
 - **Local App Group only:** BL IBR's opt-in loan summary and dated balances remain in `group.com.bluelava.me.financial`. Networth holds the decoded document in memory and does not copy IBR fields into SwiftData or CloudKit.
+
+### Banking Connection Replacement (2026-11-05)
+- Suspected duplicate banking accounts remain outside balances, Spending, and
+  projections until the user reviews them. Institution, type, currency, and mask
+  suggest matches; the user decides whether a connection replaces an existing
+  account or represents a separate account.
+- Replacement preserves canonical account and transaction identities, historical
+  activity, reviews, splits, notes, reimbursements, and existing account settings.
+  Ambiguous transaction matches require explicit resolution. Conflicting work on
+  both copies blocks replacement instead of silently overwriting either copy.
+- Commit the private-iCloud preservation record before changing disposable local
+  rows. Interrupted local completion is recoverable from the durable mapping.
+  Remote removal remains a separate action after local completion; unique accounts
+  and investment access must not be discarded as a side effect of consolidation.
+- Chase account selection represents the complete authorized account set, not an
+  additive request to attach a single card. Connection review is account-scoped so
+  genuinely new accounts can coexist with replacements on the same connection.
 
 ### Historical Net Worth
 - Preserve existing durable daily snapshots. New Plaid-only installs begin history with the first successful Plaid sync; retired-provider history is never reconstructed or re-imported.
